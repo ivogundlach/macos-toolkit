@@ -268,6 +268,7 @@ There is **no git** in the dashboard repo's fix path; rollback is via
 | `com.ivogundlach.memory-health-weekly` | Sun 18:15 | Index integrity, coverage, restorability, recall. Always exits 0. Every step watchdogged, because launchd has no TCC grant and `opendir` *blocks* |
 | `com.ivogundlach.personal-repo-sync` | 23:30 daily | Snapshot archive → `Personal-Repo` (see §7) |
 | `com.ivogundlach.app-repo-sync` | 12:30 + 22:30 daily | Per-app commit and push (see §7) |
+| `com.ivogundlach.public-toolkit-publish` | 13:15 daily | Rebuilds the sanitized public export and pushes it only if the tree changed (see §7f). The one job here that publishes, so every gate fails toward *publish nothing* |
 | `com.ivogundlach.apple-mail-draft-runner` | hourly 08:00–22:00 | Drafts Mail replies. Deduped at *thread* level by reading Drafts `.emlx` files directly — Mail's index and AppleScript are both blind to drafts |
 | `com.ivogundlach.quit-on-close` | KeepAlive daemon | Quits apps when their last window closes. Counts windows via `CGWindowList`, **not** AX `kAXWindows` (which under-reports and causes false quits) |
 | `com.ivo.market.refresh` | every 900 s | Market background data refresh |
@@ -405,7 +406,9 @@ restore; `memory-backup-verify` exists for that.
 
 ### 7d. Repository inventory — as of 2026-08-06
 
-**22 repositories, all private. There is no public repository.**
+**23 repositories: 22 private, 1 public.** The single public one is
+`macos-toolkit` (§7f) — a sanitized export, never a mirror of a private repo.
+Everything below is private.
 
 Per-app: `CanIAffordThis`, `CopyPathFinder`, `ElectionSimulator`,
 `ForceCopyPaste`, `Kinetics`, `MacroSimulator`, `Market`, `NewTabLinks`,
@@ -415,14 +418,15 @@ Archive: `Personal-Repo`, `memory-corpus`.
 Third-party mirrors: `CLI-Anything-local`, `CodexBar-local`, `knockoff-local`,
 `claude-video-local`.
 
-### 7e. The public toolkit candidate
+### 7e. The exporter that builds the public candidate
 
 `Personal-Repo/scripts/build-public-toolkit.py` (47 KB) builds a *sanitized
 public source candidate* from an immutable private snapshot. It is an exporter
 and nothing more — **it never publishes, and it never creates GitHub state.** It
-reads one clean checkout, copies only policy-classified UTF-8 text, performs one
-exact home-prefix substitution (`/Users/YOUR_USERNAME` → `/Users/YOUR_USERNAME`),
-and writes generated metadata. It never imports or executes component source.
+reads one clean checkout, copies only policy-classified UTF-8 text, performs
+exact-byte substitutions (`/Users/YOUR_USERNAME` → `/Users/YOUR_USERNAME`, and each
+of Ivo's four mailboxes → an `example.com` placeholder), and writes generated
+metadata. It never imports or executes component source.
 
 It carries its own secret detectors: generic API-key assignments, Discord
 webhooks and tokens, private `file://` URIs, `/Users/*/.memory` paths, private
@@ -433,8 +437,45 @@ reviewed by a human.
 Templates live in `Personal-Repo/public/`: `README.md`, `LICENSE`,
 `CONTRIBUTING.md`, `SECURITY.md`, `export-policy.json`.
 
-**Status: no candidate has ever been built, and no public repo exists.** The
-scaffolding is real and complete; nothing has been exported or published.
+### 7f. The public repository
+
+**`g2pxg4mff4-wq/macos-toolkit`** — public, 820 files, first published
+2026-08-06. It is the sanitized export described above, and it is the *only*
+public repository; all 22 others remain private.
+
+`public-toolkit-publish` (LaunchAgent `com.ivogundlach.public-toolkit-publish`,
+daily 13:15) rebuilds the candidate from the current private snapshot and pushes
+it **only if the tree actually changed**, so an unchanged day is a no-op rather
+than a churned commit. It runs at 13:15 because it must follow the 12:30
+`app-repo-sync`, and because the overnight slot has a history of being missed
+while the Mac sleeps — a stale public repo is this job's real failure mode.
+`RunAtLoad` is deliberately `false`: every other job here is idempotent and
+cheap, but this one publishes.
+
+Publishing is the only irreversible action on this machine, so every gate fails
+toward *publish nothing*:
+
+- The exporter itself is the security boundary and aborts on a surviving private
+  home path, a personal mailbox, a secret-like assignment, a Discord
+  token/webhook, or a private `file://` URI
+- The wrapper re-runs `gitleaks` and an independent home-path grep over the built
+  candidate. If either fires, the exporter has a hole and the run stops
+- After pushing, it compares the remote `HEAD` against the commit it just built —
+  a push that reports success without advancing the remote is a failure
+
+What the vetting pass actually caught before first publication, all fixed at
+source rather than patched in the export:
+
+- A **third party's** real name, university email, and private message were
+  hardcoded as a self-test fixture in `apple-mail-draft-runner`. Ivo's consent to
+  publish covers Ivo, not a roommate
+- Ivo's own three mailboxes were passing through into published source. The
+  exporter now substitutes them by exact bytes, with a catch-all regex that
+  **fails the build** if an unanticipated address form survives — a new address
+  must be declared, not published by omission
+- The vendored `bird-search` library is MIT with its `LICENSE` and copyright
+  notice preserved, and its hardcoded bearer token is Twitter's public web-client
+  token, not a personal credential
 
 ---
 
