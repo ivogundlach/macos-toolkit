@@ -1,15 +1,15 @@
 {
-  "build_timestamp_utc": "2026-08-07T03:37:55Z",
+  "build_timestamp_utc": "2026-08-07T03:39:43Z",
   "exporter_policy_sha256": "ce646c7502b8f58904172a7837b1c6174e1d7342cb021bcdbe6002f1d9caef1c",
   "exporter_script_sha256": "ddeb5904a8b2e52e6bcb848c2fb79b39cfb2713bff3fe80ef8ddb5383effd0b9",
   "file_count": 819,
-  "normalized_build_timestamp_utc": "2026-08-07T03:37:55Z",
-  "output_bytes": 10296017,
-  "output_tree_manifest_sha256": "887e93cbeb51da62da77cee9b28bbbc4465068a8579308d7c361d7ed957906e0",
+  "normalized_build_timestamp_utc": "2026-08-07T03:39:43Z",
+  "output_bytes": 10296233,
+  "output_tree_manifest_sha256": "890aa97a44b8bf7dd49bf263acb1a1352d8405600f053b4785b93cde3ee983d8",
   "schema_version": 1,
-  "source_commit_timestamp": 1786073875,
-  "source_commit_timestamp_utc": "2026-08-07T03:37:55Z",
-  "source_payload_manifest_sha256": "117160dc03f9bf62e10095cda56e121dd2ead9fe94653a7b0d6cd948c8dedaac",
-  "source_sha": "411bd893c770528d65956cfc2066e1499424794a",
+  "source_commit_timestamp": 1786073983,
+  "source_commit_timestamp_utc": "2026-08-07T03:39:43Z",
+  "source_payload_manifest_sha256": "86c8dbb089865336ed6c0f9fcf3cddd7f86f12f8ad716eaf9e65acae931ffbe8",
+  "source_sha": "fb3d8de2ad842548d30378062fd69f5d029c3b2b",
   "tree_manifest_scope": "all output files excluding SOURCE_ATTESTATION.json and PUBLIC-MANIFEST.sha256"
 }

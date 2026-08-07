@@ -424,9 +424,13 @@ Third-party mirrors: `CLI-Anything-local`, `CodexBar-local`, `knockoff-local`,
 public source candidate* from an immutable private snapshot. It is an exporter
 and nothing more — **it never publishes, and it never creates GitHub state.** It
 reads one clean checkout, copies only policy-classified UTF-8 text, performs
-exact-byte substitutions (`/Users/YOUR_USERNAME` → `/Users/YOUR_USERNAME`, and each
-of Ivo's four mailboxes → an `example.com` placeholder), and writes generated
-metadata. It never imports or executes component source.
+exact-byte substitutions (the private home prefix → `/Users/YOUR_USERNAME`, and
+each of Ivo's four mailboxes → an `example.com` placeholder), and writes
+generated metadata. It never imports or executes component source.
+
+Written that way on purpose: this file is itself part of the export, so spelling
+the private prefix out here would get *that* occurrence substituted too and the
+sentence would read `X → X` in the published copy.
 
 It carries its own secret detectors: generic API-key assignments, Discord
 webhooks and tokens, private `file://` URIs, `/Users/*/.memory` paths, private
