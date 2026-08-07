@@ -1133,32 +1133,111 @@ def obvious_junk_reason(record: MessageRecord) -> str | None:
     return None
 
 
-def junk_protect_reason(record: MessageRecord) -> str | None:
-    """Positive evidence that a Junk message belongs to a conversation Ivo started.
+PUBLIC_MAIL_DOMAINS = {
+    "gmail.com", "googlemail.com", "icloud.com", "me.com", "mac.com",
+    "yahoo.com", "hotmail.com", "outlook.com", "live.com", "aol.com",
+    "gmx.de", "gmx.net", "web.de", "proton.me", "protonmail.com",
+}
 
-    A spam header is a third-party guess; a threading header pointing at a message
-    Ivo sent is evidence the mail was solicited. Deleting one of these is a false
-    negative that loses real correspondence, so protected messages are always
-    escalated to the Inbox for review instead.
+
+def known_correspondents() -> tuple[set[str], set[str]] | None:
+    """Addresses and domains Ivo has actually sent mail to, from Mail's Envelope Index.
+
+    Returns None when the index cannot be read. None means "unknown", not "none":
+    callers must treat it as a reason to stop deleting rather than as an empty
+    allowlist, or an unreadable database would silently widen deletion.
+    """
+    if not MAIL_DB.exists():
+        return None
+    try:
+        # mode=ro (not immutable=1) so the -wal is read; immutable would hand back
+        # a pre-checkpoint snapshot and silently miss recent correspondents.
+        conn = sqlite3.connect(f"file:{MAIL_DB}?mode=ro", uri=True, timeout=10)
+        try:
+            rows = conn.execute(
+                """
+                SELECT DISTINCT lower(a.address)
+                FROM recipients r
+                JOIN addresses a ON a.rowid = r.address
+                JOIN messages m ON m.rowid = r.message
+                JOIN mailboxes mb ON mb.rowid = m.mailbox
+                WHERE mb.url LIKE '%Sent%' AND a.address LIKE '%@%'
+                """
+            ).fetchall()
+        finally:
+            conn.close()
+    except Exception:
+        return None
+    addresses = {row[0].strip() for row in rows if row[0]}
+    domains = {
+        addr.split("@", 1)[1] for addr in addresses if "@" in addr
+    } - PUBLIC_MAIL_DOMAINS
+    return addresses, domains
+
+
+def junk_protect_reason(
+    record: MessageRecord, correspondents: tuple[set[str], set[str]] | None = None
+) -> str | None:
+    """Positive evidence that a Junk message is solicited correspondence.
+
+    A spam header is a third-party guess. Threading proves Ivo started the thread,
+    and a sender he has written to proves he chose to contact them. Either one
+    outranks every deletion rule: losing real mail is the expensive error, so
+    protected messages are escalated to the Inbox for review instead.
     """
     for header in ("in-reply-to", "references"):
         if record.headers.get(header, "").strip():
             return f"protected-reply-to-sent-mail:{header}"
+    if correspondents:
+        addresses, domains = correspondents
+        sender = (record.sender_address or "").strip().lower()
+        if sender in addresses:
+            return "protected-known-correspondent:address"
+        domain = sender.split("@", 1)[1] if "@" in sender else ""
+        if domain and domain in domains:
+            return f"protected-known-correspondent:{domain}"
     return None
 
 
-def junk_delete_reason(record: MessageRecord) -> str | None:
-    if junk_protect_reason(record):
+INSTITUTIONAL_SENDER_TLDS = (".edu", ".gov", ".mil", ".ac.uk", ".edu.au")
+APPLE_RELAY_DOMAINS = {"privaterelay.appleid.com"}
+
+
+def junk_spare_reason(record: MessageRecord) -> str | None:
+    """Evidence too weak to justify the Inbox, strong enough to forbid destruction.
+
+    These senders are not correspondents, but the relationship is real enough that
+    a spam verdict should not be final. They stay in Junk: visible if Ivo looks,
+    never in the way, never lost.
+    """
+    sender = (record.sender_address or "").strip().lower()
+    domain = sender.split("@", 1)[1] if "@" in sender else ""
+    if not domain:
         return None
-    spam_reason = obvious_junk_reason(record)
-    if spam_reason:
-        return spam_reason
-    if not has_meaningful_text(record.body):
-        return "junk-no-meaningful-text"
-    body = (record.body or "").lower()
-    if "this is an advertisement" in body and "unsubscribe" in body:
-        return "junk-advertisement-unsubscribe"
+    if domain.endswith(INSTITUTIONAL_SENDER_TLDS):
+        return "spared-institutional-sender"
+    # A Hide My Email alias only exists because Ivo deliberately created one for
+    # this sender, so the signup was intentional even when the mail is marketing.
+    if domain in APPLE_RELAY_DOMAINS or (domain == "icloud.com" and "_at_" in sender):
+        return "spared-apple-private-relay"
     return None
+
+
+def junk_delete_reason(
+    record: MessageRecord, correspondents: tuple[set[str], set[str]] | None = None
+) -> str | None:
+    """Delete spam-flagged mail, but only after both evidence gates have passed.
+
+    The spam header is a weak signal (iCloud stamps ~99% of Junk with it), so it
+    can only act on messages that survived the protect and spare checks. Those two
+    gates, not the header, are what keep real mail alive. Anything not flagged at
+    all is left in Junk rather than deleted or escalated.
+    """
+    if junk_protect_reason(record, correspondents):
+        return None
+    if junk_spare_reason(record):
+        return None
+    return obvious_junk_reason(record)
 
 
 def parse_mail_date(headers: dict[str, str]) -> int:
@@ -1567,11 +1646,23 @@ def sort_junk(args: argparse.Namespace) -> None:
     records = load_junk_messages(args.limit, args.body_char_limit)
     with state_lock():
         processed = load_state().get("messages", {})
+    correspondents = known_correspondents()
     deleted_junk = []
     moved_to_inbox = []
+    left_in_junk = []
     action_errors = []
     for account_name, mailbox_name, record in records:
-        reason = junk_delete_reason(record)
+        protect = junk_protect_reason(record, correspondents)
+        # Unknown correspondents means the allowlist is unavailable, not empty.
+        # Deleting under that uncertainty is exactly the failure being fixed here.
+        reason = None if (protect or correspondents is None) else junk_delete_reason(record, correspondents)
+        if not protect and not reason:
+            if correspondents is None:
+                left_reason = "left-in-junk:correspondents-unavailable"
+            else:
+                left_reason = junk_spare_reason(record) or "left-in-junk:not-spam-flagged"
+            left_in_junk.append(review_item(record, left_reason))
+            continue
         if reason:
             item = review_item(record, reason)
             existing = processed.get(record.state_key, {})
@@ -1600,7 +1691,7 @@ def sort_junk(args: argparse.Namespace) -> None:
                     continue
             deleted_junk.append(item)
             continue
-        item = review_item(record, junk_protect_reason(record) or "junk-review-plausibly-real")
+        item = review_item(record, protect or "junk-review-plausibly-real")
         if not args.dry_run:
             try:
                 move_junk_mail_to_inbox(account_name, mailbox_name, record.mail_id)
@@ -1623,6 +1714,8 @@ def sort_junk(args: argparse.Namespace) -> None:
     result = {
         "deleted_junk": deleted_junk,
         "moved_to_inbox": moved_to_inbox,
+        "left_in_junk": left_in_junk,
+        "correspondents_available": correspondents is not None,
         "action_errors": action_errors,
         "count": len(records),
         "dry_run": args.dry_run,
@@ -2709,8 +2802,10 @@ def self_test(args: argparse.Namespace) -> None:
         body_truncated=False,
         state_key="rfc:<example6@example.com>",
     )
-    if junk_delete_reason(object_only) != "junk-no-meaningful-text":
-        errors.append("object-only junk deletion detection failed")
+    if junk_delete_reason(object_only) is not None:
+        errors.append("blank body without a spam verdict must stay in Junk, not be deleted")
+    if junk_delete_reason(replace(object_only, headers={"x-spam-flag": "yes"})) != "spam-header:x-spam-flag":
+        errors.append("spam-flagged junk from an unknown sender should be deleted")
     text_junk = MessageRecord(
         mail_id=7,
         date_received=1,
@@ -2749,8 +2844,10 @@ def self_test(args: argparse.Namespace) -> None:
         body_truncated=False,
         state_key="rfc:<example10@example.com>",
     )
-    if junk_delete_reason(ad_junk) != "junk-advertisement-unsubscribe":
-        errors.append("junk advertisement deletion detection failed")
+    if junk_delete_reason(ad_junk) is not None:
+        errors.append("advertisement without a spam verdict must stay in Junk, not be deleted")
+    if junk_delete_reason(replace(ad_junk, headers={"x-spam-flag": "yes"})) != "spam-header:x-spam-flag":
+        errors.append("spam-flagged advertisement deletion detection failed")
     normalized_junk_script = re.sub(r"\s+", " ", JUNK_READ_DELETE_APPLESCRIPT).lower()
     read_index = normalized_junk_script.find("set read status of m to true")
     delete_index = normalized_junk_script.find("delete m")
@@ -2834,10 +2931,42 @@ def self_test(args: argparse.Namespace) -> None:
         errors.append("threading protection must outrank every junk deletion rule")
     unthreaded_spam = replace(threaded_spam_flagged, headers={"x-spam-flag": "yes"})
     if junk_delete_reason(unthreaded_spam) != "spam-header:x-spam-flag":
-        errors.append("unsolicited spam-flagged junk should still be deleted")
+        errors.append("spam-flagged mail with no protecting evidence should be deleted")
+    if junk_delete_reason(replace(unthreaded_spam, headers={})) is not None:
+        errors.append("mail that was never spam-flagged must be left in Junk, not deleted")
     blank_threading = replace(threaded_spam_flagged, headers={"x-spam-flag": "yes", "in-reply-to": "  "})
-    if junk_delete_reason(blank_threading) != "spam-header:x-spam-flag":
+    if junk_protect_reason(blank_threading) is not None:
         errors.append("empty threading header must not protect a message")
+    correspondents = ({"schlichtung@example-ombudsman.de"}, {"example-ombudsman.de"})
+    known_sender = replace(unthreaded_spam, body="Please find the documents attached.")
+    if junk_protect_reason(known_sender, correspondents) != "protected-known-correspondent:address":
+        errors.append("known-correspondent protection failed on an exact address match")
+    other_at_known_domain = replace(known_sender, sender_address="team@example-ombudsman.de")
+    if junk_protect_reason(other_at_known_domain, correspondents) != "protected-known-correspondent:example-ombudsman.de":
+        errors.append("known-correspondent protection failed on a domain match")
+    stranger = replace(known_sender, sender_address="renew@endenvy.example", body="￼")
+    if junk_delete_reason(stranger, correspondents) != "spam-header:x-spam-flag":
+        errors.append("unknown spam-flagged sender should still be deleted")
+    for spared, label in (
+        ("arscrcrt@uark.edu", "spared-institutional-sender"),
+        ("admissions@example.gov", "spared-institutional-sender"),
+        ("no-reply_at_messages_doordash_com_w244g_671cba45@privaterelay.appleid.com", "spared-apple-private-relay"),
+        ("brad_at_bradbonanno_com_4688vc_99dd3ba6@icloud.com", "spared-apple-private-relay"),
+    ):
+        candidate = replace(stranger, sender_address=spared)
+        if junk_spare_reason(candidate) != label:
+            errors.append(f"spare rule failed for {spared}")
+        if junk_delete_reason(candidate, correspondents) is not None:
+            errors.append(f"spared sender {spared} must never be deleted")
+    if junk_spare_reason(replace(stranger, sender_address="renew@notaneducation.com")) is not None:
+        errors.append("institutional sparing must match the TLD, not a substring")
+    if junk_spare_reason(replace(stranger, sender_address="spam@plain-icloud.com")) is not None:
+        errors.append("a non-relay icloud lookalike must not be spared")
+    # The two addresses only have to share a public domain; the local parts are
+    # arbitrary and must stay synthetic, since this file is part of the public
+    # export.
+    if junk_protect_reason(replace(stranger, sender_address="x@gmail.com"), ({"owner@gmail.com"}, set())) is not None:
+        errors.append("public mail domains must not become a blanket allowlist")
     try:
         parsed = source_message_from_text("From: Person <person@example.com>\nSubject: Hi\n\nHello")
         if str(parsed.get("subject")) != "Hi":

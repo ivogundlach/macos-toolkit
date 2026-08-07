@@ -1,14 +1,23 @@
 ---
 name: apple-mail-reply-drafter
 description: >-
-  Use when Ivo asks to draft, write, prepare, or create an email in Apple Mail,
-  whether it is a reply in an existing thread or a new standalone message.
-  Trigger on phrases like "draft a reply", "reply to this email", "make an
-  Apple Mail draft", "draft an email to X", or "answer the email from X".
-  Orchestrates local-read-connectors and ivo-writer, preserves the correct
-  sender/recipient/thread when applicable, and creates a saved background draft.
-  Hidden creation is the default. The tested Mail attachment-menu fallback may
-  foreground Mail and therefore requires explicit foreground permission. Never send mail.
+  Use for ANY request that results in an email Ivo will send: writing, drafting,
+  composing, preparing, replying, following up, thanking, asking, updating, or
+  "telling" someone something by email. Covers replies in an existing thread and
+  brand-new messages to anyone - teacher, professor, advisor, landlord, support,
+  friend, family, employer. Trigger on "write an email to X", "email X", "can you
+  write to X", "draft a reply", "reply to this email", "answer the email from X",
+  "send X a note", "let X know", "follow up with X", "make an Apple Mail draft" -
+  and on any message naming a person plus something to tell them, even when the
+  words "email", "draft", or "Apple Mail" never appear. Also trigger when the
+  recipient's address must be found first in Notes, Contacts, or past mail. Owning
+  this request means producing a real saved Apple Mail draft; email text written
+  into the chat is never the deliverable. Orchestrates local-read-connectors and
+  ivo-writer, resolves the correct sender account and recipient from prior mail,
+  and creates the draft hidden in the background. Do not skip this skill because
+  the message seems short, personal, informal, or easy to write by hand. Hidden
+  creation is the default. The tested Mail attachment-menu fallback may foreground
+  Mail and therefore requires explicit foreground permission. Never send mail.
 ---
 
 # Apple Mail Drafter
@@ -25,6 +34,9 @@ Create Apple Mail drafts silently in the background. Preserve sender account, re
 ## Hard Rules
 
 - Never send. This skill creates saved drafts only.
+- The deliverable is a saved Apple Mail draft, not email text in chat. Writing the message into the reply and leaving Ivo to paste it is a failed run, even when the prose is correct. Chat may summarize or show the draft; it never substitutes for creating it.
+- Before concluding that no prior correspondence exists with a recipient, search recipients as well as senders. `mail-search` matches sender, subject, and recipients; an older cached copy matched sender and subject only. Prior mail Ivo sent is where the correct sending account and the recipient's real name come from, so an unchecked "no history" claim silently loses both.
+- Placeholders are allowed only when Ivo explicitly said he will fill the gaps. Fill every gap memory or prior mail can answer first; never hand back a bracket for a fact already on record.
 - Always create and save drafts in the background when the helper can complete the requested work. Hidden creation is the default.
 - On the macOS/Mail setup observed on 2026-08-02, opening the saved draft and using Mail's Attach menu/file chooser foregrounded Mail. Never describe that tested route as background-safe or claim that the previously focused app stayed focused.
 - Put only recipient-facing email text in the body. Never insert internal labels or review notices such as `[Codex draft - review before sending]`.
@@ -41,8 +53,13 @@ Create Apple Mail drafts silently in the background. Preserve sender account, re
 - Never report that attachments were added merely because the helper returned `status: drafted`. Verify the persisted Drafts message independently and list attached and missing filenames in the result.
 - If Mail cannot materialize an attachment while the composer remains hidden, stop after the first failed attempt. Do not retry, create a duplicate draft, or switch to `visible:true`; verify the persisted attachment state, identify the exact missing file, and request explicit permission for the bounded foreground compose fallback if Ivo still wants the agent to finish it.
 - Do not draft for no-reply, newsletter, receipt, invoice, verification-code, automated, or uncertain sender classifications unless Ivo explicitly overrides.
-- Interactive draft creation never deletes mail. The existing scheduled `clean-junk` pass is separate: only inside Junk/Spam mailboxes, it automatically deletes explicit-spam-header messages, blank/no-meaningful-text messages, and advertisement-plus-unsubscribe messages. It marks every such message read before deletion. Anything plausibly real stays for review.
-- A Junk message carrying an `In-Reply-To` or `References` header is never deleted, whatever the spam headers say: threading is evidence Ivo started the conversation, while a spam flag is only a third-party guess. Such messages are always escalated to the Inbox with reason `protected-reply-to-sent-mail:*`. Losing real correspondence is the expensive error here; one extra message in the Inbox is the cheap one, so any future junk rule must keep this asymmetry.
+- Interactive draft creation never deletes mail. The scheduled `sort-junk` pass is separate and acts only inside Junk/Spam mailboxes, sorting three ways. Leaving a message in Junk is the default and the safe outcome; both other outcomes must be earned.
+  - **Escalate to Inbox** on strong evidence the mail is solicited: an `In-Reply-To`/`References` header (Ivo started the thread), or a sender address or non-public domain he has sent mail to, read from Mail's Envelope Index. Reasons are `protected-*`.
+  - **Leave in Junk** on weak evidence — too little to justify the Inbox, enough to forbid destruction: an institutional sender (`.edu`, `.gov`, `.mil`, `.ac.uk`, `.edu.au`), or an Apple Hide My Email relay sender, which only exists because Ivo deliberately created an alias for that service. Mail that was never spam-flagged at all also stays here. Reasons are `spared-*` / `left-in-junk:*`.
+  - **Delete** spam-flagged mail that passed neither gate. The gates, not the header, are what keep real mail alive: iCloud stamps `X-Spam-Flag` on ~99% of what it files into Junk, so that header alone is not a filter, it is "delete the whole folder", and acting on it without the gates is how real correspondence was lost. Marked read first.
+- If the Envelope Index cannot be read, the correspondent allowlist is unknown, not empty: deletion is skipped entirely for that run and the runner logs a warning. A lookup failure must never widen deletion.
+- Losing real correspondence is the expensive error; one extra message in the Inbox is the cheap one. Any future junk rule must keep that asymmetry, and must be replayed over the real `~/Library/Mail/**/*.emlx` corpus before shipping — reporting the size of all three buckets and auditing the delete set for transactional subjects (receipt, verification code, statement, appointment), which is the class whose loss actually hurts.
+- Tune this by adding evidence gates, never by loosening the spam header. A sorter that leaves most of Junk untouched is not conservative, it is useless, and Ivo will say so; the way to delete more is to make "real" easier to prove, not to make destruction easier to trigger.
 - Background draft generation uses the established workflow-specific model choice, GPT-5.6 Terra with medium reasoning. No global model substitution applies.
 
 ## Config

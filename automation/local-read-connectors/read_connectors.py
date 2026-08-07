@@ -175,12 +175,27 @@ def mail_search(args):
     days_cutoff = int((datetime.now(timezone.utc) - timedelta(days=args.days)).timestamp())
     clauses = []
     params = [days_cutoff]
+    # Match the sender, the subject, AND the recipients. Recipients matter because
+    # mail Ivo SENT to someone carries that person only in the recipients table --
+    # a sender+subject-only search returns [] for a correspondent he has written to
+    # for years, and an empty result then reads as "no correspondence exists".
     for term in terms:
         like = f"%{term}%"
         clauses.append(
-            "(lower(coalesce(s.subject, '')) like ? or lower(coalesce(a.address, '')) like ? or lower(coalesce(a.comment, '')) like ?)"
+            "("
+            "lower(coalesce(s.subject, '')) like ?"
+            " or lower(coalesce(a.address, '')) like ?"
+            " or lower(coalesce(a.comment, '')) like ?"
+            " or exists ("
+            "   select 1 from recipients r"
+            "   join addresses ra on r.address = ra.ROWID"
+            "   where r.message = m.ROWID"
+            "     and (lower(coalesce(ra.address, '')) like ?"
+            "          or lower(coalesce(ra.comment, '')) like ?)"
+            " )"
+            ")"
         )
-        params.extend([like, like, like])
+        params.extend([like, like, like, like, like])
     params.append(args.limit)
     query = f"""
         select m.ROWID,
@@ -190,7 +205,11 @@ def mail_search(args):
                datetime(m.date_received, 'unixepoch', 'localtime') as received,
                mb.url,
                m.read,
-               m.flagged
+               m.flagged,
+               (select group_concat(ra.address, ', ')
+                  from recipients r
+                  join addresses ra on r.address = ra.ROWID
+                 where r.message = m.ROWID) as recipients
         from messages m
         left join addresses a on m.sender = a.ROWID
         left join subjects s on m.subject = s.ROWID
@@ -206,13 +225,14 @@ def mail_search(args):
                 "mail_rowid": rowid,
                 "from": address,
                 "from_name": comment,
+                "to": recipients,
                 "subject": subject,
                 "received": received,
                 "mailbox": mailbox,
                 "read": bool(read),
                 "flagged": bool(flagged),
             }
-            for rowid, address, comment, subject, received, mailbox, read, flagged
+            for rowid, address, comment, subject, received, mailbox, read, flagged, recipients
             in con.execute(query, params)
         ]
     print_json(rows)

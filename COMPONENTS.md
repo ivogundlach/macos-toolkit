@@ -226,7 +226,11 @@ Policy exclusions are listed by path and reason; source contents and secret valu
 - `automation/codex/skills/workflow skills/web-research/scripts/deep_report_selftest.py` — generated/private report or inventory.
 - `automation/codex/skills/workflow skills/web-research/scripts/render_deep_report.py` — generated/private report or inventory.
 - `automation/codex/skills/workflow skills/web-research/scripts/selftest.py` — excluded root: automation/codex/skills/workflow skills/web-research/scripts/selftest.py.
+- `automation/local-bin/app-repo-bootstrap` — hardcodes the private per-app repository fleet's owner and archive remote.
+- `automation/local-bin/app-repo-lib.sh` — hardcodes the private per-app repository fleet's owner and archive remote.
+- `automation/local-bin/app-repo-sync` — hardcodes the private per-app repository fleet's owner and archive remote.
 - `automation/local-bin/personal-repo-sync` — private-only maintenance synchronizer with repository identity and external-write authority.
+- `automation/local-bin/public-toolkit-publish` — hardcodes the private archive's clone URL; publishing it would link the private repository, which the public README states this export does not do.
 - `automation/memory-tests/test_redaction.py` — intentionally synthetic secret fixtures are retained only in the private archive.
 - `automation/memory-tools/memory-secret-scan` — credential-named file.
 - `docs/COMPONENT_COVERAGE.md` — unknown path.

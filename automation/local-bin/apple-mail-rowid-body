@@ -85,6 +85,31 @@ def message_text(msg: email.message.EmailMessage) -> str:
     return "\n".join(compact).strip()
 
 
+def _grep_files(needle: str) -> list[str]:
+    """Return files under MAIL_ROOT containing needle.
+
+    Prefers ripgrep, falls back to BSD grep. ripgrep is not installed on this Mac,
+    and the unconditional rg call used to raise FileNotFoundError and take down
+    every body read; grep is slower but always present.
+    """
+    for argv in (
+        ["rg", "-l", "--text", "-F", needle, str(MAIL_ROOT)],
+        ["grep", "-rlaF", "--", needle, str(MAIL_ROOT)],
+    ):
+        try:
+            proc = subprocess.run(
+                argv,
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+            )
+        except (FileNotFoundError, OSError):
+            continue
+        return proc.stdout.splitlines()
+    return []
+
+
 def find_emlx_by_header(message_id_header: str | None) -> Path | None:
     if not message_id_header:
         return None
@@ -92,14 +117,7 @@ def find_emlx_by_header(message_id_header: str | None) -> Path | None:
     needles = [f"Message-ID: {header}", f"Message-Id: {header}", f"Message-id: {header}"]
     paths: list[Path] = []
     for needle in needles:
-        proc = subprocess.run(
-            ["rg", "-l", "--text", "-F", needle, str(MAIL_ROOT)],
-            check=False,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            text=True,
-        )
-        paths.extend(Path(line) for line in proc.stdout.splitlines())
+        paths.extend(Path(line) for line in _grep_files(needle))
     if not paths:
         return None
     unique_paths = list(dict.fromkeys(paths))
@@ -113,14 +131,7 @@ def find_emlx_by_header_anywhere(message_id_header: str | None) -> Path | None:
     if not message_id_header:
         return None
     needle = message_id_header.strip("<>")
-    proc = subprocess.run(
-        ["rg", "-l", "--text", "-F", needle, str(MAIL_ROOT)],
-        check=False,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,
-        text=True,
-    )
-    for line in proc.stdout.splitlines():
+    for line in _grep_files(needle):
         path = Path(line)
         if path.suffix == ".emlx" or path.name.endswith(".partial.emlx"):
             try:

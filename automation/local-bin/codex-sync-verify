@@ -6,6 +6,9 @@
 # reports whether each mirror is in sync. It REPLICATES the sync transforms so it
 # never false-positives:
 #   * AGENTS.md mirrors = a sync-header line + the de-headered source (emit_with_header).
+#     Targets: ~/.claude/CLAUDE.md (Claude Code user memory), ~/.gemini/config/AGENTS.md,
+#     ~/.antigravitycli/AGENTS.md. A missing Claude mirror means Claude Code is running
+#     with no global rules at all, so it is drift, not a nice-to-have.
 #   * User-root AGENTS.md and CLAUDE.md must be absent to prevent duplicate loading.
 #   * skill mirrors     = rsync of each SKILL.md folder, category folders flattened
 #                         to a sanitized <skill-name>, same excludes as the sync.
@@ -55,6 +58,7 @@ if [[ -f "$AGENTS_SRC" ]]; then
     fi
   done
   for target in \
+    "$CLAUDE_HOME/CLAUDE.md" \
     "$GEMINI_HOME/config/AGENTS.md" \
     "$ANTIGRAVITY_CLI_HOME/AGENTS.md" ; do
     if [[ ! -e "$target" ]]; then

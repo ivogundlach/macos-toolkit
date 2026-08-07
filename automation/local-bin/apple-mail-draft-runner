@@ -161,18 +161,26 @@ def format_timestamp(value: Any) -> str:
 
 
 def render_junk_review(scan: dict[str, Any]) -> None:
-    items = scan.get("moved_to_inbox", [])
+    # Everything the sorter touched, so the quiet "left in Junk" outcome is auditable
+    # rather than invisible. Escalations first: those are the ones needing attention.
+    groups = (
+        ("Escalated to Inbox", scan.get("moved_to_inbox", [])),
+        ("Deleted", scan.get("deleted_junk", [])),
+        ("Left in Junk", scan.get("left_in_junk", [])),
+    )
     rows = []
-    for item in items:
-        rows.append(
-            "<tr>"
-            f"<td>{html.escape(format_timestamp(item.get('date_received')))}</td>"
-            f"<td>{html.escape(str(item.get('sender_name') or ''))}<br><span>{html.escape(str(item.get('sender_address') or ''))}</span></td>"
-            f"<td>{html.escape(str(item.get('subject') or ''))}</td>"
-            f"<td><code>{html.escape(str(item.get('reason') or ''))}</code></td>"
-            "</tr>"
-        )
-    body = "\n".join(rows) or '<tr><td colspan="4" class="empty">No review items in the latest scan.</td></tr>'
+    for label, items in groups:
+        for item in items:
+            rows.append(
+                "<tr>"
+                f"<td>{html.escape(label)}</td>"
+                f"<td>{html.escape(format_timestamp(item.get('date_received')))}</td>"
+                f"<td>{html.escape(str(item.get('sender_name') or ''))}<br><span>{html.escape(str(item.get('sender_address') or ''))}</span></td>"
+                f"<td>{html.escape(str(item.get('subject') or ''))}</td>"
+                f"<td><code>{html.escape(str(item.get('reason') or ''))}</code></td>"
+                "</tr>"
+            )
+    body = "\n".join(rows) or '<tr><td colspan="5" class="empty">No review items in the latest scan.</td></tr>'
     generated = time.strftime("%Y-%m-%d %H:%M:%S %z")
     doc = f"""<!doctype html>
 <html lang="en">
@@ -196,9 +204,9 @@ def render_junk_review(scan: dict[str, Any]) -> None:
 <body>
   <main>
     <h1>Mail review screen</h1>
-    <p>Generated {html.escape(generated)}. These messages were moved from Junk to Inbox for review.</p>
+    <p>Generated {html.escape(generated)}. Junk is sorted three ways: escalated to the Inbox on positive evidence, deleted only when flagged as spam <em>and</em> contentless, otherwise left in Junk untouched.</p>
     <table>
-      <thead><tr><th>Date</th><th>Sender</th><th>Subject</th><th>Reason</th></tr></thead>
+      <thead><tr><th>Outcome</th><th>Date</th><th>Sender</th><th>Subject</th><th>Reason</th></tr></thead>
       <tbody>{body}</tbody>
     </table>
   </main>
@@ -340,12 +348,15 @@ def create_draft(candidate: dict[str, Any], body: str, operation_id: str) -> Non
 def run_once(limit: int, dry_run: bool) -> int:
     started = time.monotonic()
     budget_exhausted = False
-    junk = {"deleted_junk": [], "moved_to_inbox": [], "action_errors": []} if dry_run else sort_junk(max(limit, 50))
+    junk = {"deleted_junk": [], "moved_to_inbox": [], "left_in_junk": [], "action_errors": []} if dry_run else sort_junk(max(limit, 50))
     scan = load_scan(limit)
     render_junk_review(junk)
     candidates = scan.get("candidates", [])
+    if not dry_run and not junk.get("correspondents_available", True):
+        log("WARNING: Mail's Envelope Index was unreadable; junk deletion was skipped this run")
     log(
         f"junk deleted={len(junk.get('deleted_junk', []))} moved_to_inbox={len(junk.get('moved_to_inbox', []))} "
+        f"left_in_junk={len(junk.get('left_in_junk', []))} "
         f"action_errors={len(junk.get('action_errors', []))} "
         f"scan candidates={len(candidates)} skipped={len(scan.get('skipped', []))} review_screen={JUNK_REVIEW_HTML}"
     )

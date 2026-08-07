@@ -987,8 +987,24 @@
       "reason": "excluded root: automation/codex/skills/workflow skills/web-research/scripts/selftest.py"
     },
     {
+      "path": "automation/local-bin/app-repo-bootstrap",
+      "reason": "hardcodes the private per-app repository fleet's owner and archive remote"
+    },
+    {
+      "path": "automation/local-bin/app-repo-lib.sh",
+      "reason": "hardcodes the private per-app repository fleet's owner and archive remote"
+    },
+    {
+      "path": "automation/local-bin/app-repo-sync",
+      "reason": "hardcodes the private per-app repository fleet's owner and archive remote"
+    },
+    {
       "path": "automation/local-bin/personal-repo-sync",
       "reason": "private-only maintenance synchronizer with repository identity and external-write authority"
+    },
+    {
+      "path": "automation/local-bin/public-toolkit-publish",
+      "reason": "hardcodes the private archive's clone URL; publishing it would link the private repository, which the public README states this export does not do"
     },
     {
       "path": "automation/memory-tests/test_redaction.py",
