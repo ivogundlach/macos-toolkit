@@ -1,0 +1,4 @@
+interface:
+  display_name: "Codex Claude Sync Check"
+  short_description: "Verify Codex skill mirror sync"
+  default_prompt: "Use $codex-claude-sync-check to verify my Codex and Claude skill mirrors are in sync."

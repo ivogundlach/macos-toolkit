@@ -1,0 +1,19 @@
+{
+  "manifest_version": 3,
+  "name": "YouTube Home Reload",
+  "version": "1.0",
+  "description": "Clicking the YouTube logo does a full page reload of the home page instead of in-app navigation.",
+  "icons": {
+    "48": "icons/icon-48.png",
+    "128": "icons/icon-128.png",
+    "256": "icons/icon-256.png",
+    "512": "icons/icon-512.png"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://www.youtube.com/*"],
+      "js": ["content.js"],
+      "run_at": "document_start"
+    }
+  ]
+}

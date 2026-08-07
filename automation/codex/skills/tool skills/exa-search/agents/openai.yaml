@@ -1,0 +1,4 @@
+interface:
+  display_name: "Exa Search"
+  short_description: "Search and extract the web through Exa"
+  default_prompt: "Use $exa-search to find semantically relevant web sources or extract known public URLs without MCP."

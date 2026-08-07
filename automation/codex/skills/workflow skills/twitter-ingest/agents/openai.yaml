@@ -1,0 +1,4 @@
+interface:
+  display_name: "Twitter Ingest"
+  short_description: "Add a Twitter/X post to the bookmarks archive."
+  default_prompt: "Ingest this Twitter post into my archive: <URL>"

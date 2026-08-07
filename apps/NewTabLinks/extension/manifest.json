@@ -1,0 +1,20 @@
+{
+  "manifest_version": 3,
+  "name": "New Tab Links",
+  "version": "1.0",
+  "description": "Open links to external websites in a new tab instead of replacing the current page. Same-site navigation is untouched.",
+  "icons": {
+    "48": "icons/icon-48.png",
+    "128": "icons/icon-128.png",
+    "256": "icons/icon-256.png",
+    "512": "icons/icon-512.png"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "run_at": "document_start",
+      "all_frames": true
+    }
+  ]
+}

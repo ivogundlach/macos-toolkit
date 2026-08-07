@@ -1,0 +1,5 @@
+#!/bin/bash
+# Named app-bundle wrapper for the Smart Wake Discord command watcher.
+# launchd points here (not at /usr/bin/python3) so macOS Background Task
+# Management shows "Smart Wake Discord Watcher" instead of anonymous "python3".
+exec /usr/bin/python3 /Users/YOUR_USERNAME/.config/smart-wake/discord-command-watch.py

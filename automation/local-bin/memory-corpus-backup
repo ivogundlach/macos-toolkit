@@ -1,0 +1,92 @@
+#!/usr/bin/env bash
+# memory-corpus-backup — commit and push ~/.memory to its private GitHub remote.
+# Scheduled daily at 17:30 by com.ivogundlach.memory-corpus-backup, i.e. AFTER the
+# 16:20 distill and the 17:00 semantic index build, so each day's new captures are
+# backed up the same evening.
+#
+#   usage: memory-corpus-backup [--dry-run | --status]
+#
+# The corpus is the only irreplaceable part of the memory system (the index is
+# 111M and rebuildable; the tools are code). Offline runs defer quietly (rc 75) —
+# the daily schedule self-heals. The pre-commit hook runs memory-secret-scan; this
+# script also runs it explicitly so a bypassed/missing hook cannot publish a secret.
+set -uo pipefail
+export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
+
+ROOT="$HOME/.memory"
+STATE="$HOME/.local/state/memory-corpus-backup"
+LOG="$STATE/backup.log"
+DEFER_RC=75
+
+mkdir -p "$STATE"
+log() { printf '%s memory-corpus-backup: %s\n' "$(date +%Y-%m-%dT%H:%M:%S%z)" "$*" | tee -a "$LOG"; }
+
+case "${1:-}" in
+  --version|-V) echo "memory-corpus-backup (daily git push of ~/.memory to its private remote)"; exit 0 ;;
+  --help|-h)    sed -n '2,12p' "$0" | sed 's/^#\{1,\} \{0,1\}//'; exit 0 ;;
+  --status)
+    cd "$ROOT" 2>/dev/null || { echo "no $ROOT"; exit 1; }
+    echo "last commit: $(git log -1 --format='%h %ad %s' --date=iso 2>/dev/null)"
+    echo "uncommitted: $(git status --porcelain | wc -l | tr -d ' ') file(s)"
+    echo "unpushed:    $(git rev-list --count @{u}..HEAD 2>/dev/null || echo '?') commit(s)"
+    exit 0 ;;
+esac
+
+cd "$ROOT" || { log "ERROR: $ROOT missing"; exit 1; }
+git rev-parse --is-inside-work-tree >/dev/null 2>&1 || { log "ERROR: $ROOT is not a git repo"; exit 1; }
+
+# Claude's curated memory lives outside ~/.memory and was backed up NOWHERE: not a
+# git repo, excluded from the Personal-Repo sync, and Time Machine's only
+# destination was the same disk. It is ~50 hand-written notes and the densest
+# store in the system, so mirror it into the corpus before committing.
+# One-way and content-only: this directory is never restored FROM the mirror
+# automatically, and git history is the real safety net if the source is lost.
+# mirrors/ is excluded from indexing (index-scope-excludes.tsv) so the notes are
+# not indexed twice under two different paths.
+CURATED="$HOME/.claude/projects/-Users-ivogundlach/memory"
+if [ -d "$CURATED" ]; then
+  mkdir -p "$ROOT/mirrors/claude-curated"
+  rsync -a --delete --exclude='.DS_Store' \
+    "$CURATED/" "$ROOT/mirrors/claude-curated/" >>"$LOG" 2>&1 \
+    || log "WARN: curated-memory mirror failed (continuing; ~/.memory still backs up)"
+fi
+
+# bound log growth
+[ -f "$LOG" ] && [ "$(stat -f%z "$LOG" 2>/dev/null || echo 0)" -gt 1000000 ] && : > "$LOG"
+
+if [ -z "$(git status --porcelain)" ] && [ "$(git rev-list --count @{u}..HEAD 2>/dev/null || echo 0)" = "0" ]; then
+  exit 0                                   # nothing new; stay silent
+fi
+
+git add -A
+
+# Explicit gate. Never rely solely on the hook: hooks are not cloned, are easy to
+# bypass, and a secret in git history survives deleting the file.
+if ! python3 "$ROOT/tools/memory-secret-scan" --staged >>"$LOG" 2>&1; then
+  log "BLOCKED: memory-secret-scan found secrets in staged files; nothing committed"
+  exit 1
+fi
+
+if [ "${1:-}" = "--dry-run" ]; then
+  log "DRY-RUN: would commit $(git diff --cached --name-only | wc -l | tr -d ' ') file(s)"
+  git reset -q
+  exit 0
+fi
+
+n="$(git diff --cached --name-only | wc -l | tr -d ' ')"
+if [ "$n" -gt 0 ]; then
+  git commit -q -m "memory: $(date +%Y-%m-%d) corpus snapshot ($n file(s))" >>"$LOG" 2>&1 \
+    || { log "ERROR: commit failed"; exit 1; }
+fi
+
+if ! curl -fsS -m 6 -o /dev/null https://www.gstatic.com/generate_204 2>/dev/null; then
+  log "OFFLINE: committed locally, push deferred"
+  exit "$DEFER_RC"
+fi
+
+if git push -q origin HEAD >>"$LOG" 2>&1; then
+  log "pushed ($n file(s) this run)"
+else
+  log "push FAILED (committed locally; will retry tomorrow)"
+  exit "$DEFER_RC"
+fi

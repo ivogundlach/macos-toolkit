@@ -1,0 +1,4 @@
+interface:
+  display_name: "Scriptify"
+  short_description: "Replace repeated AI work with local scripts"
+  default_prompt: "Use $scriptify to replace this repeated mechanical action with a deterministic script that avoids future model work."

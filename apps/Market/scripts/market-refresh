@@ -1,0 +1,154 @@
+#!/bin/bash
+# Single background dispatcher for Market. A signed Market.app LaunchAgent invokes
+# this every 15 minutes so scheduling is independent of the mutable user crontab.
+set -u
+
+export PATH="/Users/YOUR_USERNAME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+export MARKET_BACKGROUND_CONTEXT=1
+MARKET="${MARKET_ROOT:-/Users/YOUR_USERNAME/Projects/Market}"
+PY="${MARKET_PYTHON:-$MARKET/venv/bin/python}"
+LOGS="$MARKET/out/launchd_logs"
+STAMPS="$MARKET/out/background_stamps"
+STATE="$MARKET/state/background"
+LOCK="$STATE/dispatcher.lock"
+LOCK_PID="$LOCK/pid"
+FORCE_REQUEST="$STATE/force_ingest.request"
+FORCE_DEBRIEF_REQUEST="$STATE/force_debrief.request"
+LAUNCHCTL="${MARKET_LAUNCHCTL:-/bin/launchctl}"
+
+mkdir -p "$LOGS" "$STAMPS" "$STATE"
+
+atomic_line() {
+    local path="$1" value="$2" temporary="$1.$$"
+    printf '%s\n' "$value" > "$temporary"
+    mv "$temporary" "$path"
+}
+
+# Tool Status Dashboard uses this quick producer interface instead of holding
+# its 90-second repair worker open for a multi-minute X scrape. The scheduled,
+# signed app consumes the marker under the normal dispatcher lock.
+if [ "${1:-}" = "--request-ingest" ]; then
+    # Never drop an acknowledged request. If a dispatcher is already running,
+    # it may have passed marker consumption; the next scheduler tick consumes it.
+    atomic_line "$FORCE_REQUEST" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    "$LAUNCHCTL" kickstart "gui/$(id -u)/com.ivo.market.refresh"
+    exit $?
+fi
+
+# Rebuild TODAY's debrief, bypassing the daily stamp. This is the repair path for a debrief
+# that committed but degraded to evidence-only because synthesis failed (2026-07-20). It is
+# deliberately NOT `--force`: the Dashboard only requests this for a session that already
+# produced a debrief, so the calendar gate is known-open and re-running is a true retry of
+# that session rather than the fabrication of a debrief on a non-debrief day.
+if [ "${1:-}" = "--request-debrief" ]; then
+    atomic_line "$FORCE_DEBRIEF_REQUEST" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    "$LAUNCHCTL" kickstart "gui/$(id -u)/com.ivo.market.refresh"
+    exit $?
+fi
+
+if ! mkdir "$LOCK" 2>/dev/null; then
+    owner=""
+    [ -f "$LOCK_PID" ] && owner=$(cat "$LOCK_PID" 2>/dev/null || true)
+    if [[ "$owner" =~ ^[0-9]+$ ]] && kill -0 "$owner" 2>/dev/null; then
+        owner_command=$(ps -p "$owner" -o command= 2>/dev/null || true)
+        if [[ "$owner_command" == *"market-refresh"* ]]; then
+            exit 0
+        fi
+    fi
+    if [ -z "$owner" ]; then
+        # Do not steal the lock between another dispatcher's atomic mkdir and
+        # its pid write. A truly abandoned empty lock becomes reclaimable later.
+        sleep 1
+        [ -f "$LOCK_PID" ] && owner=$(cat "$LOCK_PID" 2>/dev/null || true)
+        lock_mtime=$(/usr/bin/stat -f %m "$LOCK" 2>/dev/null || printf '0')
+        lock_age=$(($(date +%s) - lock_mtime))
+        if [ -z "$owner" ] && [ "$lock_age" -lt 5 ]; then
+            exit 0
+        fi
+    fi
+    # A killed dispatcher used to leave this directory forever, making every
+    # future launch exit 0 without doing work. Reclaim only a proven stale lock.
+    rm -f "$LOCK_PID"
+    rmdir "$LOCK" 2>/dev/null || exit 75
+    mkdir "$LOCK" 2>/dev/null || exit 0
+fi
+printf '%s\n' "$$" > "$LOCK_PID"
+trap 'rm -f "$LOCK_PID"; rmdir "$LOCK" 2>/dev/null || true' EXIT
+
+# Weekly-close quotes are deliberately an isolated probe.  It runs on every dispatcher
+# tick after the dispatcher lock is held, but a missing Market DB, quote lock, network
+# failure, or updater exception must never change ingest/debrief/watchdog success.
+mkdir -p "$LOGS"
+"$PY" "$MARKET/pipeline/position_quotes.py" >> "$LOGS/position_quotes.out" 2>> "$LOGS/position_quotes.err" || true
+
+TODAY=${MARKET_REFRESH_TODAY:-$(date +%Y-%m-%d)}
+NOW=${MARKET_REFRESH_NOW:-$(date +%H%M)}
+# Only one stage can be forced per tick. Consume ONLY the marker for the stage actually
+# forced so a co-pending request survives to the next tick rather than being silently dropped.
+# Debrief wins: it is the narrower repair, and `run.py debrief` runs the adapters first anyway.
+FORCE_STAGE=${MARKET_REFRESH_FORCE_STAGE:-}
+if [ -z "$FORCE_STAGE" ] && [ -f "$FORCE_DEBRIEF_REQUEST" ]; then
+    FORCE_STAGE=debrief
+    /bin/rm -f "$FORCE_DEBRIEF_REQUEST"
+elif [ -z "$FORCE_STAGE" ] && [ -f "$FORCE_REQUEST" ]; then
+    FORCE_STAGE=ingest
+    /bin/rm -f "$FORCE_REQUEST"
+fi
+
+run_stage() { # name after_hhmm cmd...
+    local name="$1" after="$2" stamp rc attempt retry_epoch now_epoch failure_count shift_count delay; shift 2
+    stamp="$STAMPS/$name.$TODAY"
+    [ "$FORCE_STAGE" != "$name" ] && [ "$NOW" -lt "$after" ] && return 0
+    [ "$FORCE_STAGE" != "$name" ] && [ -e "$stamp" ] && return 0
+    retry_epoch="$STATE/$name.next_retry_epoch"
+    if [ "$FORCE_STAGE" != "$name" ] && [ -f "$retry_epoch" ]; then
+        now_epoch=$(date +%s)
+        [ "$(cat "$retry_epoch" 2>/dev/null || printf '0')" -gt "$now_epoch" ] && return 0
+    fi
+
+    attempt=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    atomic_line "$STATE/$name.last_attempt" "$attempt"
+    (cd "$MARKET" && "$@" >> "$LOGS/$name.out" 2>> "$LOGS/$name.err")
+    rc=$?
+    if [ "$rc" -eq 0 ]; then
+        touch "$stamp"
+        atomic_line "$STATE/$name.last_success" "$attempt"
+        /bin/rm -f "$STATE/$name.last_failure"
+        /bin/rm -f "$STATE/$name.failure_count" "$retry_epoch"
+        find "$STAMPS" -name "$name.*" ! -name "$name.$TODAY" -delete
+        return 0
+    fi
+
+    atomic_line "$STATE/$name.last_failure" "$attempt rc=$rc"
+    failure_count=$(cat "$STATE/$name.failure_count" 2>/dev/null || printf '0')
+    [[ "$failure_count" =~ ^[0-9]+$ ]] || failure_count=0
+    failure_count=$((failure_count + 1))
+    shift_count=$((failure_count - 1))
+    [ "$shift_count" -gt 3 ] && shift_count=3
+    delay=$((900 << shift_count))
+    atomic_line "$STATE/$name.failure_count" "$failure_count"
+    atomic_line "$retry_epoch" "$(($(date +%s) + delay))"
+    return "$rc"
+}
+
+if [ "$FORCE_STAGE" = "auth-check" ]; then
+    "$PY" "$MARKET/adapters/x_playwright.py" --check-auth
+    exit $?
+fi
+
+overall_rc=0
+ingest_rc=0
+run_stage ingest   0800 "$PY" "$MARKET/pipeline/run.py" ingest || { ingest_rc=$?; overall_rc=$ingest_rc; }
+# A dashboard-requested ingest is the recovery probe for an overdue debrief: its adapter
+# run establishes whether the missing source data is available again.  Once that probe
+# succeeds, do not leave a same-day debrief waiting for its old exponential-backoff timer.
+# The same-day failure check preserves the calendar gate: it cannot manufacture a debrief
+# on a day that has not already reached the normal debrief path.
+if [ "$FORCE_STAGE" = "ingest" ] && [ "$ingest_rc" -eq 0 ] && \
+        [ -f "$STATE/debrief.last_failure" ] && \
+        /usr/bin/grep -q "^$TODAY" "$STATE/debrief.last_failure"; then
+    FORCE_STAGE=debrief
+fi
+run_stage debrief  1615 "$PY" "$MARKET/pipeline/run.py" debrief || overall_rc=$?
+run_stage watchdog 1710 "$PY" "$MARKET/pipeline/watchdog.py" || overall_rc=$?
+exit "$overall_rc"

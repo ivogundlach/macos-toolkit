@@ -1,0 +1,6 @@
+{
+  "download_reports_as_html": true,
+  "home": "~/.notebooklm",
+  "prefer_explicit_notebook_id": true,
+  "profile": "default"
+}

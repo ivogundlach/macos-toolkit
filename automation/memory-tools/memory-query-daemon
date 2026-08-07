@@ -1,0 +1,552 @@
+#!/usr/bin/env python3
+"""memory-query-daemon — keeps the embedding model warm so search stays fast.
+
+WHY THIS EXISTS. Everything a vector query needs is cheap except getting ready to
+run it. Measured, per process: numpy 39ms, onnxruntime 16ms, tokenizers 5ms, the
+ONNX session 32ms — roughly 95ms of setup to do 10ms of actual work, paid again on
+every single search. No amount of tuning fixes that inside a one-shot process, so
+the process stops being one-shot. Warm, the same query answers in ~15ms.
+
+WHAT IT DELIBERATELY DOES NOT DO. It runs models and returns numbers: embed the
+query and run the vector KNN, or score query/passage pairs with the cross-encoder.
+It never DECIDES an order. The rerank op hands back raw scores and the caller
+fuses them in fusion.py, next to every other ranking decision — so the ordering
+the weekly eval measures is the ordering users get, and there is no second copy
+living in a server free to drift from it. Fusion, output and logging stay in
+memory-semantic-query. The daemon owns exactly the part that needs a 200MB
+scientific-python stack and nothing else. It calls the same fusion.vector_knn
+the CLI does.
+
+HOW IT FAILS. Silently and harmlessly, by design. The client uses a short deadline
+and falls back to its in-process path on ANY problem — not running, still starting,
+wedged, wrong fingerprint, socket removed. A daemon that is down makes search
+slower; it can never make search wrong or make it hang. Nothing here is load
+bearing for correctness.
+
+LIFECYCLE. Started on demand by the client (never installed as a LaunchAgent —
+launchd jobs on this machine hold no TCC grant and a resident 200MB process that
+nobody asked for is worse than a cold start). Single instance via an exclusive
+lock. Exits on idle, on an index rebuilt under a different fingerprint, or if its
+database goes away — so the recovery for almost anything is "let it die".
+
+  memory-query-daemon [--foreground] [--status] [--stop] [--version]
+"""
+import sys, os, json, time, socket, signal, threading, fcntl, errno
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+STATE = Path(os.environ.get(
+    "MEMORY_DAEMON_STATE",
+    str(Path.home() / ".local/state/memory-query-daemon"))).expanduser()
+SOCK = STATE / "sock"
+LOCK = STATE / "daemon.lock"
+LOG = STATE / "daemon.log"
+DB = os.environ.get("SEMANTIC_DB", os.path.expanduser("~/.memory/semantic-index.sqlite"))
+# Announced in every response so the client can tell whether this daemon is
+# serving the index the CLIENT is reading. check_fresh() below only proves this
+# daemon agrees with its OWN index; it says nothing about whose index that is, and
+# a daemon started with a different SEMANTIC_DB binds the same default socket.
+# Resolved exactly as daemon_client.DB is (expanduser then realpath) — the two
+# must not disagree over a symlink.
+IDENTITY_DB = os.path.realpath(os.path.expanduser(DB))
+
+IDLE_EXIT = float(os.environ.get("MEMORY_DAEMON_IDLE", "1800"))   # 30 min
+PROTOCOL = 1
+MAX_REQ = 64 * 1024        # a query is a sentence; anything larger is not one
+MAX_RERANK = int(os.environ.get("MEMORY_RERANK_MAX", "40"))
+
+
+def log(msg):
+    try:
+        STATE.mkdir(parents=True, exist_ok=True)
+        with open(LOG, "a") as fh:
+            fh.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {msg}\n")
+        if LOG.stat().st_size > 1_000_000:
+            os.replace(LOG, str(LOG) + ".1")
+    except Exception:
+        pass
+
+
+class Server:
+    def __init__(self):
+        self.last_used = time.time()
+        self.lock = threading.Lock()
+        self.db = None
+        self.embedder = None
+        self.fp = None
+        self.served = 0
+        # The cross-encoder is loaded lazily and SEPARATELY from the embedder.
+        # It is an accuracy improvement over a working search, so a missing or
+        # broken model must degrade reranking alone — wiring it into load()
+        # would let an 80MB optional download take the vector arm down with it.
+        # Keyed by repo: the query path may fuse several rerankers' orders, and
+        # each is loaded (or found broken) independently of the others.
+        self.ces = {}
+        self.ce_states = {}
+        # Its OWN lock, not self.lock: loading takes ~4s and must not block the
+        # vector KNN, but two concurrent first-rerank requests must not both
+        # load. Without this, four parallel queries loaded four 80MB models.
+        self.ce_lock = threading.Lock()
+
+    # ---- warm state ------------------------------------------------------
+    def load(self):
+        import sqlite3
+        import chunk_store as cs
+        from embedder import Embedder, fingerprint
+        self.fp = fingerprint()
+        # Read-only by preference: this process must never be able to damage the
+        # index, and a reader in WAL mode does not block the builder writing it.
+        #
+        # But mode=ro on a WAL database needs an existing, writable -shm file, and
+        # after a clean build with no other connection open there may not be one —
+        # SQLite then refuses with "unable to open database file". Failing to
+        # start over a hardening measure would be a self-inflicted outage, so fall
+        # back to a normal connection. Nothing in this process ever writes.
+        try:
+            self.db = sqlite3.connect(f"file:{DB}?mode=ro", uri=True,
+                                      check_same_thread=False)
+            self.db.execute("SELECT 1 FROM chunks LIMIT 1").fetchone()
+        except sqlite3.Error:
+            self.db = sqlite3.connect(DB, check_same_thread=False)
+        self.db.execute("PRAGMA busy_timeout=2000")
+        if not cs.load_vec(self.db):
+            raise RuntimeError("sqlite-vec extension failed to load")
+        state, detail = cs.compatibility(self.db)
+        if state != "ok":
+            raise RuntimeError(f"vector index not usable: {state} ({detail})")
+        self.embedder = Embedder()
+        self.embedder.embed_query("warmup")      # pay every startup cost up front
+        self.matrix = None
+        self.qmatrix = None
+        self.load_matrix()
+        log(f"ready fp={self.fp} pid={os.getpid()} "
+            f"matrix={'none' if self.matrix is None else self.matrix.rows}")
+
+    def load_matrix(self):
+        """(Re)open the memory-mapped embedding matrix, or leave it None.
+
+        None is a normal state, not a failure: the vec0 scan answers identically
+        and the only difference is latency, so this is never allowed to raise and
+        never blocks startup. The mapping itself is lazy — nothing is read until a
+        query touches it — so a large matrix costs no startup time and no RSS.
+        """
+        try:
+            import vector_matrix, chunk_store as cs
+            self.matrix = vector_matrix.load(self.db, DB, cs.get_meta)
+        except Exception as e:
+            self.matrix = None
+            log(f"vector matrix unavailable, using vec0 scan: {e}")
+        # Arm D rides the same request. Separate matrix, separate epoch, same
+        # rule: None means the qvec table answers instead, which is slower and
+        # identical, never that the arm is switched off.
+        try:
+            import question_index, chunk_store as cs
+            self.qmatrix = question_index.load(self.db, DB, cs.get_meta)
+        except Exception as e:
+            self.qmatrix = None
+            log(f"question matrix unavailable, using table scan: {e}")
+
+    def ensure_ce(self, repo=None):
+        """Load one cross-encoder once. Returns it, or None if unavailable.
+
+        Keyed by repo because the query path may fuse the orders of SEVERAL
+        rerankers (fusion.RERANK_MODELS): they disagree in useful ways, and a
+        model reloaded per request would cost far more than it wins.
+
+        A failure is recorded per repo and NOT retried: if onnxruntime or the
+        model is missing it will still be missing on the next query, and retrying
+        would pay the import cost on every request forever while still answering
+        None. The state is per repo rather than one flag so that one broken model
+        cannot disable the others.
+        """
+        import embedder
+        repo = repo or embedder.RERANK_REPO
+        if repo in self.ces or self.ce_states.get(repo) == "error":
+            return self.ces.get(repo)
+        with self.ce_lock:
+            if repo in self.ces or self.ce_states.get(repo) == "error":
+                return self.ces.get(repo)   # another thread finished while we waited
+            return self._load_ce(repo)
+
+    def _load_ce(self, repo):
+        try:
+            import embedder
+            # Refuse unless the model is ALREADY on disk. Without this check
+            # fastembed silently starts an 80MB download inside a query: the
+            # client times out at 1.5s, the daemon stays blocked, and every
+            # subsequent query waits on it too. Provisioning is the builder's
+            # job (`memory-vector-build --setup`), never the query path's.
+            # This is also the only thing between a caller-supplied model name
+            # and an arbitrary download, so it must stay a check on local
+            # presence rather than a name allowlist.
+            if embedder.rerank_snapshot_dir(repo) is None:
+                self.ce_states[repo] = "error"
+                log(f"cross-encoder {repo} not downloaded; disabled "
+                    "(run: memory-vector-build --setup)")
+                return None
+            # fastembed looks in its own default cache unless told otherwise,
+            # which is how it missed a model that was sitting right here.
+            os.environ.setdefault("FASTEMBED_CACHE_PATH", str(embedder.MODELS_DIR))
+            from fastembed.rerank.cross_encoder import TextCrossEncoder
+            ce = TextCrossEncoder(model_name=repo)
+            # Warm up at a REALISTIC width. A 1-passage warmup leaves the first
+            # real request paying seconds of lazy setup, which the client's 1.5s
+            # deadline then discards -- and a model that works then looks exactly
+            # like a model that is missing. That mistake cost a whole bake-off:
+            # two rerankers scored precisely the reranking-disabled baseline.
+            list(ce.rerank("warmup", ["warmup passage"] * 20))
+            self.ces[repo], self.ce_states[repo] = ce, "ok"
+            log(f"cross-encoder ready ({repo})")
+        except Exception as e:
+            self.ce_states[repo] = "error"
+            log(f"cross-encoder {repo} unavailable, disabled: {e}")
+        return self.ces.get(repo)
+
+    @property
+    def ce_state(self):
+        """Summary for `ping`, preserving the existing telemetry contract."""
+        if not self.ce_states:
+            return "cold"
+        if any(v == "ok" for v in self.ce_states.values()):
+            return "ok" if all(v == "ok" for v in self.ce_states.values()) else "partial"
+        return "error"
+
+    def check_fresh(self):
+        """Exit rather than serve vectors from an index we no longer match.
+
+        A rebuild under a new model or new chunk sizes changes the fingerprint. A
+        daemon that kept answering across that boundary would compare query
+        vectors against passage vectors from a different model — which does not
+        error, it just quietly returns nonsense. Dying is the correct response.
+        """
+        import chunk_store as cs
+        stamped = cs.get_meta(self.db, "embed_fingerprint")
+        if stamped != self.fp:
+            log(f"fingerprint changed ({stamped!r} != {self.fp!r}); exiting")
+            return False
+        return True
+
+    # ---- request handling ------------------------------------------------
+    def handle(self, req):
+        """Answer one request, stamping this daemon's identity on every reply.
+
+        Stamped here rather than at each `return` so a later op cannot ship
+        without it. An unstamped reply is refused by the client, which would look
+        like the vector arm going quietly dead — the exact failure this whole
+        mechanism exists to make impossible.
+        """
+        resp = self._dispatch(req)
+        resp.setdefault("db", IDENTITY_DB)
+        return resp
+
+    def _dispatch(self, req):
+        if req.get("v") != PROTOCOL:
+            return {"ok": False, "err": f"protocol {req.get('v')} != {PROTOCOL}"}
+        op = req.get("op", "knn")
+        if op == "ping":
+            return {"ok": True, "fp": self.fp, "db": IDENTITY_DB, "served": self.served,
+                    "pid": os.getpid(), "uptime": int(time.time() - START),
+                    "ce": self.ce_state}
+        if op not in ("knn", "rerank"):
+            return {"ok": False, "err": f"unknown op {op!r}"}
+        q = req.get("q")
+        if not isinstance(q, str) or not q.strip():
+            return {"ok": False, "err": "empty query"}
+        if op == "rerank":
+            return self.do_rerank(q, req.get("passages"), req.get("model"))
+        root = req.get("root")
+        if root is not None and not isinstance(root, str):
+            return {"ok": False, "err": "root must be a string"}
+        # Serialized: one ONNX session and one sqlite connection, and queries are
+        # ~15ms. A lock is simpler than a pool and cannot interleave two runs.
+        with self.lock:
+            if not self.check_fresh():
+                os.kill(os.getpid(), signal.SIGTERM)
+                return {"ok": False, "err": "index fingerprint changed"}
+            import fusion, chunk_store as cs
+            # Cheap per-request check (one meta read) rather than per-startup: an
+            # incremental build adds vectors without touching the fingerprint, so
+            # a daemon that validated only at startup would keep answering from a
+            # matrix missing everything indexed since — correct-looking results
+            # with a hole in them, which is worse than being slow. On a bump the
+            # matrix is dropped immediately and reloaded, so the window where the
+            # slower path answers is one query, not one daemon lifetime.
+            if self.matrix is not None and not self.matrix.revalidate(self.db, cs.get_meta):
+                log("vector matrix superseded by a newer index; reloading")
+                self.load_matrix()
+            if (self.qmatrix is not None
+                    and not self.qmatrix.revalidate(self.db, cs.get_meta)):
+                log("question matrix superseded by a newer index; reloading")
+                self.load_matrix()
+            qv = self.embedder.embed_query(q)
+            rows = fusion.vector_knn(self.db, qv, root, matrix=self.matrix)
+            # Same vector, second product. Reusing the embedding is the whole
+            # reason this arm is nearly free: embedding the query is ~8ms and the
+            # gemv over 14k questions is ~4ms, so serving D here rather than in a
+            # second round trip is the difference between a rounding error and a
+            # doubled query cost. Never fatal -- arm D is additive evidence, and
+            # a query that loses it ranks exactly as it did before D existed.
+            try:
+                qrows = fusion.question_knn(self.db, qv, root, matrix=self.qmatrix)
+            except Exception as e:
+                log(f"question arm failed: {e}")
+                qrows = []
+            self.served += 1
+            self.last_used = time.time()
+        return {"ok": True, "fp": self.fp, "rows": [list(r) for r in rows],
+                "qrows": [list(r) for r in qrows]}
+
+    def do_rerank(self, q, passages, model=None):
+        """Score each passage against the query. Ordering is the CALLER's job.
+
+        This returns raw scores rather than a sorted list on purpose: the fusion
+        that turns them into an order lives in fusion.py alongside every other
+        ranking decision, and a second copy here would be free to drift out of
+        agreement with the one the eval measures.
+        """
+        if not isinstance(passages, list) or not passages:
+            return {"ok": False, "err": "passages must be a non-empty list"}
+        if len(passages) > MAX_RERANK:
+            return {"ok": False, "err": f"too many passages ({len(passages)})"}
+        if not all(isinstance(p, str) for p in passages):
+            return {"ok": False, "err": "passages must be strings"}
+        if model is not None and not isinstance(model, str):
+            return {"ok": False, "err": "model must be a string"}
+        ce = self.ensure_ce(model)
+        if ce is None:
+            state = self.ce_states.get(model or "", self.ce_state)
+            return {"ok": False, "err": f"cross-encoder {state}"}
+        with self.lock:
+            scores = [float(s) for s in ce.rerank(q, passages)]
+            self.served += 1
+            self.last_used = time.time()
+        # Echoed so the caller can never attribute one model's scores to another
+        # when it is fusing several orders in the same query.
+        return {"ok": True, "scores": scores, "model": model}
+
+    def serve_one(self, conn):
+        try:
+            conn.settimeout(5.0)
+            buf = b""
+            while b"\n" not in buf:
+                chunk = conn.recv(4096)
+                if not chunk:
+                    return
+                buf += chunk
+                if len(buf) > MAX_REQ:
+                    conn.sendall(b'{"ok":false,"err":"request too large"}\n')
+                    return
+            try:
+                req = json.loads(buf.split(b"\n", 1)[0].decode("utf-8"))
+            except Exception as e:
+                conn.sendall(json.dumps({"ok": False, "err": f"bad json: {e}"}).encode() + b"\n")
+                return
+            try:
+                resp = self.handle(req)
+            except Exception as e:
+                log(f"request failed: {e!r}")
+                resp = {"ok": False, "err": str(e)}
+            conn.sendall(json.dumps(resp).encode("utf-8") + b"\n")
+        except (socket.timeout, OSError):
+            pass
+        finally:
+            try:
+                conn.close()
+            except OSError:
+                pass
+
+    def run(self, sock):
+        while True:
+            sock.settimeout(30.0)
+            try:
+                conn, _ = sock.accept()
+            except socket.timeout:
+                if time.time() - self.last_used > IDLE_EXIT:
+                    log(f"idle {IDLE_EXIT:.0f}s; exiting after {self.served} queries")
+                    return
+                if not os.path.exists(DB):
+                    log("database is gone; exiting")
+                    return
+                # If our socket file was replaced or removed we are unreachable —
+                # a new daemon owns the path now. Do not linger holding the lock.
+                try:
+                    if SOCK.stat().st_ino != self.sock_ino:
+                        log("socket replaced; exiting")
+                        return
+                except OSError:
+                    log("socket removed; exiting")
+                    return
+                continue
+            threading.Thread(target=self.serve_one, args=(conn,), daemon=True).start()
+
+
+START = time.time()
+
+
+def acquire_lock():
+    """Exclusive, so a spawn race can never leave two daemons on one socket."""
+    STATE.mkdir(parents=True, exist_ok=True)
+    os.chmod(STATE, 0o700)
+    fh = open(LOCK, "a+")
+    try:
+        fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError as e:
+        if e.errno in (errno.EAGAIN, errno.EACCES):
+            return None
+        raise
+    fh.seek(0); fh.truncate(); fh.write(str(os.getpid())); fh.flush()
+    return fh
+
+
+def bind_socket():
+    """Bind to a temp path then rename into place, so a client never sees a
+    half-built socket and a crashed predecessor's stale file cannot block us."""
+    tmp = SOCK.with_suffix(f".{os.getpid()}")
+    for p in (tmp,):
+        try:
+            p.unlink()
+        except OSError:
+            pass
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.bind(str(tmp))
+    os.chmod(tmp, 0o600)
+    s.listen(16)
+    os.replace(tmp, SOCK)
+    return s
+
+
+def status():
+    from daemon_client import request
+    r = request({"v": PROTOCOL, "op": "ping"}, timeout=2.0)
+    return r or {"ok": False, "err": "not running"}
+
+
+QUERY_LOG = Path(os.environ.get(
+    "MEMORY_QUERY_LOG_PATH",
+    str(Path.home() / ".local/state/memory-query-log/queries.jsonl")))
+SERVING_WINDOW = int(os.environ.get("MEMORY_DAEMON_SERVING_WINDOW", "20"))
+
+
+def serving_check():
+    """0 if the daemon is doing its job, 1 if it has stopped serving entirely.
+
+    Reads the `vec` field memory-semantic-query records on every query. Judges the
+    LAST `SERVING_WINDOW` queries that actually wanted a vector arm, ignoring runs
+    with hybrid switched off and old records written before this field existed.
+    Silent on a small sample: a handful of misses is a cold daemon, which is
+    normal. A full window without a single daemon-served query is not.
+    """
+    try:
+        with open(QUERY_LOG, "r") as fh:
+            lines = fh.readlines()[-500:]
+    except OSError:
+        print("  ok: no query log yet (nothing has searched)")
+        return 0
+    vias = []
+    for ln in lines:
+        try:
+            v = json.loads(ln).get("vec")
+        except Exception:
+            continue
+        # `foreign` belongs in this list, not outside it. It means a daemon on
+        # SOMEONE ELSE'S index held the socket and its answer was refused: the
+        # query wanted a vector arm and did not get one, which is exactly what
+        # this window measures. Left out, a permanently squatted socket would
+        # record nothing countable, the sample would stay "too small to judge"
+        # forever, and the one check built to notice a silently one-armed search
+        # would be silent about the loudest way it can happen.
+        if v in ("daemon", "in-process", "none", "foreign"):
+            vias.append(v)
+    window = vias[-SERVING_WINDOW:]
+    # Reported before the sample-size gate: one foreign reply is already a
+    # misconfiguration with a specific fix, and it must not have to wait for a
+    # full window to be mentioned.
+    foreign = window.count("foreign")
+    if foreign:
+        print(f"  WARN: {foreign}/{len(window)} recent queries were answered by a "
+              f"daemon serving a DIFFERENT index and refused -- check for a stray "
+              f"daemon started with another SEMANTIC_DB (memory-query-daemon --stop)",
+              file=sys.stderr)
+    if len(window) < SERVING_WINDOW:
+        print(f"  ok: {window.count('daemon')}/{len(window)} recent queries "
+              f"served (sample too small to judge)")
+        return 0
+    served = window.count("daemon") + window.count("in-process")
+    if served == 0:
+        print(f"  FAIL: none of the last {len(window)} queries got a vector arm "
+              f"-- search is running on keyword arms only, at reduced recall",
+              file=sys.stderr)
+        return 1
+    print(f"  ok: {served}/{len(window)} recent queries got a vector arm")
+    return 0
+
+
+def main():
+    args = sys.argv[1:]
+    if "--help" in args or "-h" in args:
+        print(__doc__); raise SystemExit(0)
+    if "--status" in args:
+        print(json.dumps(status(), indent=2))
+        raise SystemExit(0)
+    if "--version" in args or "-V" in args:
+        print("memory-query-daemon (warm embedder for memory-semantic-query)")
+        st = status()
+        if st.get("ok"):
+            print(f"  ok: running pid {st['pid']}, {st['served']} queries, "
+                  f"up {st['uptime']}s")
+        else:
+            # Not running is HEALTHY. It starts on demand and exits when idle, so
+            # "down" is its normal resting state and search works without it.
+            print("  ok: not running (starts on demand; search falls back meanwhile)")
+        # Liveness is not the interesting question — the daemon is SUPPOSED to be
+        # down most of the time. The interesting question is whether it has been
+        # serving. A daemon that can never start (broken venv, missing extension,
+        # fingerprint drift) leaves every search one-armed, and nothing else would
+        # notice: the weekly recall eval still passes on keyword arms alone. So
+        # check the outcome recorded by the queries themselves.
+        raise SystemExit(serving_check())
+    if "--stop" in args:
+        try:
+            pid = int(LOCK.read_text().strip())
+            os.kill(pid, signal.SIGTERM)
+            print(f"stopped {pid}")
+        except Exception as e:
+            print(f"not running ({e})")
+        raise SystemExit(0)
+
+    fh = acquire_lock()
+    if fh is None:
+        print("another daemon already holds the lock", file=sys.stderr)
+        raise SystemExit(0)
+
+    srv = Server()
+    try:
+        srv.load()
+    except Exception as e:
+        log(f"startup failed: {e!r}")
+        print(f"daemon startup failed: {e}", file=sys.stderr)
+        raise SystemExit(1)
+
+    sock = bind_socket()
+    srv.sock_ino = SOCK.stat().st_ino
+
+    def bye(*_a):
+        log("terminated")
+        try:
+            if SOCK.stat().st_ino == srv.sock_ino:
+                SOCK.unlink()
+        except OSError:
+            pass
+        os._exit(0)
+
+    signal.signal(signal.SIGTERM, bye)
+    signal.signal(signal.SIGINT, bye)
+    try:
+        srv.run(sock)
+    finally:
+        bye()
+
+
+if __name__ == "__main__":
+    main()

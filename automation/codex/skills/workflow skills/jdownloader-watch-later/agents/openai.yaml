@@ -1,0 +1,4 @@
+interface:
+  display_name: "JDownloader YouTube Playlists"
+  short_description: "Download YouTube playlists through JDownloader"
+  default_prompt: "Use $jdownloader-watch-later to download my AI playlist, start it in JDownloader, and quit the app when downloads finish."

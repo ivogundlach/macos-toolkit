@@ -1,0 +1,5 @@
+{
+  "checkpoint_durable_answers": true,
+  "default_max_questions": 8,
+  "question_style": "one_at_a_time"
+}

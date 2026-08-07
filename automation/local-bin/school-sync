@@ -1,0 +1,16 @@
+#!/bin/zsh
+# UAH School Sync wrapper.
+# sync / import-semester run through SchoolSync.app so EventKit permissions
+# always attach to the same TCC identity; other commands run directly.
+SYNC=/Users/YOUR_USERNAME/School/sync
+case "$1" in
+  sync|import-semester|verify|selftest)
+    open -W -a "$SYNC/SchoolSync.app" --args "$@"
+    RC=$(cat "$SYNC/logs/.last-exit" 2>/dev/null || echo 1)
+    cat "$SYNC/logs/last-run.txt" 2>/dev/null | grep -v -e NotOpenSSL -e warnings.warn
+    exit "$RC"
+    ;;
+  *)
+    exec "$SYNC/.venv/bin/python" "$SYNC/school_sync.py" "$@"
+    ;;
+esac

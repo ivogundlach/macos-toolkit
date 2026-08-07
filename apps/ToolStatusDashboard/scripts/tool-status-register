@@ -1,0 +1,164 @@
+#!/usr/bin/env python3
+# SOURCE OF TRUTH. build.sh copies this file into
+# "/Applications/Tool Dashboard.app" (or ~/.local/bin). The deployed copy is a
+# build artifact: edit THIS file, then run Projects/ToolStatusDashboard/build.sh.
+# Editing the deployed copy, or editing here without rebuilding, makes the dashboard
+# report stale findings. The "Deployed source drift" check flags that divergence.
+"""tool-status-register — register a CLI/script with the Tool Dashboard.
+
+Idempotent single entry point for installers and agents. The dashboard's
+background scan also auto-registers anything executable in ~/.local/bin, but
+entries added here get a real health check and fail loudly when broken.
+
+Usage:
+  tool-status-register add <binary> [--name NAME] [--check exists|version|help] [--timeout 5..30]
+  tool-status-register remove <binary>
+  tool-status-register list
+"""
+
+from __future__ import annotations
+
+import argparse
+import datetime as dt
+import fcntl
+import json
+import os
+import shutil
+import sys
+import tempfile
+from pathlib import Path
+
+HOME = Path.home()
+STATE = Path(os.environ.get("TOOL_STATUS_STATE", HOME / ".local/state/tool-status-dashboard"))
+REGISTRY = STATE / "registry.json"
+LOCK = STATE / "registry.lock"
+LOCAL_BIN = HOME / ".local/bin"
+PATH = f"{HOME}/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+CHECKS = ("exists", "version", "help")
+MIN_TIMEOUT_SECONDS = 5
+MAX_TIMEOUT_SECONDS = 30
+
+
+def iso() -> str:
+    return dt.datetime.now().astimezone().isoformat(timespec="seconds")
+
+
+def resolvable(binary: str) -> bool:
+    if shutil.which(binary, path=PATH):
+        return True
+    candidate = LOCAL_BIN / binary
+    try:
+        return candidate.is_file() and os.access(candidate, os.X_OK)
+    except OSError:
+        return False
+
+
+def atomic_write(payload: dict) -> None:
+    REGISTRY.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=REGISTRY.parent, delete=False) as handle:
+        json.dump(payload, handle, indent=2, sort_keys=True)
+        handle.write("\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+        temporary = Path(handle.name)
+    os.replace(temporary, REGISTRY)
+
+
+def load() -> dict:
+    try:
+        data = json.loads(REGISTRY.read_text(encoding="utf-8"))
+        if isinstance(data, dict) and isinstance(data.get("tools"), list):
+            return data
+    except (OSError, json.JSONDecodeError):
+        pass
+    return {"schemaVersion": 1, "tools": []}
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(prog="tool-status-register")
+    sub = parser.add_subparsers(dest="command", required=True)
+    add = sub.add_parser("add")
+    add.add_argument("binary")
+    add.add_argument("--name")
+    add.add_argument("--check", choices=CHECKS, default="version")
+    add.add_argument("--timeout", type=int)
+    remove = sub.add_parser("remove")
+    remove.add_argument("binary")
+    sub.add_parser("list")
+    args = parser.parse_args()
+
+    if args.command != "list" and ("/" in args.binary or not args.binary):
+        print("binary must be a bare command name (no slashes)", file=sys.stderr)
+        return 2
+    if args.command == "add" and args.timeout is not None:
+        if args.check == "exists":
+            print("--timeout applies only to version/help checks", file=sys.stderr)
+            return 2
+        if not MIN_TIMEOUT_SECONDS <= args.timeout <= MAX_TIMEOUT_SECONDS:
+            print(
+                f"--timeout must be between {MIN_TIMEOUT_SECONDS} and {MAX_TIMEOUT_SECONDS} seconds",
+                file=sys.stderr,
+            )
+            return 2
+
+    STATE.mkdir(parents=True, exist_ok=True)
+    lock = LOCK.open("a+")
+    try:
+        fcntl.lockf(lock.fileno(), fcntl.LOCK_EX)
+        data = load()
+        tools = data["tools"]
+        if args.command == "list":
+            json.dump(data, sys.stdout, indent=2, sort_keys=True)
+            print()
+            return 0
+        if args.command == "remove":
+            kept = [t for t in tools if not (isinstance(t, dict) and t.get("binary") == args.binary)]
+            if len(kept) == len(tools):
+                print(f"{args.binary}: not registered")
+                return 0
+            data["tools"] = kept
+            atomic_write(data)
+            print(f"{args.binary}: removed")
+            return 0
+        if not resolvable(args.binary):
+            print(f"{args.binary}: not found on PATH or in ~/.local/bin; install it first", file=sys.stderr)
+            return 1
+        entry = {
+            "name": args.name or args.binary,
+            "binary": args.binary,
+            "check": args.check,
+            "category": "Custom CLI",
+            "addedBy": "agent",
+            "addedAt": iso(),
+        }
+        for index, existing in enumerate(tools):
+            if isinstance(existing, dict) and existing.get("binary") == args.binary:
+                entry["addedAt"] = existing.get("addedAt") or entry["addedAt"]
+                existing_timeout = existing.get("timeoutSeconds")
+                if args.timeout is not None:
+                    entry["timeoutSeconds"] = args.timeout
+                elif (
+                    isinstance(existing_timeout, int)
+                    and not isinstance(existing_timeout, bool)
+                    and MIN_TIMEOUT_SECONDS <= existing_timeout <= MAX_TIMEOUT_SECONDS
+                ):
+                    entry["timeoutSeconds"] = existing_timeout
+                tools[index] = entry
+                atomic_write(data)
+                timeout_note = f", timeout={entry['timeoutSeconds']}s" if "timeoutSeconds" in entry else ""
+                print(f"{args.binary}: updated (check={args.check}{timeout_note})")
+                return 0
+        if args.timeout is not None:
+            entry["timeoutSeconds"] = args.timeout
+        tools.append(entry)
+        atomic_write(data)
+        timeout_note = f", timeout={entry['timeoutSeconds']}s" if "timeoutSeconds" in entry else ""
+        print(f"{args.binary}: registered (check={args.check}{timeout_note})")
+        return 0
+    finally:
+        fcntl.lockf(lock.fileno(), fcntl.LOCK_UN)
+        lock.close()
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

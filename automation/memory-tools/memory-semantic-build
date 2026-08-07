@@ -1,0 +1,416 @@
+#!/usr/bin/env bash
+# memory-semantic-build — rebuild the semantic search index (~/.memory/semantic-index.sqlite)
+# across the folders Ivo frequents (semantic-folders.txt). Queried by memory-semantic-query.
+#
+# Deterministic orchestration via semantic-agy-build.py; agy = Gemini Flash Low enriches
+# changed files only (hash-cache). Holds a lock so scheduled and manual runs don't race.
+#
+#   usage: memory-semantic-build [--semantic-only | --preflight]
+#          memory-semantic-build --only PATH     (index just the root containing PATH)
+#          (no flag and --retry are aliases for the full semantic pass)
+#
+# --only is the freshness path: a new capture is otherwise invisible to search
+# until the next daily build, i.e. up to 24h of a memory the system has but
+# cannot find. It reuses the same lock, so it never races a full build; it does
+# NOT write the status file or run the global prune, because a single-root pass
+# is not evidence about the other roots.
+#   env:   MEMORY_SEMANTIC_AGY_MODEL  (default "Gemini 3.5 Flash (Low)")
+#
+# RESILIENCE: an online + agy-auth precheck runs BEFORE any build, so an offline machine
+# or an expired agy login DEFERS in seconds (and the builder keeps the prior index on
+# failure rather than overwriting with a partial). A deferred run exits 75 so the
+# LaunchAgent's semantic-index-retry wrapper retries inside the same scheduled job.
+set -uo pipefail
+export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+export MEMORY_SEMANTIC_AGY_MODEL="${MEMORY_SEMANTIC_AGY_MODEL:-Gemini 3.5 Flash (Low)}"
+
+PHASE=semantic
+PREFLIGHT=0
+ONLY=""
+DO_VERSION=0
+case "${1:-}" in
+  --semantic-only|--retry|"") ;;
+  --version|-V)    DO_VERSION=1 ;;
+  --preflight)     PREFLIGHT=1 ;;
+  --only)
+    ONLY="${2:?--only needs a path}"
+    [ -e "$ONLY" ] || { echo "memory-semantic-build: no such path: $ONLY" >&2; exit 2; }
+    ONLY="$(cd "$(dirname "$ONLY")" && pwd)/$(basename "$ONLY")"
+    ;;
+  *) echo "usage: memory-semantic-build [--semantic-only|--preflight|--only PATH]" >&2; exit 2 ;;
+esac
+
+GLOBAL_ROOT="${GLOBAL_MEMORY_ROOT:-$HOME/.memory}"
+ROOTS_FILE="${MEMORY_SEMANTIC_ROOTS:-$GLOBAL_ROOT/semantic-folders.txt}"
+STATUS="$GLOBAL_ROOT/semantic-index-status.json"
+LOCK="$GLOBAL_ROOT/.semantic-agy.lock"
+LOG_DIR="$GLOBAL_ROOT/logs"
+AUTH_NEEDED="$GLOBAL_ROOT/.semantic-agy-auth-needed"
+AUTH_NOTIFIED="$GLOBAL_ROOT/.semantic-agy-auth-notified"
+NO_BROWSER_BIN="$GLOBAL_ROOT/.semantic-no-browser-bin"
+
+SEMANTIC_INDEX="${MEMORY_SEMANTIC_INDEX:-1}"
+SEM_BUILDER="${MEMORY_SEMANTIC_BUILDER:-$HOME/.memory/tools/semantic-agy-build.py}"
+SEMANTIC_DB="${SEMANTIC_DB:-$HOME/.memory/semantic-index.sqlite}"
+# Installed-tool inventory generator (Homebrew + PATH); refreshed before semantic
+# indexing so the ~/.local/state/system-inventory root is current. Local-only (no agy/network).
+SEM_MANIFEST="${MEMORY_SEMANTIC_MANIFEST:-$HOME/.memory/tools/system-manifest-build}"
+
+DEFER_RC="${MEMORY_SEMANTIC_DEFER_RC:-75}"
+
+log() { printf '%s memory-semantic-build: %s\n' "$(date +%Y-%m-%dT%H:%M:%S%z)" "$*"; }
+
+# ---- health probe ------------------------------------------------------------
+# This job had NO health card, which is the only reason a stale lock could stop
+# the nightly build for three consecutive nights without anyone noticing: every
+# skip exited 0 with a reassuring log line. A scheduled job that is able to do
+# nothing successfully needs a check on its OUTPUT, not on whether it ran.
+if [ "$DO_VERSION" = "1" ]; then
+  echo "memory-semantic-build (agy-enriched semantic index + chunk/vector pass)"
+  probe_rc=0
+  # An orphaned lock is NOT a failure on its own. Since locks became reclaimable
+  # the next run takes it back automatically and logs a loud WARN, so the only
+  # thing that makes an orphan matter is whether the index actually went stale —
+  # which the check below already measures. Reporting it as a fault would raise a
+  # card every time the Mac slept through a build, and a health check that cries
+  # wolf on a self-healing condition is the fastest way to train someone to
+  # ignore the one that isn't.
+  orphan_note=""
+  if [ -L "$LOCK" ] || [ -d "$LOCK" ]; then
+    lp="$(readlink "$LOCK" 2>/dev/null || cat "$LOCK/pid" 2>/dev/null)"
+    if [ -z "$lp" ] || ! kill -0 "$lp" 2>/dev/null; then
+      orphan_note=" (orphaned lock from pid ${lp:-unknown}; next run reclaims it)"
+    fi
+  fi
+  age_h="$(SEMANTIC_DB="$SEMANTIC_DB" python3 -c '
+import os, sqlite3, time
+try:
+    db = sqlite3.connect(os.environ["SEMANTIC_DB"])
+    n = db.execute("SELECT MAX(CAST(indexed_at AS INTEGER)) FROM docs").fetchone()[0]
+    print(int((time.time() - int(n)) / 3600) if n else -1)
+except Exception:
+    print(-1)
+' 2>/dev/null)"
+  case "$age_h" in
+    ''|*[!0-9-]*) echo "  FAIL: cannot read index freshness from $SEMANTIC_DB" >&2; probe_rc=1 ;;
+    -*)           echo "  FAIL: cannot read index freshness from $SEMANTIC_DB" >&2; probe_rc=1 ;;
+    *)
+      if [ "$age_h" -gt "${MEMORY_INDEX_STALE_HOURS:-60}" ]; then
+        # Deliberately checks the INDEX, not the scheduler. The scheduler was
+        # perfectly healthy on all three of the nights it produced nothing.
+        echo "  FAIL: index has not been updated in ${age_h}h (daily cadence)${orphan_note}" >&2
+        probe_rc=1
+      else
+        echo "  ok: index updated ${age_h}h ago${orphan_note}"
+      fi ;;
+  esac
+  exit "$probe_rc"
+fi
+notify_auth_needed() {
+  if command -v semantic-agy-notify >/dev/null 2>&1; then
+    semantic-agy-notify "$PHASE" >/dev/null 2>&1 &
+  else
+    osascript -e 'display alert "Semantic index AGY login needed" message "Run ~/.local/bin/semantic-agy-reauth in Terminal; the scheduled index build will retry later."' >/dev/null 2>&1 &
+  fi
+}
+
+install_no_browser_guard() {
+  mkdir -p "$NO_BROWSER_BIN"
+  cat > "$NO_BROWSER_BIN/open" <<'SH'
+#!/bin/sh
+echo "blocked browser opener during scheduled Semantic index AGY run: open $*" >&2
+exit 126
+SH
+  chmod +x "$NO_BROWSER_BIN/open"
+  export PATH="$NO_BROWSER_BIN:$PATH"
+  export BROWSER=/usr/bin/false
+}
+
+# tag a root for the db: basename, but disambiguate ~/.local/bin from ~/bin (both
+# basename "bin") so they don't share a semantic root_tag.
+# NB: trailing \n matters — tag_for is used line-per-root in the prune pipeline.
+tag_for() { case "$1" in */.local/bin) printf 'local-bin\n' ;; *) basename "$1" ;; esac; }
+
+# ---- readiness prechecks ----------------------------------------------------
+online() { curl -fsS -m 6 -o /dev/null https://www.gstatic.com/generate_204 2>/dev/null; }
+
+# agy auth probe -> CLASSIFIES the outcome, because a real OAuth logout and a
+# transient Gemini hiccup are otherwise indistinguishable (both exit nonzero; a
+# healthy `agy -p ok` can itself time out with empty output — observed live).
+# Only a POSITIVE logout signal (agy prints its OAuth login URL in captured output
+# or a fresh per-probe CLI log) is treated as logged out; anything else that isn't
+# a clean answer is transient and self-heals on the next tick. NB: match ONLY the
+# user-facing login URL/prompt — NOT agy's internal "You are not logged into
+# Antigravity" glog line, which prints on healthy runs too and would otherwise
+# cause false logouts.
+# Echoes exactly one of: ok | logged_out | transient
+AUTH_LOGOUT_RE='Authentication required|Please visit the URL to log ?in|accounts\.google\.com/o/oauth2'
+_agy_probe_print() {   # run `agy -p ok`; sets globals _P_OUT (tmpfile) and _P_RC
+  local p w
+  _P_MARK=""
+  _P_OUT="$(mktemp 2>/dev/null)" || { _P_OUT=/dev/null; _P_RC=1; return; }
+  _P_MARK="$(mktemp 2>/dev/null)" || _P_MARK=""
+  [ -n "$_P_MARK" ] && : > "$_P_MARK"
+  ( BROWSER=/usr/bin/false agy -p "ok" --print-timeout 30s </dev/null >"$_P_OUT" 2>&1 ) & p=$!
+  # Watchdog stdout MUST be detached (>/dev/null): agy_auth_state runs inside $(...)
+  # command substitution, and an inherited pipe FD on this backgrounded sleep would
+  # hold the capture open for the full 45s even after the probe returns instantly.
+  ( sleep 45; kill -KILL "$p" 2>/dev/null ) >/dev/null 2>&1 & w=$!
+  wait "$p" 2>/dev/null; _P_RC=$?
+  kill "$w" 2>/dev/null; wait "$w" 2>/dev/null
+}
+_agy_probe_log_has_logout() {
+  local marker="$1" log_dir="$HOME/.gemini/antigravity-cli/log" f
+  [ -n "$marker" ] && [ -d "$log_dir" ] || return 1
+  while IFS= read -r -d '' f; do
+    grep -qiE "$AUTH_LOGOUT_RE" "$f" 2>/dev/null && return 0
+  done < <(find "$log_dir" -type f -name 'cli-*.log' -newer "$marker" -print0 2>/dev/null)
+  return 1
+}
+_agy_models_ok() {     # fast (~3s), inference-free liveness check: rc0 + lists models
+  local out p w rc
+  out="$(mktemp 2>/dev/null)" || return 1
+  ( BROWSER=/usr/bin/false agy models </dev/null >"$out" 2>&1 ) & p=$!
+  ( sleep 40; kill -KILL "$p" 2>/dev/null ) >/dev/null 2>&1 & w=$!
+  wait "$p" 2>/dev/null; rc=$?
+  kill "$w" 2>/dev/null; wait "$w" 2>/dev/null
+  { [ "$rc" -eq 0 ] && grep -qiE 'Gemini|Claude|GPT' "$out" 2>/dev/null; }; rc=$?
+  rm -f "$out"; return "$rc"
+}
+agy_auth_state() {
+  _agy_probe_print
+  if grep -qiE "$AUTH_LOGOUT_RE" "$_P_OUT" 2>/dev/null; then rm -f "$_P_OUT" "$_P_MARK"; echo logged_out; return 0; fi
+  if [ "$_P_RC" -eq 0 ] && [ -s "$_P_OUT" ]; then rm -f "$_P_OUT" "$_P_MARK"; echo ok; return 0; fi
+  # Some logged-out agy builds write the OAuth URL only to their fresh CLI log
+  # while captured stdout/stderr says just "timeout waiting for response".
+  # Still match only the URL/login prompt, not the noisy internal glog phrase.
+  if _agy_probe_log_has_logout "$_P_MARK"; then rm -f "$_P_OUT" "$_P_MARK"; echo logged_out; return 0; fi
+  rm -f "$_P_OUT" "$_P_MARK"
+  # No logout URL, but no clean answer either (slow/empty/other): a healthy login
+  # still answers `agy models` cheaply -> proceed; otherwise it is a transient blip.
+  if _agy_models_ok; then echo ok; else echo transient; fi
+  return 0
+}
+
+if [ "$PREFLIGHT" = "0" ]; then
+  command -v agy >/dev/null || { log "ERROR: agy CLI not found"; exit 127; }
+fi
+[ -f "$SEM_BUILDER" ] || { log "ERROR: semantic builder not found at $SEM_BUILDER"; exit 1; }
+
+# single-run lock — scheduled and manual runs must not race on cache/db.
+#
+# mkdir is the right atomic primitive, but a directory OUTLIVES the process that
+# created it: SIGKILL, a panic or a reboot leaves it behind forever, and every
+# later run then exits 0 saying "another run holds the lock". That is not
+# hypothetical — a lock orphaned on 2026-07-26 stopped the nightly build for
+# three consecutive nights, and because each skip logged a benign line and exited
+# 0, nothing ever reported a problem. The index simply stopped being updated.
+#
+# So the lock records its OWNER and is reclaimable once that owner is gone.
+# The lock is a SYMLINK whose target is the owner's pid, because that publishes
+# the owner in the same atomic syscall that takes the lock. `mkdir` then write-pid
+# is two steps, and a second process landing in between reads an empty pid, judges
+# the lock orphaned, and reclaims a lock a live build is holding — two concurrent
+# builders on one sqlite index, which is worse than the stall this replaced.
+lock_exists() { [ -L "$LOCK" ] || [ -d "$LOCK" ]; }
+lock_pid() { readlink "$LOCK" 2>/dev/null || cat "$LOCK/pid" 2>/dev/null; }
+lock_owner_alive() {
+  local pid; pid="$(lock_pid)"
+  [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null
+}
+take_lock() { ln -s "$$" "$LOCK" 2>/dev/null; }
+# Handles the legacy directory form too, so a lock left by an older build still
+# releases. Never `rm -rf` on a path built from a variable.
+release_lock() {
+  if [ -L "$LOCK" ]; then rm -f "$LOCK" 2>/dev/null
+  else rm -f "$LOCK/pid" 2>/dev/null; rmdir "$LOCK" 2>/dev/null || true
+  fi
+}
+
+if ! take_lock; then
+  if lock_owner_alive; then
+    # --only is opportunistic: a full build already running will index this file
+    # anyway, so stepping aside quietly is the correct outcome, not a failure.
+    [ -n "$ONLY" ] && exit 0
+    log "another run holds the lock ($LOCK, pid $(lock_pid)); exiting"; exit 0
+  fi
+  # Orphaned. Reclaim it LOUDLY — recovering in silence would hide a crash that
+  # is worth knowing about, and this failure mode already hid for three days once.
+  log "WARN: reclaiming orphaned lock $LOCK (owner '$(lock_pid)' is not running)"
+  release_lock
+  if ! take_lock; then
+    [ -n "$ONLY" ] && exit 0
+    log "another run took the lock during reclaim; exiting"; exit 0
+  fi
+fi
+trap 'release_lock' EXIT INT TERM
+
+# bound log growth (LaunchAgent appends to these)
+mkdir -p "$LOG_DIR"
+for lf in "$LOG_DIR/semantic-index.launchd.log" "$LOG_DIR/semantic-index.launchd.err"; do
+  [ -f "$lf" ] && [ "$(stat -f%z "$lf" 2>/dev/null || echo 0)" -gt 2000000 ] && : > "$lf"
+done
+
+# Scheduled runs must never open Safari. If AGY needs interactive OAuth, this
+# run must fail closed and notify Ivo to use semantic-agy-reauth in Terminal.
+install_no_browser_guard
+
+# ---- readiness precheck: offline / dead-login -> DEFER fast -----------------
+if [ "$PREFLIGHT" = "0" ] && ! online; then
+  log "OFFLINE: deferring $PHASE build; scheduler wrapper will retry"
+  exit "$DEFER_RC"
+fi
+# Classify auth. A first non-ok result is re-checked once (10s later); 'logged_out'
+# requires BOTH checks to see agy's OAuth login URL, and any 'ok' wins — so a lone
+# stray logout string (e.g. a token-refresh race) degrades to 'transient', not an alarm.
+auth_state=ok
+if [ "$PREFLIGHT" = "0" ]; then auth_state="$(agy_auth_state)"; fi
+if [ "$PREFLIGHT" = "0" ] && [ "$auth_state" != ok ]; then
+  sleep 10
+  auth_state2="$(agy_auth_state)"
+  if [ "$auth_state2" = ok ]; then auth_state=ok
+  elif [ "$auth_state" = logged_out ] && [ "$auth_state2" = logged_out ]; then auth_state=logged_out
+  else auth_state=transient; fi
+fi
+
+if [ "$auth_state" = logged_out ]; then
+  # POSITIVE logout only. Confirm across two ticks before the single notification:
+  # tick 1 records the flag; a later tick still seeing a logout fires exactly one
+  # actionable alert. The flag survives transient ticks in between (only an 'ok'
+  # clears it), so an intermittent logout still eventually notifies.
+  if [ ! -f "$AUTH_NEEDED" ]; then
+    printf '%s phase=%s state=logged_out\n' "$(date +%Y-%m-%dT%H:%M:%S%z)" "$PHASE" > "$AUTH_NEEDED"
+    log "AUTH: agy emitted its OAuth login URL (real logout); flag set — will confirm next tick before notifying"
+  elif [ ! -f "$AUTH_NOTIFIED" ]; then
+    notify_auth_needed
+    touch "$AUTH_NOTIFIED"
+    log "AUTH: logout re-confirmed on a later tick; notified once -> semantic-agy-reauth"
+  fi
+  log "AUTH NOT READY (logged out): deferring; run ~/.local/bin/semantic-agy-reauth"
+  exit "$DEFER_RC"
+elif [ "$auth_state" = transient ]; then
+  # Model overload / slow print / network — NOT a logout. NEVER notify, NEVER flag.
+  # Silent by design; self-heals on the next scheduled run.
+  log "AUTH: transient probe failure (flaky agy/network, no logout signal); deferring silently, self-heals next tick"
+  exit "$DEFER_RC"
+fi
+# auth_state = ok
+[ "$PREFLIGHT" = "1" ] || rm -f "$AUTH_NEEDED" "$AUTH_NOTIFIED"
+
+GPY="$(command -v python3)"
+
+mkdir -p "$GLOBAL_ROOT"; touch "$ROOTS_FILE"
+grep -Fxq "$GLOBAL_ROOT" "$ROOTS_FILE" || printf '%s\n' "$GLOBAL_ROOT" >> "$ROOTS_FILE"
+
+if [ "$PREFLIGHT" = "1" ]; then
+  log "phase: preflight | no writes or agy calls"
+else
+  log "phase: $PHASE | engine: agy ($MEMORY_SEMANTIC_AGY_MODEL)"
+fi
+started="$(date +%Y-%m-%dT%H:%M:%S%z)"
+rc_all=0
+results=""
+add_result() { results="${results:+$results,}$1"; }
+
+# refresh installed-tool inventory before indexing so ~/.local/state/system-inventory is current
+if [ "$PREFLIGHT" = "0" ] && [ "$SEMANTIC_INDEX" = "1" ] && [ -x "$SEM_MANIFEST" ]; then
+  if "$SEM_MANIFEST" >/dev/null 2>&1; then log "system inventory refreshed"
+  else log "WARN: system-manifest-build issue (non-fatal)"; fi
+fi
+
+while IFS= read -r root; do
+  [ -n "$root" ] || continue
+  case "$root" in \#*) continue ;; esac
+  # --only: keep just the root that contains the target path. Longest-prefix is
+  # not needed — nested roots each index their own subtree, so every containing
+  # root is indexed, which is what a nested root means.
+  if [ -n "$ONLY" ]; then case "$ONLY" in "$root"/*|"$root") ;; *) continue ;; esac; fi
+  [ -d "$root" ] || { log "skip (missing): $root"; add_result "$(printf '{"root":"%s","status":"missing"}' "$root")"; continue; }
+  tag="$(tag_for "$root")"
+  sem="skipped"
+
+  if [ "$SEMANTIC_INDEX" = "1" ]; then
+    if SEMANTIC_DB="$SEMANTIC_DB" SEMANTIC_ROOT_TAG="$tag" MEMORY_SEMANTIC_DRY_RUN="$PREFLIGHT" "$GPY" "$SEM_BUILDER" "$root" </dev/null; then sem="ok"; log "semantic index updated: $root"
+    else
+      sem_rc="$?"; sem="failed"; log "WARN: semantic index issue (rc=$sem_rc): $root"
+      [ "$rc_all" -eq 0 ] && rc_all="$sem_rc"
+    fi
+  fi
+
+  add_result "$(printf '{"root":"%s","tag":"%s","semantic":"%s"}' "$root" "$tag" "$sem")"
+done < "$ROOTS_FILE"
+
+# ---- chunk + vector pass -----------------------------------------------------
+# Runs inside the same lock, so it can never race a build or a --only capture.
+# Deliberately AFTER enrichment and deliberately non-fatal: this pass owns a
+# search ACCELERATOR, not the corpus. If embedding breaks, the chunk text is
+# still written, the fingerprint is left unstamped, the vector arm goes dark and
+# search falls back to the keyword arms. Failing the whole build for that would
+# turn a slower search into no index refresh at all.
+# Not silent, though — it logs loudly here, writes
+# ~/.local/state/memory-vector-build/last-run.json, and has its own health probe
+# (memory-vector-build --version) that the Tool Status Dashboard reads.
+VEC_PY="${MEMORY_VENV_PY:-$HOME/.local/share/memory-venv/bin/python}"
+VEC_BUILD="${MEMORY_VECTOR_BUILDER:-$HOME/.memory/tools/memory-vector-build}"
+if [ "$PREFLIGHT" = "0" ] && [ "${MEMORY_VECTOR_INDEX:-1}" = "1" ] \
+   && [ -x "$VEC_PY" ] && [ -f "$VEC_BUILD" ]; then
+  if [ -n "$ONLY" ]; then
+    vec_out="$("$VEC_PY" "$VEC_BUILD" --only "$ONLY" 2>&1)"; vec_rc=$?
+  else
+    vec_out="$("$VEC_PY" "$VEC_BUILD" --full 2>&1)"; vec_rc=$?
+  fi
+  if [ "$vec_rc" -eq 0 ]; then
+    # Summarise the builder's JSON rather than tailing its raw output: a byte
+    # slice cuts mid-token and produces a log line that reads like corruption.
+    log "vector index ok ($(printf '%s' "$vec_out" | python3 -c '
+import sys, json
+raw = sys.stdin.read()
+i = raw.rfind("{")
+try:
+    d = json.loads(raw[i:])
+    print("chunks=%s files=%s new=%s pruned=%s failed=%s state=%s"
+          % (d.get("total_chunks"), d.get("files"), d.get("chunks"),
+             d.get("pruned"), d.get("failed"), d.get("vector_state")))
+except Exception:
+    print("summary unavailable")
+' 2>/dev/null || echo "summary unavailable"))"
+  else
+    log "WARN: vector index pass failed (rc=$vec_rc); search continues on keyword arms"
+    printf '%s\n' "$vec_out" | tail -20 >&2
+  fi
+elif [ "$PREFLIGHT" = "0" ] && [ "${MEMORY_VECTOR_INDEX:-1}" = "1" ]; then
+  log "WARN: vector index skipped (no venv at $VEC_PY or builder missing)"
+fi
+
+# status file for observability (read by the Tool Status Dashboard and memory-semantic-query)
+if [ "$PREFLIGHT" = "0" ] && [ -z "$ONLY" ]; then
+  printf '{"phase":"%s","started":"%s","finished":"%s","overall_rc":%s,"model":"%s","roots":[%s]}\n' \
+    "$PHASE" "$started" "$(date +%Y-%m-%dT%H:%M:%S%z)" "$rc_all" "$MEMORY_SEMANTIC_AGY_MODEL" "$results" > "$STATUS" 2>/dev/null || true
+fi
+
+# Remove semantic tags retired by folder moves (for example .Market -> Market).
+# Per-root stale rows are pruned by semantic-agy-build.py itself.
+if [ "$PREFLIGHT" = "0" ] && [ -z "$ONLY" ] && [ -f "$SEMANTIC_DB" ]; then
+  cur_tags="$(grep -vE '^[[:space:]]*(#|$)' "$ROOTS_FILE" 2>/dev/null | while IFS= read -r r; do [ -d "$r" ] && tag_for "$r"; done | sort -u)"
+  if [ -n "$cur_tags" ]; then
+    SEMANTIC_ACTIVE_TAGS="$cur_tags" "$GPY" - "$SEMANTIC_DB" <<'PY'
+import os, sqlite3, sys
+db = sqlite3.connect(sys.argv[1], timeout=60)
+tags = [t for t in os.environ.get("SEMANTIC_ACTIVE_TAGS", "").splitlines() if t]
+before = db.execute("SELECT COUNT(*) FROM docs").fetchone()[0]
+marks = ",".join("?" for _ in tags)
+db.execute(f"DELETE FROM docs WHERE root_tag NOT IN ({marks})", tags)
+db.commit()
+after = db.execute("SELECT COUNT(*) FROM docs").fetchone()[0]
+print(f"semantic global prune: removed {before-after} row(s) from retired root tag(s)")
+db.close()
+PY
+  fi
+fi
+
+if [ "$PREFLIGHT" = "1" ]; then
+  log "done (phase=preflight, overall_rc=$rc_all); status unchanged"
+else
+  log "done (phase=$PHASE, overall_rc=$rc_all); status -> $STATUS"
+fi
+exit "$rc_all"

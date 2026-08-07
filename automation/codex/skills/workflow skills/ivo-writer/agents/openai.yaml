@@ -1,0 +1,4 @@
+interface:
+  display_name: "Ivo Writer"
+  short_description: "Write in Ivo's direct personal voice"
+  default_prompt: "Use $ivo-writer to draft this in my direct personal voice."

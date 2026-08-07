@@ -1,0 +1,8 @@
+{
+  "default_lookback_days": 30,
+  "default_emit": "compact",
+  "default_save_dir": "/Users/YOUR_USERNAME/.local/state/last30days/reports",
+  "visible_report_dir": "/Users/YOUR_USERNAME/Downloads",
+  "requires_engine": true,
+  "fallback_skill": "web-research"
+}

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Web Research"
+  short_description: "Run targeted web search or complete deep research"
+  default_prompt: "Use $web-research in normal or deep mode to answer from verified public-web evidence."

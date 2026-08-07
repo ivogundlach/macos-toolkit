@@ -1,0 +1,4 @@
+interface:
+  display_name: "YT-DLP Fetch"
+  short_description: "Acquire transcripts and video with yt-dlp"
+  default_prompt: "Use $yt-dlp-fetch to retrieve this video transcript without downloading the media."

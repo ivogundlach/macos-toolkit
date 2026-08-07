@@ -1,0 +1,139 @@
+#!/usr/bin/env python3
+"""Contract tests for the retrieval system.
+
+Not unit tests for coverage's sake — each one pins an invariant whose violation
+is INVISIBLE at runtime: fusion degrading to arm A exactly, the reranker only
+ever reordering, the daemon failing soft, the embedding matrix answering for a
+corpus that has moved on, chunking covering a file past the old truncation
+limit. Every one of those can break while search still returns plausible-looking
+results, which is why they are asserted rather than assumed.
+
+These lived in a scratch directory until 2026-07-30, which meant the suite
+guarding a system built to run untouched for years was one reboot from gone.
+
+  run-all              every suite, and stamp the result
+  run-all --version    the dashboard health check (see below)
+
+WHY --version IS NOT JUST "RUN EVERYTHING". test_chunker walks the real corpus,
+which costs ~2s today and grows with the corpus; the Tool Status Dashboard gives
+a health check 5 seconds. Wiring the full suite to the dashboard would mean a
+green check that silently turns into a timeout — reported as a broken tool —
+the month the corpus gets big enough. So --version runs the constant-time suites
+for real and, for the corpus walk, checks the STAMP the last full run wrote.
+That is the same rule the rest of this system follows: health-check the output,
+not the run. A stamp that is missing, stale or failing is a failure.
+"""
+import io, json, os, runpy, sys, time, contextlib
+from pathlib import Path
+
+# Re-exec under the interpreter the memory system actually runs on. The suites
+# execute IN-PROCESS (runpy, so a failing suite cannot be mistaken for a passing
+# one that printed nothing), which means this process needs the same modules the
+# real system has -- numpy and sqlite-vec live in the memory venv, not in
+# /usr/bin/python3. Without this, running `memory-selftest` from a plain shell
+# reports the matrix suite as FAILED with a ModuleNotFoundError: a green system
+# described as broken, which is the exact failure mode these tests exist to
+# prevent. The env guard makes the swap happen at most once.
+#
+# The swap is UNCONDITIONAL when the venv exists. It used to be gated on `import
+# numpy` failing, which is a proxy for "this interpreter is not the memory venv"
+# -- and the proxy broke the moment an interpreter had numpy but not sqlite-vec.
+# Homebrew's python3.14 is exactly that, and PATH order decides which python3
+# wins: Ivo's shell finds /usr/bin/python3 (no numpy) and re-execs, so the suite
+# passes; the Tool Status Dashboard scans with /opt/homebrew first, keeps that
+# interpreter, and test_matrix fails "sqlite-vec unavailable". That produced 721
+# consecutive false failures against a perfectly healthy memory system, visible
+# only in the dashboard and green in every hand-run -- the precise failure this
+# block was written to prevent, reintroduced by testing one module instead of
+# choosing the interpreter. There is no reason to probe: if the memory venv is
+# on disk, it IS the interpreter the memory system runs on.
+# "Am I already in the venv" is sys.prefix, NOT the path of the executable: a
+# venv's bin/python is a symlink onto the base interpreter, so realpath() reports
+# the two as the same binary while they load completely different site-packages.
+# sys.prefix is what actually selects site-packages, so it is what decides here.
+_VENV_ROOT = Path(os.path.expanduser("~/.local/share/memory-venv"))
+_VENV = _VENV_ROOT / "bin" / "python"
+if not os.environ.get("MEMORY_TESTS_REEXEC") and _VENV.exists():
+    if Path(sys.prefix) != _VENV_ROOT:
+        os.environ["MEMORY_TESTS_REEXEC"] = "1"
+        os.execv(str(_VENV), [str(_VENV), os.path.abspath(__file__), *sys.argv[1:]])
+
+HERE = Path(__file__).resolve().parent
+FAST = ["test_fusion.py", "test_daemon.py",
+        "test_redaction.py", "test_matrix.py",
+        "test_question_arm.py",
+        "test_undefined_names.py"]              # constant time, run every check
+SLOW = ["test_chunker.py"]                      # walks the corpus; grows with it
+STAMP = Path(os.path.expanduser(
+    "~/.local/state/memory-tests/last-full-run.json"))
+MAX_STAMP_AGE = float(os.environ.get("MEMORY_TESTS_MAX_AGE_DAYS", "8")) * 86400
+
+sys.path.insert(0, os.path.expanduser("~/.memory/tools"))
+
+
+def run_suite(name):
+    """Returns (ok, captured_output). A suite that CRASHES counts as failed."""
+    path = HERE / name
+    if not path.exists():
+        return False, f"{name} is missing"
+    buf = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
+            runpy.run_path(str(path), run_name="__main__")
+        rc = 0
+    except SystemExit as e:
+        rc = e.code if isinstance(e.code, int) else (0 if e.code is None else 1)
+    except Exception as e:
+        rc = 1
+        buf.write(f"\n{type(e).__name__}: {e}\n")
+    return rc == 0, buf.getvalue()
+
+
+def check_stamp():
+    """(ok, detail) for the last full run. Absent or stale is NOT ok."""
+    try:
+        d = json.loads(STAMP.read_text())
+    except Exception:
+        return False, ("no full run recorded — run `memory-selftest` with no "
+                       "arguments" if not STAMP.exists() else "stamp unreadable")
+    age = time.time() - float(d.get("ts", 0))
+    if d.get("failed"):
+        return False, f"last full run FAILED: {', '.join(d['failed'])}"
+    if age > MAX_STAMP_AGE:
+        return False, f"last full run was {age/86400:.1f} days ago (stale)"
+    return True, f"corpus suite passed {age/3600:.0f}h ago"
+
+
+quick = "--version" in sys.argv or "-V" in sys.argv
+names = FAST if quick else FAST + SLOW
+
+print("memory retrieval contract tests")
+failed = []
+for name in names:
+    ok, out = run_suite(name)
+    print(f"  {'ok  ' if ok else 'FAIL'} {name}")
+    if not ok:
+        failed.append(name)
+        print(out, file=sys.stderr)
+
+if quick:
+    ok, detail = check_stamp()
+    print(f"  {'ok  ' if ok else 'FAIL'} test_chunker.py ({detail})")
+    if not ok:
+        failed.append("test_chunker.py")
+else:
+    # Only a full run may write the stamp, and it records failures too — a stamp
+    # that only ever appears on success would make a failing suite look merely
+    # stale, which reads as "nobody ran it" rather than "it is broken".
+    try:
+        STAMP.parent.mkdir(parents=True, exist_ok=True)
+        tmp = STAMP.with_suffix(".tmp")
+        tmp.write_text(json.dumps({"ts": time.time(), "failed": failed}))
+        os.replace(tmp, STAMP)
+    except OSError as e:
+        print(f"  note: could not write stamp ({e})", file=sys.stderr)
+
+if failed:
+    print("  one or more suites FAILED", file=sys.stderr)
+    raise SystemExit(1)
+print("  all suites pass")

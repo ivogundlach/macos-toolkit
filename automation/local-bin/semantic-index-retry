@@ -1,0 +1,27 @@
+#!/bin/bash
+# semantic-index-retry — run the semantic-index build and, if it DEFERS (rc=75:
+# transient offline / flaky agy / not-yet-reauthed login), retry a few times inside
+# the SAME launchd job, so a transient blip at the 17:00 fire doesn't stall the index
+# until the next scheduled day. The retry happens in-process, no separate scheduler.
+# (The graph phase was retired 2026-07-19; --graph-only now errors in the tool.)
+#
+#   usage: semantic-index-retry --semantic-only
+#   env:   SEMANTIC_RETRY_ATTEMPTS (default 6)  SEMANTIC_RETRY_INTERVAL secs (default 600)
+#
+# A real logout still defers every attempt (no scheduler can log you back in) but the
+# tool's own notify fires and the next scheduled day retries; retrying here is harmless.
+set -uo pipefail
+PHASE="${1:?usage: semantic-index-retry --semantic-only}"
+TOOL="$HOME/.memory/tools/memory-semantic-build"
+ATTEMPTS="${SEMANTIC_RETRY_ATTEMPTS:-6}"
+INTERVAL="${SEMANTIC_RETRY_INTERVAL:-600}"
+DEFER_RC=75
+
+n=1
+while : ; do
+  "$TOOL" "$PHASE"; rc=$?
+  [ "$rc" -ne "$DEFER_RC" ] && exit "$rc"   # success or hard failure -> done
+  [ "$n" -ge "$ATTEMPTS" ] && exit "$rc"    # exhausted -> give up until the next scheduled fire
+  n=$((n + 1))
+  sleep "$INTERVAL"
+done

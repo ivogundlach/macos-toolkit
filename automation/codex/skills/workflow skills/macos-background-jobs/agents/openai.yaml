@@ -1,0 +1,4 @@
+interface:
+  display_name: "macOS Background Jobs"
+  short_description: "Prevent recurring macOS background-job failures."
+  default_prompt: "Use $macos-background-jobs to create or repair this local macOS background job."

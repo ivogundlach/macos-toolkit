@@ -1,0 +1,5 @@
+{
+  "output_format": "markdown",
+  "prefer_raw_scrape_for_known_url": true,
+  "use_schema_file_for_structured_extract": true
+}

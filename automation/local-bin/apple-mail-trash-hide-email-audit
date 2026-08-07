@@ -1,0 +1,404 @@
+#!/usr/bin/env python3
+"""Audit unread Apple Mail Trash messages for Hide My Email/relay matches.
+
+Usage:
+  apple-mail-trash-hide-email-audit
+  apple-mail-trash-hide-email-audit --json
+  apple-mail-trash-hide-email-audit --aliases-file aliases.txt
+
+Read-only inputs:
+  - ~/Library/Mail/V10/MailData/Envelope Index
+  - matching .emlx files under ~/Library/Mail/V10
+  - local config files that may contain Sign in with Apple relay addresses
+
+Writes a hidden JSON log to:
+  ~/.local/state/apple-mail-trash-audit/
+"""
+
+from __future__ import annotations
+
+import argparse
+import base64
+import email
+import html
+import json
+import plistlib
+import re
+import sqlite3
+import subprocess
+from collections import Counter, defaultdict
+from datetime import datetime
+from email import policy
+from email.header import decode_header, make_header
+from email.utils import getaddresses
+from pathlib import Path
+from typing import Iterable
+
+
+HOME = Path.home()
+MAIL_ROOT = HOME / "Library" / "Mail" / "V10"
+DB = MAIL_ROOT / "MailData" / "Envelope Index"
+STATE = HOME / ".local" / "state" / "apple-mail-trash-audit"
+EMAIL_RE = re.compile(r"(?i)\b[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}\b")
+TRASH_MARKERS = ("trash", "deleted")
+PRIMARY_EMAILS = {"you@icloud.example.com"}
+
+
+def decode_value(value: str | None) -> str:
+    if not value:
+        return ""
+    try:
+        return str(make_header(decode_header(value)))
+    except Exception:
+        return value
+
+
+def html_to_text(value: str) -> str:
+    value = re.sub(r"(?is)<(script|style).*?</\1>", " ", value)
+    value = re.sub(r"(?i)<br\s*/?>", "\n", value)
+    value = re.sub(r"(?i)</p\s*>", "\n", value)
+    value = re.sub(r"(?s)<[^>]+>", " ", value)
+    value = html.unescape(value)
+    return re.sub(r"[ \t\r\f\v]+", " ", value)
+
+
+def normalize_email(value: str) -> str:
+    return value.strip().strip("<>,;:()[]{}\"'").lower()
+
+
+def extract_emails(text: str | None) -> set[str]:
+    if not text:
+        return set()
+    return {normalize_email(match.group(0)) for match in EMAIL_RE.finditer(text)}
+
+
+def connect() -> sqlite3.Connection:
+    con = sqlite3.connect(f"file:{DB}?mode=ro", uri=True)
+    con.row_factory = sqlite3.Row
+    return con
+
+
+def load_primary_icloud_addresses() -> set[str]:
+    out = set(PRIMARY_EMAILS)
+    plist = HOME / "Library" / "Preferences" / "MobileMeAccounts.plist"
+    try:
+        data = plistlib.loads(plist.read_bytes())
+    except Exception:
+        return out
+    for account in data.get("Accounts", []):
+        for value in walk_values(account):
+            for addr in extract_emails(str(value)):
+                if addr.endswith(("@icloud.com", "@me.com", "@mac.com")):
+                    out.add(addr)
+    return out
+
+
+def walk_values(value):
+    if isinstance(value, dict):
+        for nested in value.values():
+            yield from walk_values(nested)
+    elif isinstance(value, list):
+        for nested in value:
+            yield from walk_values(nested)
+    else:
+        yield value
+
+
+def load_alias_file(path: Path | None) -> set[str]:
+    if not path:
+        return set()
+    try:
+        return extract_emails(path.read_text(errors="replace"))
+    except Exception:
+        return set()
+
+
+def locally_discoverable_relay_addresses() -> dict[str, set[str]]:
+    sources: dict[str, set[str]] = defaultdict(set)
+    private_emails_db = HOME / "Library" / "Application Support" / "com.apple.akd" / "privateEmails.db"
+    if private_emails_db.exists():
+        try:
+            with sqlite3.connect(f"file:{private_emails_db}?mode=ro", uri=True) as con:
+                for (addr,) in con.execute("select email from emails where email is not null"):
+                    normalized = normalize_email(addr)
+                    if normalized:
+                        sources[normalized].add(str(private_emails_db))
+        except sqlite3.Error:
+            pass
+    roots = [
+        HOME / ".config",
+        HOME / ".local" / "state",
+        HOME / "Library" / "IdentityServices" / "idstatuscache.plist",
+    ]
+    patterns = ("@privaterelay.appleid.com",)
+    for root in roots:
+        if not root.exists():
+            continue
+        if root.is_file():
+            candidates = [root]
+        else:
+            try:
+                candidates = [p for p in root.rglob("*") if p.is_file() and p.stat().st_size <= 2_000_000]
+            except Exception:
+                candidates = []
+        for path in candidates:
+            try:
+                text = path.read_text(errors="ignore")
+            except Exception:
+                continue
+            if not any(pattern in text.lower() for pattern in patterns):
+                continue
+            for addr in extract_emails(text):
+                if addr.endswith("@privaterelay.appleid.com"):
+                    sources[addr].add(str(path))
+    return sources
+
+
+def query_unread_trash_messages() -> list[sqlite3.Row]:
+    query = """
+        select m.ROWID,
+               m.message_id,
+               m.global_message_id,
+               m.remote_id,
+               mgd.message_id_header,
+               datetime(m.date_received, 'unixepoch', 'localtime') as received,
+               datetime(m.date_sent, 'unixepoch', 'localtime') as sent,
+               a.address as sender,
+               a.comment as sender_name,
+               s.subject,
+               mb.url as mailbox
+        from messages m
+        left join message_global_data mgd on m.global_message_id = mgd.ROWID
+        left join addresses a on m.sender = a.ROWID
+        left join subjects s on m.subject = s.ROWID
+        left join mailboxes mb on m.mailbox = mb.ROWID
+        where m.read = 0
+          and lower(mb.url) glob '*deleted*'
+        order by m.date_received desc
+    """
+    with connect() as con:
+        rows = list(con.execute(query))
+    return rows
+
+
+def query_recipients(rowids: list[int]) -> dict[int, list[str]]:
+    if not rowids:
+        return {}
+    placeholders = ",".join("?" for _ in rowids)
+    query = f"""
+        select r.message, a.address
+        from recipients r
+        join addresses a on a.ROWID = r.address
+        where r.message in ({placeholders})
+        order by r.message, r.type, r.position
+    """
+    result: dict[int, list[str]] = defaultdict(list)
+    with connect() as con:
+        for row in con.execute(query, rowids):
+            result[int(row["message"])].append(normalize_email(row["address"]))
+    return result
+
+
+def rg_paths(needle: str) -> list[Path]:
+    proc = subprocess.run(
+        ["rg", "-l", "--text", "-F", needle, str(MAIL_ROOT)],
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        text=True,
+    )
+    return [Path(line) for line in proc.stdout.splitlines() if line]
+
+
+def find_emlx(row: sqlite3.Row) -> Path | None:
+    message_id_header = (row["message_id_header"] or "").strip()
+    if message_id_header:
+        for path in rg_paths(message_id_header):
+            if path.suffix == ".emlx" or path.name.endswith(".partial.emlx"):
+                return path
+    names = []
+    for key in ("ROWID", "remote_id", "global_message_id", "message_id"):
+        value = row[key]
+        if value:
+            names.extend([f"{value}.emlx", f"{value}.partial.emlx"])
+    for name in names:
+        for path in MAIL_ROOT.rglob(name):
+            if path.is_file():
+                return path
+    return None
+
+
+def decode_emlx(path: Path) -> email.message.EmailMessage:
+    data = path.read_bytes()
+    first_newline = data.find(b"\n")
+    if first_newline != -1 and data[:first_newline].strip().isdigit():
+        data = data[first_newline + 1 :]
+    return email.message_from_bytes(data, policy=policy.default)
+
+
+def message_text(msg: email.message.EmailMessage) -> str:
+    texts: list[str] = []
+    parts = msg.walk() if msg.is_multipart() else [msg]
+    for part in parts:
+        if part.is_multipart() or part.get_content_disposition() == "attachment":
+            continue
+        ctype = part.get_content_type().lower()
+        if ctype not in {"text/plain", "text/html"}:
+            continue
+        payload = part.get_payload(decode=True)
+        if payload is None:
+            raw = part.get_payload()
+            if isinstance(raw, str):
+                payload = raw.encode(part.get_content_charset() or "utf-8", errors="replace")
+            else:
+                continue
+        charset = part.get_content_charset() or "utf-8"
+        text = payload.decode(charset, errors="replace")
+        texts.append(html_to_text(text) if ctype == "text/html" else text)
+    return "\n".join(texts)
+
+
+def message_addresses(row: sqlite3.Row, recipients: list[str]) -> tuple[dict, set[str]]:
+    found: dict[str, set[str]] = defaultdict(set)
+    sender = normalize_email(row["sender"] or "")
+    if sender:
+        found["sender"].add(sender)
+    for address in recipients:
+        found["mail_index_recipient"].add(address)
+
+    path = find_emlx(row)
+    item_extra: dict[str, str | None] = {"emlx": str(path) if path else None}
+    if not path:
+        return item_extra, set().union(*found.values()) if found else set()
+
+    msg = decode_emlx(path)
+    received_spf = " ".join(msg.get_all("Received-SPF", []))
+    client_ip = re.search(r"client-ip=([^;\s]+)", received_spf)
+    helo = re.search(r"helo=([^;\s]+)", received_spf)
+    item_extra["return_path"] = decode_value(msg.get("Return-Path"))
+    item_extra["received_spf_client_ip"] = client_ip.group(1) if client_ip else None
+    item_extra["received_spf_helo"] = helo.group(1) if helo else None
+    item_extra["apple_spam_flag"] = decode_value(msg.get("X-Spam-Flag"))
+    item_extra["apple_move_to_folder"] = decode_value(msg.get("X-Apple-MoveToFolder"))
+    for header in (
+        "From",
+        "To",
+        "Cc",
+        "Bcc",
+        "Reply-To",
+        "Return-Path",
+        "Original-Recipient",
+        "Delivered-To",
+        "X-Original-To",
+        "List-Unsubscribe",
+        "X-DMARC-Policy",
+    ):
+        values = msg.get_all(header, [])
+        for value in values:
+            decoded = decode_value(value)
+            for _name, addr in getaddresses([decoded]):
+                if normalize_email(addr):
+                    found[f"header:{header.lower()}"].add(normalize_email(addr))
+            for addr in extract_emails(decoded):
+                found[f"header:{header.lower()}"].add(addr)
+
+    body = message_text(msg)
+    for addr in extract_emails(body):
+        found["body"].add(addr)
+    item_extra["to_header"] = decode_value(msg.get("To"))
+    item_extra["original_recipient"] = decode_value(msg.get("Original-Recipient"))
+    all_found = set().union(*found.values()) if found else set()
+    item_extra["addresses_by_source"] = {k: sorted(v) for k, v in sorted(found.items())}
+    return item_extra, all_found
+
+
+def source_domains(addresses: Iterable[str]) -> Counter:
+    return Counter(addr.rsplit("@", 1)[1] for addr in addresses if "@" in addr)
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--json", action="store_true", help="print full JSON")
+    parser.add_argument("--aliases-file", type=Path, help="newline/text file containing Hide My Email aliases")
+    args = parser.parse_args()
+
+    primary = load_primary_icloud_addresses()
+    relay_sources = locally_discoverable_relay_addresses()
+    manual_aliases = load_alias_file(args.aliases_file)
+    hide_aliases = set(relay_sources) | manual_aliases
+
+    rows = query_unread_trash_messages()
+    recipients_by_message = query_recipients([int(row["ROWID"]) for row in rows])
+
+    items = []
+    all_addresses: Counter[str] = Counter()
+    matched_aliases: dict[str, list[int]] = defaultdict(list)
+    possible_hme_recipients: dict[str, list[int]] = defaultdict(list)
+
+    for row in rows:
+        rowid = int(row["ROWID"])
+        extra, addresses = message_addresses(row, recipients_by_message.get(rowid, []))
+        for addr in addresses:
+            all_addresses[addr] += 1
+            if addr in hide_aliases:
+                matched_aliases[addr].append(rowid)
+            if addr.endswith(("@icloud.com", "@me.com", "@mac.com")) and addr not in primary:
+                possible_hme_recipients[addr].append(rowid)
+        items.append(
+            {
+                "rowid": rowid,
+                "received": row["received"],
+                "sent": row["sent"],
+                "from": normalize_email(row["sender"] or ""),
+                "from_name": decode_value(row["sender_name"]),
+                "subject": decode_value(row["subject"]),
+                "mailbox": row["mailbox"],
+                "addresses": sorted(addresses),
+                **extra,
+            }
+        )
+
+    report = {
+        "generated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+        "mailbox_filter": "unread messages in mailboxes whose URL contains 'deleted'",
+        "message_count": len(items),
+        "locally_discoverable_hide_or_relay_aliases": sorted(hide_aliases),
+        "primary_icloud_addresses_excluded_from_hme": sorted(primary),
+        "matched_hide_or_relay_aliases": {k: v for k, v in sorted(matched_aliases.items())},
+        "possible_hide_my_email_recipients_not_in_local_inventory": {
+            k: v for k, v in sorted(possible_hme_recipients.items())
+        },
+        "addresses_observed": dict(sorted(all_addresses.items())),
+        "sender_domains": dict(sorted(source_domains([item["from"] for item in items]).items())),
+        "messages": items,
+    }
+
+    STATE.mkdir(parents=True, exist_ok=True)
+    out_path = STATE / f"trash-hide-email-audit-{datetime.now().strftime('%Y%m%d-%H%M%S')}.json"
+    out_path.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n")
+    report["log_path"] = str(out_path)
+
+    if args.json:
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+    else:
+        print(f"Unread deleted messages: {report['message_count']}")
+        print(f"Hidden log: {out_path}")
+        print(f"Locally discoverable relay/HME aliases: {len(hide_aliases)}")
+        if matched_aliases:
+            print("Matches:")
+            for alias, rowids in sorted(matched_aliases.items()):
+                print(f"  {alias}: rows {', '.join(map(str, rowids))}")
+        else:
+            print("Matches: none")
+        if possible_hme_recipients:
+            print("Possible iCloud aliases not in local inventory:")
+            for alias, rowids in sorted(possible_hme_recipients.items()):
+                print(f"  {alias}: rows {', '.join(map(str, rowids))}")
+        print("Top observed addresses:")
+        for addr, count in all_addresses.most_common(20):
+            print(f"  {addr}: {count}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

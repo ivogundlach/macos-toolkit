@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.ivogundlach.memory-health-weekly</string>
+    <!-- bash wrapper, never bare python: launchd pointed at a python binary
+         re-announces as an anonymous Background Item on every run. -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>-c</string>
+        <string>exec "$HOME/.memory/tools/memory-health-weekly"</string>
+    </array>
+    <!-- Weekly memory health: coverage (is anything unindexed?) -> restore drill
+         (is the backup actually recoverable?) -> retrieval eval (do questions
+         still find their answers?). Three different ways the system can be
+         quietly wrong while every liveness check stays green.
+         Sunday 18:15: after the 17:30 corpus backup and clear of the 17:30
+         skill-drift job, so a weak week shows up in last-run.json each Sunday.
+         Runs the coverage scan first, then the recall eval: coverage explains
+         recall (a miss caused by an unindexed folder is not a ranking problem),
+         so its result should be the fresher of the two when both are read. -->
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Weekday</key>
+        <integer>0</integer>
+        <key>Hour</key>
+        <integer>18</integer>
+        <key>Minute</key>
+        <integer>15</integer>
+    </dict>
+    <key>StandardOutPath</key>
+    <string>/Users/YOUR_USERNAME/.local/state/memory-health-weekly/launchd.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/YOUR_USERNAME/.local/state/memory-health-weekly/launchd.err</string>
+    <key>RunAtLoad</key>
+    <false/>
+</dict>
+</plist>

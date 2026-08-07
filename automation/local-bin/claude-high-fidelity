@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+set -uo pipefail
+
+# Pins headless Claude to Opus at medium reasoning. No retry: a failure here is
+# a real failure and must surface to the caller.
+
+CLAUDE_CLI="${CLAUDE_HIGH_FIDELITY_CLI:-}"
+if [ -z "$CLAUDE_CLI" ]; then
+  CLAUDE_CLI="$(command -v claude 2>/dev/null || true)"
+fi
+if [ -z "$CLAUDE_CLI" ]; then
+  echo "claude-high-fidelity: Claude CLI not found" >&2
+  exit 127
+fi
+
+exec "$CLAUDE_CLI" -p --model opus --effort medium "$@"

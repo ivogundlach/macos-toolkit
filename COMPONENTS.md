@@ -1,0 +1,244 @@
+# Components
+
+Each entry names public source only; install verification remains component-specific.
+
+- **CanIAffordThis** (`caniaffordthis`) — macOS application; source at `apps/CanIAffordThis`; MIT; provenance: Ivo/agent-authored for Ivo; source export checked; clean-machine install not verified.
+- **codex** (`codex`) — macOS automation; source at `automation/codex`; MIT plus component notices; provenance: component-original; source export checked; clean-machine install not verified.
+- **CopyPathFinder** (`copypathfinder`) — macOS application; source at `apps/CopyPathFinder`; MIT; provenance: Ivo/agent-authored for Ivo; source export checked; clean-machine install not verified.
+- **custom-app-sources** (`custom-app-sources`) — macOS automation; source at `automation/custom-app-sources`; MIT; provenance: Ivo/agent-authored for Ivo; source export checked; clean-machine install not verified.
+- **ElectionSimulator** (`electionsimulator`) — macOS application; source at `apps/ElectionSimulator`; MIT; provenance: Ivo/agent-authored for Ivo; source export checked; clean-machine install not verified.
+- **ForceCopyPaste** (`forcecopypaste`) — macOS application; source at `apps/ForceCopyPaste`; MIT; provenance: Ivo/agent-authored for Ivo; source export checked; clean-machine install not verified.
+- **Kinetics** (`kinetics`) — macOS application; source at `apps/Kinetics`; MIT; provenance: Ivo/agent-authored for Ivo; source export checked; clean-machine install not verified.
+- **launch-agents** (`launch-agents`) — macOS automation; source at `automation/launch-agents`; MIT; provenance: Ivo/agent-authored for Ivo; source export checked; clean-machine install not verified.
+- **local-bin** (`local-bin`) — macOS automation; source at `automation/local-bin`; MIT; provenance: Ivo/agent-authored for Ivo; source export checked; clean-machine install not verified.
+- **local-read-connectors** (`local-read-connectors`) — macOS automation; source at `automation/local-read-connectors`; MIT; provenance: Ivo/agent-authored for Ivo; source export checked; clean-machine install not verified.
+- **macos-services** (`macos-services`) — macOS automation; source at `automation/macos-services`; MIT; provenance: Ivo/agent-authored for Ivo; source export checked; clean-machine install not verified.
+- **MacroSimulator** (`macrosimulator`) — macOS application; source at `apps/MacroSimulator`; MIT; provenance: Ivo/agent-authored for Ivo; source export checked; clean-machine install not verified.
+- **Market** (`market`) — macOS application; source at `apps/Market`; MIT; provenance: Ivo/agent-authored for Ivo; source export checked; clean-machine install not verified.
+- **memory-tests** (`memory-tests`) — macOS automation; source at `automation/memory-tests`; MIT; provenance: Ivo/agent-authored for Ivo; source export checked; clean-machine install not verified.
+- **memory-tools** (`memory-tools`) — macOS automation; source at `automation/memory-tools`; MIT; provenance: Ivo/agent-authored for Ivo; source export checked; clean-machine install not verified.
+- **NewTabLinks** (`newtablinks`) — Safari/browser extension; source at `apps/NewTabLinks`; MIT; provenance: Ivo/agent-authored for Ivo; source export checked; clean-machine install not verified.
+- **notebooklm-sync** (`notebooklm-sync`) — macOS automation; source at `automation/notebooklm-sync`; MIT; provenance: Ivo/agent-authored for Ivo; source export checked; clean-machine install not verified.
+- **NutrientTracker** (`nutrienttracker`) — macOS application; source at `apps/NutrientTracker`; MIT; provenance: Ivo/agent-authored for Ivo; source export checked; clean-machine install not verified.
+- **quit-on-close** (`quit-on-close`) — macOS automation; source at `automation/quit-on-close`; MIT; provenance: Ivo/agent-authored for Ivo; source export checked; clean-machine install not verified.
+- **raycast** (`raycast`) — macOS automation; source at `automation/raycast`; MIT; provenance: Ivo/agent-authored for Ivo; source export checked; clean-machine install not verified.
+- **smart-wake** (`smart-wake`) — macOS automation; source at `automation/smart-wake`; MIT; provenance: Ivo/agent-authored for Ivo; source export checked; clean-machine install not verified.
+- **ToolStatusDashboard** (`toolstatusdashboard`) — macOS application; source at `apps/ToolStatusDashboard`; MIT; provenance: Ivo/agent-authored for Ivo; source export checked; clean-machine install not verified.
+- **UsageQueue** (`usagequeue`) — macOS application; source at `apps/UsageQueue`; MIT; provenance: Ivo/agent-authored for Ivo; source export checked; clean-machine install not verified.
+- **Vitals** (`vitals`) — macOS application; source at `apps/Vitals`; MIT; provenance: Ivo/agent-authored for Ivo; source export checked; clean-machine install not verified.
+- **WarmCorners** (`warmcorners`) — macOS application; source at `apps/WarmCorners`; MIT; provenance: Ivo/agent-authored for Ivo; source export checked; clean-machine install not verified.
+- **YouTubeFirstContentTab** (`youtubefirstcontenttab`) — Safari/browser extension; source at `apps/YouTubeFirstContentTab`; MIT; provenance: Ivo/agent-authored for Ivo; source export checked; clean-machine install not verified.
+- **YouTubeHomeReload** (`youtubehomereload`) — Safari/browser extension; source at `apps/YouTubeHomeReload`; MIT; provenance: Ivo/agent-authored for Ivo; source export checked; clean-machine install not verified.
+
+## Exclusions
+
+Policy exclusions are listed by path and reason; source contents and secret values are never copied here.
+
+- `.gitignore` — unknown path.
+- `.gitleaksignore` — excluded file: .gitleaksignore.
+- `README.md` — unknown path.
+- `apps/CanIAffordThis/public/favicon.svg` — excluded suffix: .svg.
+- `apps/CanIAffordThis/public/file.svg` — excluded suffix: .svg.
+- `apps/CanIAffordThis/public/globe.svg` — excluded suffix: .svg.
+- `apps/CanIAffordThis/public/window.svg` — excluded suffix: .svg.
+- `apps/ElectionSimulator/PEER-REVIEW-LOG.md` — excluded file: PEER-REVIEW-LOG.md.
+- `apps/ElectionSimulator/PLAN.md` — excluded file: PLAN.md.
+- `apps/ElectionSimulator/RESULT.md` — excluded file: RESULT.md.
+- `apps/ElectionSimulator/Resources/AppIcon.icns` — excluded suffix: .icns.
+- `apps/ElectionSimulator/Resources/icon_1024.png` — excluded suffix: .png.
+- `apps/ElectionSimulator/Resources/pilots.json` — excluded file: pilots.json.
+- `apps/ElectionSimulator/Resources/pres_by_cd_2024.csv` — excluded suffix: .csv.
+- `apps/ElectionSimulator/data/GA_precincts.zip` — excluded directory: data.
+- `apps/ElectionSimulator/data/NST-EST2024.csv` — excluded directory: data.
+- `apps/ElectionSimulator/data/apportionment-2020.xlsx` — excluded directory: data.
+- `apps/ElectionSimulator/data/build_ga_precincts.py` — excluded directory: data.
+- `apps/ElectionSimulator/data/build_pilots.py` — excluded directory: data.
+- `apps/ElectionSimulator/data/census_seed.json` — excluded directory: data.
+- `apps/ElectionSimulator/data/co-est2024.csv` — excluded directory: data.
+- `apps/ElectionSimulator/data/counties-geojson.json` — excluded directory: data.
+- `apps/ElectionSimulator/data/county_adjacency.txt` — excluded directory: data.
+- `apps/ElectionSimulator/data/county_pres_2020.csv` — excluded directory: data.
+- `apps/ElectionSimulator/data/ga_precincts/GA_precincts16.cpg` — excluded directory: data.
+- `apps/ElectionSimulator/data/ga_precincts/GA_precincts16.dbf` — excluded directory: data.
+- `apps/ElectionSimulator/data/ga_precincts/GA_precincts16.prj` — excluded directory: data.
+- `apps/ElectionSimulator/data/ga_precincts/GA_precincts16.qpj` — excluded directory: data.
+- `apps/ElectionSimulator/data/ga_precincts/GA_precincts16.shp` — excluded directory: data.
+- `apps/ElectionSimulator/data/ga_precincts/GA_precincts16.shx` — excluded directory: data.
+- `apps/ElectionSimulator/data/ga_precincts/__MACOSX/._GA_precincts16.cpg` — excluded directory: data.
+- `apps/ElectionSimulator/data/ga_precincts/__MACOSX/._GA_precincts16.qpj` — excluded directory: data.
+- `apps/ElectionSimulator/data/legislators-current.json` — excluded directory: data.
+- `apps/ElectionSimulator/data/parse_seeds.py` — excluded directory: data.
+- `apps/ElectionSimulator/data/pilots.json` — excluded directory: data.
+- `apps/ElectionSimulator/data/pres_by_cd_2024.csv` — excluded directory: data.
+- `apps/ElectionSimulator/data/senate_seed.json` — excluded directory: data.
+- `apps/ElectionSimulator/data/senators.xml` — excluded directory: data.
+- `apps/ElectionSimulator/tools/make_icon.swift` — excluded file: make_icon.swift.
+- `apps/ForceCopyPaste/extension/icons/icon-1024.png` — excluded suffix: .png.
+- `apps/ForceCopyPaste/extension/icons/icon-128.png` — excluded suffix: .png.
+- `apps/ForceCopyPaste/extension/icons/icon-256.png` — excluded suffix: .png.
+- `apps/ForceCopyPaste/extension/icons/icon-48.png` — excluded suffix: .png.
+- `apps/ForceCopyPaste/extension/icons/icon-512.png` — excluded suffix: .png.
+- `apps/ForceCopyPaste/extension/icons/icon-off-128.png` — excluded suffix: .png.
+- `apps/ForceCopyPaste/extension/icons/icon-off-48.png` — excluded suffix: .png.
+- `apps/Kinetics/Resources/AppIcon.icns` — excluded suffix: .icns.
+- `apps/MacroSimulator/app_icon_transparent.gold-backup.png` — excluded suffix: .png.
+- `apps/MacroSimulator/app_icon_transparent.png` — excluded suffix: .png.
+- `apps/MacroSimulator/app_icon_transparent.silver-90pct-backup.png` — excluded suffix: .png.
+- `apps/MacroSimulator/app_icon_transparent.silver-small-backup.png` — excluded suffix: .png.
+- `apps/MacroSimulator/app_icon_transparent_silver.png` — excluded suffix: .png.
+- `apps/Market/.claude/launch.json` — excluded directory: .claude.
+- `apps/Market/APP-PEER-REVIEW-LOG.md` — generated plan/result/review evidence.
+- `apps/Market/APP-PLAN.md` — generated plan/result/review evidence.
+- `apps/Market/PEER-REVIEW-LOG.md` — excluded file: PEER-REVIEW-LOG.md.
+- `apps/Market/PLAN.md` — excluded file: PLAN.md.
+- `apps/Market/app/Sources/Market/Data/AppCtl.swift` — excluded directory: Data.
+- `apps/Market/app/Sources/Market/Data/ConfigStore.swift` — excluded directory: Data.
+- `apps/Market/app/Sources/Market/Data/Notifier.swift` — excluded directory: Data.
+- `apps/Market/app/Sources/Market/Data/Repository.swift` — excluded directory: Data.
+- `apps/Market/app/Sources/Market/Data/SQLite.swift` — excluded directory: Data.
+- `apps/Market/app/packaging/Market.icns` — excluded suffix: .icns.
+- `apps/Market/app/packaging/Market.iconset/icon_128x128.png` — compiled bundle directory: Market.iconset.
+- `apps/Market/app/packaging/Market.iconset/icon_128x128@2x.png` — compiled bundle directory: Market.iconset.
+- `apps/Market/app/packaging/Market.iconset/icon_16x16.png` — compiled bundle directory: Market.iconset.
+- `apps/Market/app/packaging/Market.iconset/icon_16x16@2x.png` — compiled bundle directory: Market.iconset.
+- `apps/Market/app/packaging/Market.iconset/icon_256x256.png` — compiled bundle directory: Market.iconset.
+- `apps/Market/app/packaging/Market.iconset/icon_256x256@2x.png` — compiled bundle directory: Market.iconset.
+- `apps/Market/app/packaging/Market.iconset/icon_32x32.png` — compiled bundle directory: Market.iconset.
+- `apps/Market/app/packaging/Market.iconset/icon_32x32@2x.png` — compiled bundle directory: Market.iconset.
+- `apps/Market/app/packaging/Market.iconset/icon_512x512.png` — compiled bundle directory: Market.iconset.
+- `apps/Market/app/packaging/Market.iconset/icon_512x512@2x.png` — compiled bundle directory: Market.iconset.
+- `apps/Market/app/packaging/icon.svg` — excluded suffix: .svg.
+- `apps/Market/config.json` — excluded file: config.json.
+- `apps/NewTabLinks/extension/icons/icon-1024.png` — excluded suffix: .png.
+- `apps/NewTabLinks/extension/icons/icon-128.png` — excluded suffix: .png.
+- `apps/NewTabLinks/extension/icons/icon-256.png` — excluded suffix: .png.
+- `apps/NewTabLinks/extension/icons/icon-48.png` — excluded suffix: .png.
+- `apps/NewTabLinks/extension/icons/icon-512.png` — excluded suffix: .png.
+- `apps/NutrientTracker/Resources/AppIcon.icns` — excluded suffix: .icns.
+- `apps/NutrientTracker/Resources/AppIcon.png` — excluded suffix: .png.
+- `apps/NutrientTracker/Resources/usda_foods.sqlite` — excluded suffix: .sqlite.
+- `apps/NutrientTracker/Sources/NutrientTracker/Data/FoodDB.swift` — excluded directory: Data.
+- `apps/NutrientTracker/tools/GeneratedData.swift` — source absent from the immutable target snapshot; no generated dataset was exported.
+- `apps/NutrientTracker/tools/make_icon.swift` — excluded file: make_icon.swift.
+- `apps/School/PEER-REVIEW-LOG.md` — excluded root: apps/School.
+- `apps/School/PLAN.md` — excluded root: apps/School.
+- `apps/School/RESULT.md` — excluded root: apps/School.
+- `apps/School/SOURCE-MANIFEST.sha256` — excluded root: apps/School.
+- `apps/School/studykit/studykit.py` — excluded root: apps/School.
+- `apps/School/sync/pytest.ini` — excluded root: apps/School.
+- `apps/School/sync/school_sync.py` — excluded root: apps/School.
+- `apps/School/sync/setup_session.py` — excluded root: apps/School.
+- `apps/School/sync/tests/test_core.py` — excluded root: apps/School.
+- `apps/School/sync/uahsync/__init__.py` — excluded root: apps/School.
+- `apps/School/sync/uahsync/banner.py` — excluded root: apps/School.
+- `apps/School/sync/uahsync/canvas_ics.py` — excluded root: apps/School.
+- `apps/School/sync/uahsync/canvas_rest.py` — excluded root: apps/School.
+- `apps/School/sync/uahsync/config.py` — excluded root: apps/School.
+- `apps/School/sync/uahsync/grades.py` — excluded root: apps/School.
+- `apps/School/sync/uahsync/lock.py` — excluded root: apps/School.
+- `apps/School/sync/uahsync/markers.py` — excluded root: apps/School.
+- `apps/School/sync/uahsync/notify.py` — excluded root: apps/School.
+- `apps/School/sync/uahsync/reconcile.py` — excluded root: apps/School.
+- `apps/School/sync/uahsync/runlog.py` — excluded root: apps/School.
+- `apps/School/sync/uahsync/semester.py` — excluded root: apps/School.
+- `apps/School/sync/uahsync/state.py` — excluded root: apps/School.
+- `apps/School/sync/uahsync/store.py` — excluded root: apps/School.
+- `apps/ToolStatusDashboard/Icon/AppIcon-1024.png` — excluded suffix: .png.
+- `apps/ToolStatusDashboard/Icon/AppIcon.icns` — excluded suffix: .icns.
+- `apps/ToolStatusDashboard/Icon/AppIcon.iconset/icon_128x128.png` — compiled bundle directory: AppIcon.iconset.
+- `apps/ToolStatusDashboard/Icon/AppIcon.iconset/icon_128x128@2x.png` — compiled bundle directory: AppIcon.iconset.
+- `apps/ToolStatusDashboard/Icon/AppIcon.iconset/icon_16x16.png` — compiled bundle directory: AppIcon.iconset.
+- `apps/ToolStatusDashboard/Icon/AppIcon.iconset/icon_16x16@2x.png` — compiled bundle directory: AppIcon.iconset.
+- `apps/ToolStatusDashboard/Icon/AppIcon.iconset/icon_256x256.png` — compiled bundle directory: AppIcon.iconset.
+- `apps/ToolStatusDashboard/Icon/AppIcon.iconset/icon_256x256@2x.png` — compiled bundle directory: AppIcon.iconset.
+- `apps/ToolStatusDashboard/Icon/AppIcon.iconset/icon_32x32.png` — compiled bundle directory: AppIcon.iconset.
+- `apps/ToolStatusDashboard/Icon/AppIcon.iconset/icon_32x32@2x.png` — compiled bundle directory: AppIcon.iconset.
+- `apps/ToolStatusDashboard/Icon/AppIcon.iconset/icon_512x512.png` — compiled bundle directory: AppIcon.iconset.
+- `apps/ToolStatusDashboard/Icon/AppIcon.iconset/icon_512x512@2x.png` — compiled bundle directory: AppIcon.iconset.
+- `apps/ToolStatusDashboard/Icon/AppIcon.svg` — excluded suffix: .svg.
+- `apps/ToolStatusDashboard/PEER-REVIEW-FAILURE-NOTIFICATIONS.md` — generated plan/result/review evidence.
+- `apps/ToolStatusDashboard/PLAN-BACKGROUND-SCAN.md` — generated plan/result/review evidence.
+- `apps/ToolStatusDashboard/PLAN-FAILURE-NOTIFICATIONS.md` — generated plan/result/review evidence.
+- `apps/ToolStatusDashboard/RESULT-FAILURE-NOTIFICATIONS.md` — generated plan/result/review evidence.
+- `apps/UsageQueue/Resources/AppIcon.icns` — excluded suffix: .icns.
+- `apps/UsageQueue/Resources/icon-1024.png` — excluded suffix: .png.
+- `apps/Vitals/Icon/AppIcon-1024.png` — excluded suffix: .png.
+- `apps/Vitals/Icon/AppIcon.icns` — excluded suffix: .icns.
+- `apps/Vitals/Icon/AppIcon.iconset/icon_128x128.png` — compiled bundle directory: AppIcon.iconset.
+- `apps/Vitals/Icon/AppIcon.iconset/icon_128x128@2x.png` — compiled bundle directory: AppIcon.iconset.
+- `apps/Vitals/Icon/AppIcon.iconset/icon_16x16.png` — compiled bundle directory: AppIcon.iconset.
+- `apps/Vitals/Icon/AppIcon.iconset/icon_16x16@2x.png` — compiled bundle directory: AppIcon.iconset.
+- `apps/Vitals/Icon/AppIcon.iconset/icon_256x256.png` — compiled bundle directory: AppIcon.iconset.
+- `apps/Vitals/Icon/AppIcon.iconset/icon_256x256@2x.png` — compiled bundle directory: AppIcon.iconset.
+- `apps/Vitals/Icon/AppIcon.iconset/icon_32x32.png` — compiled bundle directory: AppIcon.iconset.
+- `apps/Vitals/Icon/AppIcon.iconset/icon_32x32@2x.png` — compiled bundle directory: AppIcon.iconset.
+- `apps/Vitals/Icon/AppIcon.iconset/icon_512x512.png` — compiled bundle directory: AppIcon.iconset.
+- `apps/Vitals/Icon/AppIcon.iconset/icon_512x512@2x.png` — compiled bundle directory: AppIcon.iconset.
+- `apps/Vitals/Icon/AppIcon.svg` — excluded suffix: .svg.
+- `apps/Vitals/Sources/Sampling/IOReport.swift` — generated/private report or inventory.
+- `apps/WarmCorners/Icon/AppIcon-1024.png` — excluded suffix: .png.
+- `apps/WarmCorners/Icon/AppIcon.icns` — excluded suffix: .icns.
+- `apps/WarmCorners/Icon/AppIcon.iconset/icon_128x128.png` — compiled bundle directory: AppIcon.iconset.
+- `apps/WarmCorners/Icon/AppIcon.iconset/icon_128x128@2x.png` — compiled bundle directory: AppIcon.iconset.
+- `apps/WarmCorners/Icon/AppIcon.iconset/icon_16x16.png` — compiled bundle directory: AppIcon.iconset.
+- `apps/WarmCorners/Icon/AppIcon.iconset/icon_16x16@2x.png` — compiled bundle directory: AppIcon.iconset.
+- `apps/WarmCorners/Icon/AppIcon.iconset/icon_256x256.png` — compiled bundle directory: AppIcon.iconset.
+- `apps/WarmCorners/Icon/AppIcon.iconset/icon_256x256@2x.png` — compiled bundle directory: AppIcon.iconset.
+- `apps/WarmCorners/Icon/AppIcon.iconset/icon_32x32.png` — compiled bundle directory: AppIcon.iconset.
+- `apps/WarmCorners/Icon/AppIcon.iconset/icon_32x32@2x.png` — compiled bundle directory: AppIcon.iconset.
+- `apps/WarmCorners/Icon/AppIcon.iconset/icon_512x512.png` — compiled bundle directory: AppIcon.iconset.
+- `apps/WarmCorners/Icon/AppIcon.iconset/icon_512x512@2x.png` — compiled bundle directory: AppIcon.iconset.
+- `apps/WarmCorners/Icon/AppIcon.svg` — excluded suffix: .svg.
+- `apps/YouTubeFirstContentTab/Assets/YouTubeDefaultsIcon.svg` — excluded suffix: .svg.
+- `apps/YouTubeFirstContentTab/Extension/icons/icon-128.png` — excluded suffix: .png.
+- `apps/YouTubeFirstContentTab/Extension/icons/icon-256.png` — excluded suffix: .png.
+- `apps/YouTubeFirstContentTab/Extension/icons/icon-48.png` — excluded suffix: .png.
+- `apps/YouTubeFirstContentTab/Extension/icons/icon-96.png` — excluded suffix: .png.
+- `apps/YouTubeFirstContentTab/Safari/YouTube First Content Tab/YouTube First Content Tab Extension/Resources/icons/icon-128.png` — excluded suffix: .png.
+- `apps/YouTubeFirstContentTab/Safari/YouTube First Content Tab/YouTube First Content Tab Extension/Resources/icons/icon-256.png` — excluded suffix: .png.
+- `apps/YouTubeFirstContentTab/Safari/YouTube First Content Tab/YouTube First Content Tab Extension/Resources/icons/icon-48.png` — excluded suffix: .png.
+- `apps/YouTubeFirstContentTab/Safari/YouTube First Content Tab/YouTube First Content Tab Extension/Resources/icons/icon-96.png` — excluded suffix: .png.
+- `apps/YouTubeFirstContentTab/Safari/YouTube First Content Tab/YouTube First Content Tab/Assets.xcassets/AppIcon.appiconset/icon_128x128.png` — excluded suffix: .png.
+- `apps/YouTubeFirstContentTab/Safari/YouTube First Content Tab/YouTube First Content Tab/Assets.xcassets/AppIcon.appiconset/icon_128x128@2x.png` — excluded suffix: .png.
+- `apps/YouTubeFirstContentTab/Safari/YouTube First Content Tab/YouTube First Content Tab/Assets.xcassets/AppIcon.appiconset/icon_16x16.png` — excluded suffix: .png.
+- `apps/YouTubeFirstContentTab/Safari/YouTube First Content Tab/YouTube First Content Tab/Assets.xcassets/AppIcon.appiconset/icon_16x16@2x.png` — excluded suffix: .png.
+- `apps/YouTubeFirstContentTab/Safari/YouTube First Content Tab/YouTube First Content Tab/Assets.xcassets/AppIcon.appiconset/icon_256x256.png` — excluded suffix: .png.
+- `apps/YouTubeFirstContentTab/Safari/YouTube First Content Tab/YouTube First Content Tab/Assets.xcassets/AppIcon.appiconset/icon_256x256@2x.png` — excluded suffix: .png.
+- `apps/YouTubeFirstContentTab/Safari/YouTube First Content Tab/YouTube First Content Tab/Assets.xcassets/AppIcon.appiconset/icon_32x32.png` — excluded suffix: .png.
+- `apps/YouTubeFirstContentTab/Safari/YouTube First Content Tab/YouTube First Content Tab/Assets.xcassets/AppIcon.appiconset/icon_32x32@2x.png` — excluded suffix: .png.
+- `apps/YouTubeFirstContentTab/Safari/YouTube First Content Tab/YouTube First Content Tab/Assets.xcassets/AppIcon.appiconset/icon_512x512.png` — excluded suffix: .png.
+- `apps/YouTubeFirstContentTab/Safari/YouTube First Content Tab/YouTube First Content Tab/Assets.xcassets/AppIcon.appiconset/icon_512x512@2x.png` — excluded suffix: .png.
+- `apps/YouTubeFirstContentTab/Safari/YouTube First Content Tab/YouTube First Content Tab/Resources/Icon.png` — excluded suffix: .png.
+- `apps/YouTubeHomeReload/extension/icons/icon-1024.png` — excluded suffix: .png.
+- `apps/YouTubeHomeReload/extension/icons/icon-128.png` — excluded suffix: .png.
+- `apps/YouTubeHomeReload/extension/icons/icon-256.png` — excluded suffix: .png.
+- `apps/YouTubeHomeReload/extension/icons/icon-48.png` — excluded suffix: .png.
+- `apps/YouTubeHomeReload/extension/icons/icon-512.png` — excluded suffix: .png.
+- `automation/codex/skills/tool skills/drawio-skill/data/SHAPE-INDEX-NOTICE.md` — excluded directory: data.
+- `automation/codex/skills/tool skills/drawio-skill/data/lobe-icons.json` — excluded directory: data.
+- `automation/codex/skills/tool skills/drawio-skill/data/shape-index.json.gz` — excluded directory: data.
+- `automation/codex/skills/tool skills/playwright-cli/SKILL.md` — excluded root: automation/codex/skills/tool skills/playwright-cli/SKILL.md.
+- `automation/codex/skills/tool skills/scriptify/scripts/mine-logs.py` — excluded root: automation/codex/skills/tool skills/scriptify/scripts/mine-logs.py.
+- `automation/codex/skills/tool skills/scriptify/scripts/test-mine-logs.py` — excluded root: automation/codex/skills/tool skills/scriptify/scripts/test-mine-logs.py.
+- `automation/codex/skills/workflow skills/design-taste/SKILL.md` — excluded root: automation/codex/skills/workflow skills/design-taste/SKILL.md.
+- `automation/codex/skills/workflow skills/watch/scripts/config.py` — excluded root: automation/codex/skills/workflow skills/watch/scripts/config.py.
+- `automation/codex/skills/workflow skills/web-research/assets/deep-report-template.html` — generated/private report or inventory.
+- `automation/codex/skills/workflow skills/web-research/scripts/deep_report_selftest.py` — generated/private report or inventory.
+- `automation/codex/skills/workflow skills/web-research/scripts/render_deep_report.py` — generated/private report or inventory.
+- `automation/codex/skills/workflow skills/web-research/scripts/selftest.py` — excluded root: automation/codex/skills/workflow skills/web-research/scripts/selftest.py.
+- `automation/local-bin/personal-repo-sync` — private-only maintenance synchronizer with repository identity and external-write authority.
+- `automation/memory-tests/test_redaction.py` — intentionally synthetic secret fixtures are retained only in the private archive.
+- `automation/memory-tools/memory-secret-scan` — credential-named file.
+- `docs/COMPONENT_COVERAGE.md` — unknown path.
+- `docs/COMPONENT_INVENTORY.json` — excluded file: COMPONENT_INVENTORY.json.
+- `docs/REPOSITORY_MAP.md` — unknown path.
+- `public/export-policy.json` — unknown path.
+- `scripts/build-public-toolkit.py` — unknown path.
+- `scripts/inventory-from-machine.py` — unknown path.
+- `scripts/sync-from-machine.sh` — unknown path.
+- `scripts/test-public-toolkit.py` — unknown path.
+- `third-party-local/AmethystFork/LOCAL_BRANCH` — excluded root: third-party-local.
+- `third-party-local/AmethystFork/LOCAL_HEAD` — excluded root: third-party-local.
+- `third-party-local/AmethystFork/UPSTREAM_BASE` — excluded root: third-party-local.
+- `third-party-local/AmethystFork/local-commits.patch` — excluded root: third-party-local.
+- `third-party-local/AmethystFork/working-tree.patch` — excluded root: third-party-local.

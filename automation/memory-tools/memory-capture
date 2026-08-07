@@ -1,0 +1,143 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="${MEMORY_ROOT:-$HOME/.memory}"
+topic="chat"
+kind="note"
+claim=""
+target=""
+raw_file=""
+source_kind="user_chat"
+status="verified"
+confidence="1.0"
+
+usage() {
+  cat <<'USAGE'
+Usage:
+  memory-capture --topic TOPIC [options] < raw.txt
+  memory-capture --raw-file raw/chat/file.md --claim CLAIM [options]
+
+Options:
+  --topic TEXT          Human topic for a new raw capture.
+  --type TEXT           Claim type: preference, decision, workflow, project, source, note.
+  --claim TEXT          Durable claim to append to ledger.ndjson.
+  --target PATH         Target wiki path, relative to memory root.
+  --raw-file PATH       Existing raw file to cite, absolute or relative to memory root.
+  --source-kind TEXT    user_chat, local_file, external_url, inference.
+  --status TEXT         verified, inference, stale, conflicted, rejected.
+  --confidence NUMBER   0.0 to 1.0.
+USAGE
+}
+
+slugify() {
+  printf '%s' "$1" \
+    | tr '[:upper:]' '[:lower:]' \
+    | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//' \
+    | cut -c1-64
+}
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --topic) topic="${2:?missing --topic value}"; shift 2 ;;
+    --type) kind="${2:?missing --type value}"; shift 2 ;;
+    --claim) claim="${2:?missing --claim value}"; shift 2 ;;
+    --target) target="${2:?missing --target value}"; shift 2 ;;
+    --raw-file) raw_file="${2:?missing --raw-file value}"; shift 2 ;;
+    --source-kind) source_kind="${2:?missing --source-kind value}"; shift 2 ;;
+    --status) status="${2:?missing --status value}"; shift 2 ;;
+    --confidence) confidence="${2:?missing --confidence value}"; shift 2 ;;
+    -h|--help) usage; exit 0 ;;
+    *) echo "Unknown argument: $1" >&2; usage >&2; exit 2 ;;
+  esac
+done
+
+command -v jq >/dev/null || { echo "jq is required" >&2; exit 2; }
+command -v shasum >/dev/null || { echo "shasum is required" >&2; exit 2; }
+
+mkdir -p "$ROOT/raw/chat" "$ROOT/wiki"
+touch "$ROOT/ledger.ndjson"
+
+ts="$(date +%Y%m%d-%H%M%S)"
+created_at="$(date +%Y-%m-%dT%H:%M:%S%z)"
+slug="$(slugify "$topic")"
+[ -n "$slug" ] || slug="chat"
+
+if [ -z "$raw_file" ]; then
+  tmp="$(mktemp)"
+  cat > "$tmp"
+  if [ ! -s "$tmp" ]; then
+    echo "No stdin content received for raw capture" >&2
+    rm -f "$tmp"
+    exit 2
+  fi
+  sha="$(shasum -a 256 "$tmp" | awk '{print $1}')"
+  raw_file="$ROOT/raw/chat/${ts}-${slug}.md"
+  {
+    printf -- "---\n"
+    printf "created_at: %s\n" "$created_at"
+    printf "source_kind: %s\n" "$source_kind"
+    printf "topic: %s\n" "$topic"
+    printf "sha256: %s\n" "$sha"
+    printf -- "---\n\n"
+    cat "$tmp"
+  } > "$raw_file"
+  rm -f "$tmp"
+else
+  case "$raw_file" in
+    /*) ;;
+    *) raw_file="$ROOT/$raw_file" ;;
+  esac
+  [ -f "$raw_file" ] || { echo "Raw file not found: $raw_file" >&2; exit 2; }
+  sha="$(shasum -a 256 "$raw_file" | awk '{print $1}')"
+fi
+
+rel_raw="${raw_file#$ROOT/}"
+id="mem_$(date +%Y%m%d_%H%M%S)_${RANDOM}_${slug}"
+
+if [ -z "$claim" ]; then
+  claim="Raw memory input captured for topic: $topic"
+  kind="raw"
+fi
+
+jq -cn \
+  --arg id "$id" \
+  --arg created_at "$created_at" \
+  --arg type "$kind" \
+  --arg claim "$claim" \
+  --arg source "$rel_raw" \
+  --arg target "$target" \
+  --arg status "$status" \
+  --arg confidence "$confidence" \
+  --arg source_kind "$source_kind" \
+  --arg sha256 "$sha" \
+  '{
+    id: $id,
+    created_at: $created_at,
+    type: $type,
+    claim: $claim,
+    source: $source,
+    target: (if $target == "" then null else $target end),
+    status: $status,
+    confidence: ($confidence | tonumber),
+    source_kind: $source_kind,
+    sha256: $sha256
+  }' >> "$ROOT/ledger.ndjson"
+
+# Index the new capture NOW, in the background. Without this a memory is written
+# but unfindable until the next daily build — up to 24h where the system holds a
+# fact it cannot retrieve, which is indistinguishable from not having captured it.
+# Detached and best-effort by design: it must never delay or fail a capture, and
+# --only steps aside silently if a full build already holds the lock.
+if [ "${MEMORY_CAPTURE_INDEX:-1}" = "1" ] && [ -x "$ROOT/tools/memory-semantic-build" ]; then
+  # Every capture appends here, and nothing else ever reads it, so it grows
+  # without bound unless truncated. An unattended system's log files are exactly
+  # where a slow disk-filler hides.
+  _cl="$ROOT/logs/capture-index.log"
+  mkdir -p "$ROOT/logs"
+  [ -f "$_cl" ] && [ "$(stat -f%z "$_cl" 2>/dev/null || echo 0)" -gt 2000000 ] && : > "$_cl"
+  # nohup + subshell, not setsid: setsid does not exist on macOS.
+  ( nohup "$ROOT/tools/memory-semantic-build" --only "$ROOT/$rel_raw" \
+      >>"$_cl" 2>&1 & ) >/dev/null 2>&1 || true
+fi
+
+printf "raw_file=%s\nledger_id=%s\n" "$rel_raw" "$id"

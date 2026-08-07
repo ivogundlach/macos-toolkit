@@ -1,0 +1,17 @@
+{
+  "argument_contract": [
+    "authorized target",
+    "evidence/input path",
+    "scope/rules of engagement",
+    "output path"
+  ],
+  "authorization_required": true,
+  "default_contexts": [
+    "owned",
+    "lab",
+    "defensive",
+    "educational",
+    "explicitly authorized"
+  ],
+  "safe_completion": "Refuse unauthorized real-world harm; proceed only for owned, lab, defensive, educational, or explicitly authorized work."
+}

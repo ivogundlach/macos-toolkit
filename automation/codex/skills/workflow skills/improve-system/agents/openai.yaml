@@ -1,0 +1,4 @@
+interface:
+  display_name: "Improve System"
+  short_description: "Fold session lessons into the agent system"
+  default_prompt: "Use $improve-system to turn the durable lessons from this session into the smallest appropriate system improvements."

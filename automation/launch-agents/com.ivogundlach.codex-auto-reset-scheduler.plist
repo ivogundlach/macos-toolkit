@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.ivogundlach.codex-auto-reset-scheduler</string>
+    <key>ProcessType</key>
+    <string>Background</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/YOUR_USERNAME/.local/bin/codex-auto-reset</string>
+        <string>--schedule</string>
+    </array>
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>12</integer>
+        <key>Minute</key>
+        <integer>17</integer>
+    </dict>
+    <key>StandardErrorPath</key>
+    <string>/Users/YOUR_USERNAME/.local/state/codex-auto-reset/scheduler.err</string>
+    <key>StandardOutPath</key>
+    <string>/Users/YOUR_USERNAME/.local/state/codex-auto-reset/scheduler.out</string>
+    <key>ThrottleInterval</key>
+    <integer>60</integer>
+</dict>
+</plist>

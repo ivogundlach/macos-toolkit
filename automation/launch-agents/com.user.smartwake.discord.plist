@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key><string>com.user.smartwake.discord</string>
+	<key>Program</key><string>/Applications/Smart Wake Discord Watcher.app/Contents/MacOS/discord-watcher</string>
+	<key>RunAtLoad</key><true/>
+	<key>KeepAlive</key><true/>
+	<key>ProcessType</key><string>Background</string>
+	<key>AssociatedBundleIdentifiers</key><string>com.ivo.smartwake.discord-watcher</string>
+	<key>StandardOutPath</key><string>/Users/YOUR_USERNAME/.local/state/smart-wake/discord.out</string>
+	<key>StandardErrorPath</key><string>/Users/YOUR_USERNAME/.local/state/smart-wake/discord.err</string>
+</dict>
+</plist>

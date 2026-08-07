@@ -1,0 +1,1055 @@
+{
+  "components": [
+    {
+      "category": "macOS application",
+      "id": "caniaffordthis",
+      "license": "MIT; provenance: Ivo/agent-authored for Ivo",
+      "location": "apps/CanIAffordThis",
+      "name": "CanIAffordThis",
+      "verification_status": "source export checked; clean-machine install not verified"
+    },
+    {
+      "category": "macOS automation",
+      "id": "codex",
+      "license": "MIT plus component notices; provenance: component-original",
+      "location": "automation/codex",
+      "name": "codex",
+      "verification_status": "source export checked; clean-machine install not verified"
+    },
+    {
+      "category": "macOS application",
+      "id": "copypathfinder",
+      "license": "MIT; provenance: Ivo/agent-authored for Ivo",
+      "location": "apps/CopyPathFinder",
+      "name": "CopyPathFinder",
+      "verification_status": "source export checked; clean-machine install not verified"
+    },
+    {
+      "category": "macOS automation",
+      "id": "custom-app-sources",
+      "license": "MIT; provenance: Ivo/agent-authored for Ivo",
+      "location": "automation/custom-app-sources",
+      "name": "custom-app-sources",
+      "verification_status": "source export checked; clean-machine install not verified"
+    },
+    {
+      "category": "macOS application",
+      "id": "electionsimulator",
+      "license": "MIT; provenance: Ivo/agent-authored for Ivo",
+      "location": "apps/ElectionSimulator",
+      "name": "ElectionSimulator",
+      "verification_status": "source export checked; clean-machine install not verified"
+    },
+    {
+      "category": "macOS application",
+      "id": "forcecopypaste",
+      "license": "MIT; provenance: Ivo/agent-authored for Ivo",
+      "location": "apps/ForceCopyPaste",
+      "name": "ForceCopyPaste",
+      "verification_status": "source export checked; clean-machine install not verified"
+    },
+    {
+      "category": "macOS application",
+      "id": "kinetics",
+      "license": "MIT; provenance: Ivo/agent-authored for Ivo",
+      "location": "apps/Kinetics",
+      "name": "Kinetics",
+      "verification_status": "source export checked; clean-machine install not verified"
+    },
+    {
+      "category": "macOS automation",
+      "id": "launch-agents",
+      "license": "MIT; provenance: Ivo/agent-authored for Ivo",
+      "location": "automation/launch-agents",
+      "name": "launch-agents",
+      "verification_status": "source export checked; clean-machine install not verified"
+    },
+    {
+      "category": "macOS automation",
+      "id": "local-bin",
+      "license": "MIT; provenance: Ivo/agent-authored for Ivo",
+      "location": "automation/local-bin",
+      "name": "local-bin",
+      "verification_status": "source export checked; clean-machine install not verified"
+    },
+    {
+      "category": "macOS automation",
+      "id": "local-read-connectors",
+      "license": "MIT; provenance: Ivo/agent-authored for Ivo",
+      "location": "automation/local-read-connectors",
+      "name": "local-read-connectors",
+      "verification_status": "source export checked; clean-machine install not verified"
+    },
+    {
+      "category": "macOS automation",
+      "id": "macos-services",
+      "license": "MIT; provenance: Ivo/agent-authored for Ivo",
+      "location": "automation/macos-services",
+      "name": "macos-services",
+      "verification_status": "source export checked; clean-machine install not verified"
+    },
+    {
+      "category": "macOS application",
+      "id": "macrosimulator",
+      "license": "MIT; provenance: Ivo/agent-authored for Ivo",
+      "location": "apps/MacroSimulator",
+      "name": "MacroSimulator",
+      "verification_status": "source export checked; clean-machine install not verified"
+    },
+    {
+      "category": "macOS application",
+      "id": "market",
+      "license": "MIT; provenance: Ivo/agent-authored for Ivo",
+      "location": "apps/Market",
+      "name": "Market",
+      "verification_status": "source export checked; clean-machine install not verified"
+    },
+    {
+      "category": "macOS automation",
+      "id": "memory-tests",
+      "license": "MIT; provenance: Ivo/agent-authored for Ivo",
+      "location": "automation/memory-tests",
+      "name": "memory-tests",
+      "verification_status": "source export checked; clean-machine install not verified"
+    },
+    {
+      "category": "macOS automation",
+      "id": "memory-tools",
+      "license": "MIT; provenance: Ivo/agent-authored for Ivo",
+      "location": "automation/memory-tools",
+      "name": "memory-tools",
+      "verification_status": "source export checked; clean-machine install not verified"
+    },
+    {
+      "category": "Safari/browser extension",
+      "id": "newtablinks",
+      "license": "MIT; provenance: Ivo/agent-authored for Ivo",
+      "location": "apps/NewTabLinks",
+      "name": "NewTabLinks",
+      "verification_status": "source export checked; clean-machine install not verified"
+    },
+    {
+      "category": "macOS automation",
+      "id": "notebooklm-sync",
+      "license": "MIT; provenance: Ivo/agent-authored for Ivo",
+      "location": "automation/notebooklm-sync",
+      "name": "notebooklm-sync",
+      "verification_status": "source export checked; clean-machine install not verified"
+    },
+    {
+      "category": "macOS application",
+      "id": "nutrienttracker",
+      "license": "MIT; provenance: Ivo/agent-authored for Ivo",
+      "location": "apps/NutrientTracker",
+      "name": "NutrientTracker",
+      "verification_status": "source export checked; clean-machine install not verified"
+    },
+    {
+      "category": "macOS automation",
+      "id": "quit-on-close",
+      "license": "MIT; provenance: Ivo/agent-authored for Ivo",
+      "location": "automation/quit-on-close",
+      "name": "quit-on-close",
+      "verification_status": "source export checked; clean-machine install not verified"
+    },
+    {
+      "category": "macOS automation",
+      "id": "raycast",
+      "license": "MIT; provenance: Ivo/agent-authored for Ivo",
+      "location": "automation/raycast",
+      "name": "raycast",
+      "verification_status": "source export checked; clean-machine install not verified"
+    },
+    {
+      "category": "macOS automation",
+      "id": "smart-wake",
+      "license": "MIT; provenance: Ivo/agent-authored for Ivo",
+      "location": "automation/smart-wake",
+      "name": "smart-wake",
+      "verification_status": "source export checked; clean-machine install not verified"
+    },
+    {
+      "category": "macOS application",
+      "id": "toolstatusdashboard",
+      "license": "MIT; provenance: Ivo/agent-authored for Ivo",
+      "location": "apps/ToolStatusDashboard",
+      "name": "ToolStatusDashboard",
+      "verification_status": "source export checked; clean-machine install not verified"
+    },
+    {
+      "category": "macOS application",
+      "id": "usagequeue",
+      "license": "MIT; provenance: Ivo/agent-authored for Ivo",
+      "location": "apps/UsageQueue",
+      "name": "UsageQueue",
+      "verification_status": "source export checked; clean-machine install not verified"
+    },
+    {
+      "category": "macOS application",
+      "id": "vitals",
+      "license": "MIT; provenance: Ivo/agent-authored for Ivo",
+      "location": "apps/Vitals",
+      "name": "Vitals",
+      "verification_status": "source export checked; clean-machine install not verified"
+    },
+    {
+      "category": "macOS application",
+      "id": "warmcorners",
+      "license": "MIT; provenance: Ivo/agent-authored for Ivo",
+      "location": "apps/WarmCorners",
+      "name": "WarmCorners",
+      "verification_status": "source export checked; clean-machine install not verified"
+    },
+    {
+      "category": "Safari/browser extension",
+      "id": "youtubefirstcontenttab",
+      "license": "MIT; provenance: Ivo/agent-authored for Ivo",
+      "location": "apps/YouTubeFirstContentTab",
+      "name": "YouTubeFirstContentTab",
+      "verification_status": "source export checked; clean-machine install not verified"
+    },
+    {
+      "category": "Safari/browser extension",
+      "id": "youtubehomereload",
+      "license": "MIT; provenance: Ivo/agent-authored for Ivo",
+      "location": "apps/YouTubeHomeReload",
+      "name": "YouTubeHomeReload",
+      "verification_status": "source export checked; clean-machine install not verified"
+    }
+  ],
+  "exclusions": [
+    {
+      "path": ".gitignore",
+      "reason": "unknown path"
+    },
+    {
+      "path": ".gitleaksignore",
+      "reason": "excluded file: .gitleaksignore"
+    },
+    {
+      "path": "README.md",
+      "reason": "unknown path"
+    },
+    {
+      "path": "apps/CanIAffordThis/public/favicon.svg",
+      "reason": "excluded suffix: .svg"
+    },
+    {
+      "path": "apps/CanIAffordThis/public/file.svg",
+      "reason": "excluded suffix: .svg"
+    },
+    {
+      "path": "apps/CanIAffordThis/public/globe.svg",
+      "reason": "excluded suffix: .svg"
+    },
+    {
+      "path": "apps/CanIAffordThis/public/window.svg",
+      "reason": "excluded suffix: .svg"
+    },
+    {
+      "path": "apps/ElectionSimulator/PEER-REVIEW-LOG.md",
+      "reason": "excluded file: PEER-REVIEW-LOG.md"
+    },
+    {
+      "path": "apps/ElectionSimulator/PLAN.md",
+      "reason": "excluded file: PLAN.md"
+    },
+    {
+      "path": "apps/ElectionSimulator/RESULT.md",
+      "reason": "excluded file: RESULT.md"
+    },
+    {
+      "path": "apps/ElectionSimulator/Resources/AppIcon.icns",
+      "reason": "excluded suffix: .icns"
+    },
+    {
+      "path": "apps/ElectionSimulator/Resources/icon_1024.png",
+      "reason": "excluded suffix: .png"
+    },
+    {
+      "path": "apps/ElectionSimulator/Resources/pilots.json",
+      "reason": "excluded file: pilots.json"
+    },
+    {
+      "path": "apps/ElectionSimulator/Resources/pres_by_cd_2024.csv",
+      "reason": "excluded suffix: .csv"
+    },
+    {
+      "path": "apps/ElectionSimulator/data/GA_precincts.zip",
+      "reason": "excluded directory: data"
+    },
+    {
+      "path": "apps/ElectionSimulator/data/NST-EST2024.csv",
+      "reason": "excluded directory: data"
+    },
+    {
+      "path": "apps/ElectionSimulator/data/apportionment-2020.xlsx",
+      "reason": "excluded directory: data"
+    },
+    {
+      "path": "apps/ElectionSimulator/data/build_ga_precincts.py",
+      "reason": "excluded directory: data"
+    },
+    {
+      "path": "apps/ElectionSimulator/data/build_pilots.py",
+      "reason": "excluded directory: data"
+    },
+    {
+      "path": "apps/ElectionSimulator/data/census_seed.json",
+      "reason": "excluded directory: data"
+    },
+    {
+      "path": "apps/ElectionSimulator/data/co-est2024.csv",
+      "reason": "excluded directory: data"
+    },
+    {
+      "path": "apps/ElectionSimulator/data/counties-geojson.json",
+      "reason": "excluded directory: data"
+    },
+    {
+      "path": "apps/ElectionSimulator/data/county_adjacency.txt",
+      "reason": "excluded directory: data"
+    },
+    {
+      "path": "apps/ElectionSimulator/data/county_pres_2020.csv",
+      "reason": "excluded directory: data"
+    },
+    {
+      "path": "apps/ElectionSimulator/data/ga_precincts/GA_precincts16.cpg",
+      "reason": "excluded directory: data"
+    },
+    {
+      "path": "apps/ElectionSimulator/data/ga_precincts/GA_precincts16.dbf",
+      "reason": "excluded directory: data"
+    },
+    {
+      "path": "apps/ElectionSimulator/data/ga_precincts/GA_precincts16.prj",
+      "reason": "excluded directory: data"
+    },
+    {
+      "path": "apps/ElectionSimulator/data/ga_precincts/GA_precincts16.qpj",
+      "reason": "excluded directory: data"
+    },
+    {
+      "path": "apps/ElectionSimulator/data/ga_precincts/GA_precincts16.shp",
+      "reason": "excluded directory: data"
+    },
+    {
+      "path": "apps/ElectionSimulator/data/ga_precincts/GA_precincts16.shx",
+      "reason": "excluded directory: data"
+    },
+    {
+      "path": "apps/ElectionSimulator/data/ga_precincts/__MACOSX/._GA_precincts16.cpg",
+      "reason": "excluded directory: data"
+    },
+    {
+      "path": "apps/ElectionSimulator/data/ga_precincts/__MACOSX/._GA_precincts16.qpj",
+      "reason": "excluded directory: data"
+    },
+    {
+      "path": "apps/ElectionSimulator/data/legislators-current.json",
+      "reason": "excluded directory: data"
+    },
+    {
+      "path": "apps/ElectionSimulator/data/parse_seeds.py",
+      "reason": "excluded directory: data"
+    },
+    {
+      "path": "apps/ElectionSimulator/data/pilots.json",
+      "reason": "excluded directory: data"
+    },
+    {
+      "path": "apps/ElectionSimulator/data/pres_by_cd_2024.csv",
+      "reason": "excluded directory: data"
+    },
+    {
+      "path": "apps/ElectionSimulator/data/senate_seed.json",
+      "reason": "excluded directory: data"
+    },
+    {
+      "path": "apps/ElectionSimulator/data/senators.xml",
+      "reason": "excluded directory: data"
+    },
+    {
+      "path": "apps/ElectionSimulator/tools/make_icon.swift",
+      "reason": "excluded file: make_icon.swift"
+    },
+    {
+      "path": "apps/ForceCopyPaste/extension/icons/icon-1024.png",
+      "reason": "excluded suffix: .png"
+    },
+    {
+      "path": "apps/ForceCopyPaste/extension/icons/icon-128.png",
+      "reason": "excluded suffix: .png"
+    },
+    {
+      "path": "apps/ForceCopyPaste/extension/icons/icon-256.png",
+      "reason": "excluded suffix: .png"
+    },
+    {
+      "path": "apps/ForceCopyPaste/extension/icons/icon-48.png",
+      "reason": "excluded suffix: .png"
+    },
+    {
+      "path": "apps/ForceCopyPaste/extension/icons/icon-512.png",
+      "reason": "excluded suffix: .png"
+    },
+    {
+      "path": "apps/ForceCopyPaste/extension/icons/icon-off-128.png",
+      "reason": "excluded suffix: .png"
+    },
+    {
+      "path": "apps/ForceCopyPaste/extension/icons/icon-off-48.png",
+      "reason": "excluded suffix: .png"
+    },
+    {
+      "path": "apps/Kinetics/Resources/AppIcon.icns",
+      "reason": "excluded suffix: .icns"
+    },
+    {
+      "path": "apps/MacroSimulator/app_icon_transparent.gold-backup.png",
+      "reason": "excluded suffix: .png"
+    },
+    {
+      "path": "apps/MacroSimulator/app_icon_transparent.png",
+      "reason": "excluded suffix: .png"
+    },
+    {
+      "path": "apps/MacroSimulator/app_icon_transparent.silver-90pct-backup.png",
+      "reason": "excluded suffix: .png"
+    },
+    {
+      "path": "apps/MacroSimulator/app_icon_transparent.silver-small-backup.png",
+      "reason": "excluded suffix: .png"
+    },
+    {
+      "path": "apps/MacroSimulator/app_icon_transparent_silver.png",
+      "reason": "excluded suffix: .png"
+    },
+    {
+      "path": "apps/Market/.claude/launch.json",
+      "reason": "excluded directory: .claude"
+    },
+    {
+      "path": "apps/Market/APP-PEER-REVIEW-LOG.md",
+      "reason": "generated plan/result/review evidence"
+    },
+    {
+      "path": "apps/Market/APP-PLAN.md",
+      "reason": "generated plan/result/review evidence"
+    },
+    {
+      "path": "apps/Market/PEER-REVIEW-LOG.md",
+      "reason": "excluded file: PEER-REVIEW-LOG.md"
+    },
+    {
+      "path": "apps/Market/PLAN.md",
+      "reason": "excluded file: PLAN.md"
+    },
+    {
+      "path": "apps/Market/app/Sources/Market/Data/AppCtl.swift",
+      "reason": "excluded directory: Data"
+    },
+    {
+      "path": "apps/Market/app/Sources/Market/Data/ConfigStore.swift",
+      "reason": "excluded directory: Data"
+    },
+    {
+      "path": "apps/Market/app/Sources/Market/Data/Notifier.swift",
+      "reason": "excluded directory: Data"
+    },
+    {
+      "path": "apps/Market/app/Sources/Market/Data/Repository.swift",
+      "reason": "excluded directory: Data"
+    },
+    {
+      "path": "apps/Market/app/Sources/Market/Data/SQLite.swift",
+      "reason": "excluded directory: Data"
+    },
+    {
+      "path": "apps/Market/app/packaging/Market.icns",
+      "reason": "excluded suffix: .icns"
+    },
+    {
+      "path": "apps/Market/app/packaging/Market.iconset/icon_128x128.png",
+      "reason": "compiled bundle directory: Market.iconset"
+    },
+    {
+      "path": "apps/Market/app/packaging/Market.iconset/icon_128x128@2x.png",
+      "reason": "compiled bundle directory: Market.iconset"
+    },
+    {
+      "path": "apps/Market/app/packaging/Market.iconset/icon_16x16.png",
+      "reason": "compiled bundle directory: Market.iconset"
+    },
+    {
+      "path": "apps/Market/app/packaging/Market.iconset/icon_16x16@2x.png",
+      "reason": "compiled bundle directory: Market.iconset"
+    },
+    {
+      "path": "apps/Market/app/packaging/Market.iconset/icon_256x256.png",
+      "reason": "compiled bundle directory: Market.iconset"
+    },
+    {
+      "path": "apps/Market/app/packaging/Market.iconset/icon_256x256@2x.png",
+      "reason": "compiled bundle directory: Market.iconset"
+    },
+    {
+      "path": "apps/Market/app/packaging/Market.iconset/icon_32x32.png",
+      "reason": "compiled bundle directory: Market.iconset"
+    },
+    {
+      "path": "apps/Market/app/packaging/Market.iconset/icon_32x32@2x.png",
+      "reason": "compiled bundle directory: Market.iconset"
+    },
+    {
+      "path": "apps/Market/app/packaging/Market.iconset/icon_512x512.png",
+      "reason": "compiled bundle directory: Market.iconset"
+    },
+    {
+      "path": "apps/Market/app/packaging/Market.iconset/icon_512x512@2x.png",
+      "reason": "compiled bundle directory: Market.iconset"
+    },
+    {
+      "path": "apps/Market/app/packaging/icon.svg",
+      "reason": "excluded suffix: .svg"
+    },
+    {
+      "path": "apps/Market/config.json",
+      "reason": "excluded file: config.json"
+    },
+    {
+      "path": "apps/NewTabLinks/extension/icons/icon-1024.png",
+      "reason": "excluded suffix: .png"
+    },
+    {
+      "path": "apps/NewTabLinks/extension/icons/icon-128.png",
+      "reason": "excluded suffix: .png"
+    },
+    {
+      "path": "apps/NewTabLinks/extension/icons/icon-256.png",
+      "reason": "excluded suffix: .png"
+    },
+    {
+      "path": "apps/NewTabLinks/extension/icons/icon-48.png",
+      "reason": "excluded suffix: .png"
+    },
+    {
+      "path": "apps/NewTabLinks/extension/icons/icon-512.png",
+      "reason": "excluded suffix: .png"
+    },
+    {
+      "path": "apps/NutrientTracker/Resources/AppIcon.icns",
+      "reason": "excluded suffix: .icns"
+    },
+    {
+      "path": "apps/NutrientTracker/Resources/AppIcon.png",
+      "reason": "excluded suffix: .png"
+    },
+    {
+      "path": "apps/NutrientTracker/Resources/usda_foods.sqlite",
+      "reason": "excluded suffix: .sqlite"
+    },
+    {
+      "path": "apps/NutrientTracker/Sources/NutrientTracker/Data/FoodDB.swift",
+      "reason": "excluded directory: Data"
+    },
+    {
+      "path": "apps/NutrientTracker/tools/GeneratedData.swift",
+      "reason": "source absent from the immutable target snapshot; no generated dataset was exported"
+    },
+    {
+      "path": "apps/NutrientTracker/tools/make_icon.swift",
+      "reason": "excluded file: make_icon.swift"
+    },
+    {
+      "path": "apps/School/PEER-REVIEW-LOG.md",
+      "reason": "excluded root: apps/School"
+    },
+    {
+      "path": "apps/School/PLAN.md",
+      "reason": "excluded root: apps/School"
+    },
+    {
+      "path": "apps/School/RESULT.md",
+      "reason": "excluded root: apps/School"
+    },
+    {
+      "path": "apps/School/SOURCE-MANIFEST.sha256",
+      "reason": "excluded root: apps/School"
+    },
+    {
+      "path": "apps/School/studykit/studykit.py",
+      "reason": "excluded root: apps/School"
+    },
+    {
+      "path": "apps/School/sync/pytest.ini",
+      "reason": "excluded root: apps/School"
+    },
+    {
+      "path": "apps/School/sync/school_sync.py",
+      "reason": "excluded root: apps/School"
+    },
+    {
+      "path": "apps/School/sync/setup_session.py",
+      "reason": "excluded root: apps/School"
+    },
+    {
+      "path": "apps/School/sync/tests/test_core.py",
+      "reason": "excluded root: apps/School"
+    },
+    {
+      "path": "apps/School/sync/uahsync/__init__.py",
+      "reason": "excluded root: apps/School"
+    },
+    {
+      "path": "apps/School/sync/uahsync/banner.py",
+      "reason": "excluded root: apps/School"
+    },
+    {
+      "path": "apps/School/sync/uahsync/canvas_ics.py",
+      "reason": "excluded root: apps/School"
+    },
+    {
+      "path": "apps/School/sync/uahsync/canvas_rest.py",
+      "reason": "excluded root: apps/School"
+    },
+    {
+      "path": "apps/School/sync/uahsync/config.py",
+      "reason": "excluded root: apps/School"
+    },
+    {
+      "path": "apps/School/sync/uahsync/grades.py",
+      "reason": "excluded root: apps/School"
+    },
+    {
+      "path": "apps/School/sync/uahsync/lock.py",
+      "reason": "excluded root: apps/School"
+    },
+    {
+      "path": "apps/School/sync/uahsync/markers.py",
+      "reason": "excluded root: apps/School"
+    },
+    {
+      "path": "apps/School/sync/uahsync/notify.py",
+      "reason": "excluded root: apps/School"
+    },
+    {
+      "path": "apps/School/sync/uahsync/reconcile.py",
+      "reason": "excluded root: apps/School"
+    },
+    {
+      "path": "apps/School/sync/uahsync/runlog.py",
+      "reason": "excluded root: apps/School"
+    },
+    {
+      "path": "apps/School/sync/uahsync/semester.py",
+      "reason": "excluded root: apps/School"
+    },
+    {
+      "path": "apps/School/sync/uahsync/state.py",
+      "reason": "excluded root: apps/School"
+    },
+    {
+      "path": "apps/School/sync/uahsync/store.py",
+      "reason": "excluded root: apps/School"
+    },
+    {
+      "path": "apps/ToolStatusDashboard/Icon/AppIcon-1024.png",
+      "reason": "excluded suffix: .png"
+    },
+    {
+      "path": "apps/ToolStatusDashboard/Icon/AppIcon.icns",
+      "reason": "excluded suffix: .icns"
+    },
+    {
+      "path": "apps/ToolStatusDashboard/Icon/AppIcon.iconset/icon_128x128.png",
+      "reason": "compiled bundle directory: AppIcon.iconset"
+    },
+    {
+      "path": "apps/ToolStatusDashboard/Icon/AppIcon.iconset/icon_128x128@2x.png",
+      "reason": "compiled bundle directory: AppIcon.iconset"
+    },
+    {
+      "path": "apps/ToolStatusDashboard/Icon/AppIcon.iconset/icon_16x16.png",
+      "reason": "compiled bundle directory: AppIcon.iconset"
+    },
+    {
+      "path": "apps/ToolStatusDashboard/Icon/AppIcon.iconset/icon_16x16@2x.png",
+      "reason": "compiled bundle directory: AppIcon.iconset"
+    },
+    {
+      "path": "apps/ToolStatusDashboard/Icon/AppIcon.iconset/icon_256x256.png",
+      "reason": "compiled bundle directory: AppIcon.iconset"
+    },
+    {
+      "path": "apps/ToolStatusDashboard/Icon/AppIcon.iconset/icon_256x256@2x.png",
+      "reason": "compiled bundle directory: AppIcon.iconset"
+    },
+    {
+      "path": "apps/ToolStatusDashboard/Icon/AppIcon.iconset/icon_32x32.png",
+      "reason": "compiled bundle directory: AppIcon.iconset"
+    },
+    {
+      "path": "apps/ToolStatusDashboard/Icon/AppIcon.iconset/icon_32x32@2x.png",
+      "reason": "compiled bundle directory: AppIcon.iconset"
+    },
+    {
+      "path": "apps/ToolStatusDashboard/Icon/AppIcon.iconset/icon_512x512.png",
+      "reason": "compiled bundle directory: AppIcon.iconset"
+    },
+    {
+      "path": "apps/ToolStatusDashboard/Icon/AppIcon.iconset/icon_512x512@2x.png",
+      "reason": "compiled bundle directory: AppIcon.iconset"
+    },
+    {
+      "path": "apps/ToolStatusDashboard/Icon/AppIcon.svg",
+      "reason": "excluded suffix: .svg"
+    },
+    {
+      "path": "apps/ToolStatusDashboard/PEER-REVIEW-FAILURE-NOTIFICATIONS.md",
+      "reason": "generated plan/result/review evidence"
+    },
+    {
+      "path": "apps/ToolStatusDashboard/PLAN-BACKGROUND-SCAN.md",
+      "reason": "generated plan/result/review evidence"
+    },
+    {
+      "path": "apps/ToolStatusDashboard/PLAN-FAILURE-NOTIFICATIONS.md",
+      "reason": "generated plan/result/review evidence"
+    },
+    {
+      "path": "apps/ToolStatusDashboard/RESULT-FAILURE-NOTIFICATIONS.md",
+      "reason": "generated plan/result/review evidence"
+    },
+    {
+      "path": "apps/UsageQueue/Resources/AppIcon.icns",
+      "reason": "excluded suffix: .icns"
+    },
+    {
+      "path": "apps/UsageQueue/Resources/icon-1024.png",
+      "reason": "excluded suffix: .png"
+    },
+    {
+      "path": "apps/Vitals/Icon/AppIcon-1024.png",
+      "reason": "excluded suffix: .png"
+    },
+    {
+      "path": "apps/Vitals/Icon/AppIcon.icns",
+      "reason": "excluded suffix: .icns"
+    },
+    {
+      "path": "apps/Vitals/Icon/AppIcon.iconset/icon_128x128.png",
+      "reason": "compiled bundle directory: AppIcon.iconset"
+    },
+    {
+      "path": "apps/Vitals/Icon/AppIcon.iconset/icon_128x128@2x.png",
+      "reason": "compiled bundle directory: AppIcon.iconset"
+    },
+    {
+      "path": "apps/Vitals/Icon/AppIcon.iconset/icon_16x16.png",
+      "reason": "compiled bundle directory: AppIcon.iconset"
+    },
+    {
+      "path": "apps/Vitals/Icon/AppIcon.iconset/icon_16x16@2x.png",
+      "reason": "compiled bundle directory: AppIcon.iconset"
+    },
+    {
+      "path": "apps/Vitals/Icon/AppIcon.iconset/icon_256x256.png",
+      "reason": "compiled bundle directory: AppIcon.iconset"
+    },
+    {
+      "path": "apps/Vitals/Icon/AppIcon.iconset/icon_256x256@2x.png",
+      "reason": "compiled bundle directory: AppIcon.iconset"
+    },
+    {
+      "path": "apps/Vitals/Icon/AppIcon.iconset/icon_32x32.png",
+      "reason": "compiled bundle directory: AppIcon.iconset"
+    },
+    {
+      "path": "apps/Vitals/Icon/AppIcon.iconset/icon_32x32@2x.png",
+      "reason": "compiled bundle directory: AppIcon.iconset"
+    },
+    {
+      "path": "apps/Vitals/Icon/AppIcon.iconset/icon_512x512.png",
+      "reason": "compiled bundle directory: AppIcon.iconset"
+    },
+    {
+      "path": "apps/Vitals/Icon/AppIcon.iconset/icon_512x512@2x.png",
+      "reason": "compiled bundle directory: AppIcon.iconset"
+    },
+    {
+      "path": "apps/Vitals/Icon/AppIcon.svg",
+      "reason": "excluded suffix: .svg"
+    },
+    {
+      "path": "apps/Vitals/Sources/Sampling/IOReport.swift",
+      "reason": "generated/private report or inventory"
+    },
+    {
+      "path": "apps/WarmCorners/Icon/AppIcon-1024.png",
+      "reason": "excluded suffix: .png"
+    },
+    {
+      "path": "apps/WarmCorners/Icon/AppIcon.icns",
+      "reason": "excluded suffix: .icns"
+    },
+    {
+      "path": "apps/WarmCorners/Icon/AppIcon.iconset/icon_128x128.png",
+      "reason": "compiled bundle directory: AppIcon.iconset"
+    },
+    {
+      "path": "apps/WarmCorners/Icon/AppIcon.iconset/icon_128x128@2x.png",
+      "reason": "compiled bundle directory: AppIcon.iconset"
+    },
+    {
+      "path": "apps/WarmCorners/Icon/AppIcon.iconset/icon_16x16.png",
+      "reason": "compiled bundle directory: AppIcon.iconset"
+    },
+    {
+      "path": "apps/WarmCorners/Icon/AppIcon.iconset/icon_16x16@2x.png",
+      "reason": "compiled bundle directory: AppIcon.iconset"
+    },
+    {
+      "path": "apps/WarmCorners/Icon/AppIcon.iconset/icon_256x256.png",
+      "reason": "compiled bundle directory: AppIcon.iconset"
+    },
+    {
+      "path": "apps/WarmCorners/Icon/AppIcon.iconset/icon_256x256@2x.png",
+      "reason": "compiled bundle directory: AppIcon.iconset"
+    },
+    {
+      "path": "apps/WarmCorners/Icon/AppIcon.iconset/icon_32x32.png",
+      "reason": "compiled bundle directory: AppIcon.iconset"
+    },
+    {
+      "path": "apps/WarmCorners/Icon/AppIcon.iconset/icon_32x32@2x.png",
+      "reason": "compiled bundle directory: AppIcon.iconset"
+    },
+    {
+      "path": "apps/WarmCorners/Icon/AppIcon.iconset/icon_512x512.png",
+      "reason": "compiled bundle directory: AppIcon.iconset"
+    },
+    {
+      "path": "apps/WarmCorners/Icon/AppIcon.iconset/icon_512x512@2x.png",
+      "reason": "compiled bundle directory: AppIcon.iconset"
+    },
+    {
+      "path": "apps/WarmCorners/Icon/AppIcon.svg",
+      "reason": "excluded suffix: .svg"
+    },
+    {
+      "path": "apps/YouTubeFirstContentTab/Assets/YouTubeDefaultsIcon.svg",
+      "reason": "excluded suffix: .svg"
+    },
+    {
+      "path": "apps/YouTubeFirstContentTab/Extension/icons/icon-128.png",
+      "reason": "excluded suffix: .png"
+    },
+    {
+      "path": "apps/YouTubeFirstContentTab/Extension/icons/icon-256.png",
+      "reason": "excluded suffix: .png"
+    },
+    {
+      "path": "apps/YouTubeFirstContentTab/Extension/icons/icon-48.png",
+      "reason": "excluded suffix: .png"
+    },
+    {
+      "path": "apps/YouTubeFirstContentTab/Extension/icons/icon-96.png",
+      "reason": "excluded suffix: .png"
+    },
+    {
+      "path": "apps/YouTubeFirstContentTab/Safari/YouTube First Content Tab/YouTube First Content Tab Extension/Resources/icons/icon-128.png",
+      "reason": "excluded suffix: .png"
+    },
+    {
+      "path": "apps/YouTubeFirstContentTab/Safari/YouTube First Content Tab/YouTube First Content Tab Extension/Resources/icons/icon-256.png",
+      "reason": "excluded suffix: .png"
+    },
+    {
+      "path": "apps/YouTubeFirstContentTab/Safari/YouTube First Content Tab/YouTube First Content Tab Extension/Resources/icons/icon-48.png",
+      "reason": "excluded suffix: .png"
+    },
+    {
+      "path": "apps/YouTubeFirstContentTab/Safari/YouTube First Content Tab/YouTube First Content Tab Extension/Resources/icons/icon-96.png",
+      "reason": "excluded suffix: .png"
+    },
+    {
+      "path": "apps/YouTubeFirstContentTab/Safari/YouTube First Content Tab/YouTube First Content Tab/Assets.xcassets/AppIcon.appiconset/icon_128x128.png",
+      "reason": "excluded suffix: .png"
+    },
+    {
+      "path": "apps/YouTubeFirstContentTab/Safari/YouTube First Content Tab/YouTube First Content Tab/Assets.xcassets/AppIcon.appiconset/icon_128x128@2x.png",
+      "reason": "excluded suffix: .png"
+    },
+    {
+      "path": "apps/YouTubeFirstContentTab/Safari/YouTube First Content Tab/YouTube First Content Tab/Assets.xcassets/AppIcon.appiconset/icon_16x16.png",
+      "reason": "excluded suffix: .png"
+    },
+    {
+      "path": "apps/YouTubeFirstContentTab/Safari/YouTube First Content Tab/YouTube First Content Tab/Assets.xcassets/AppIcon.appiconset/icon_16x16@2x.png",
+      "reason": "excluded suffix: .png"
+    },
+    {
+      "path": "apps/YouTubeFirstContentTab/Safari/YouTube First Content Tab/YouTube First Content Tab/Assets.xcassets/AppIcon.appiconset/icon_256x256.png",
+      "reason": "excluded suffix: .png"
+    },
+    {
+      "path": "apps/YouTubeFirstContentTab/Safari/YouTube First Content Tab/YouTube First Content Tab/Assets.xcassets/AppIcon.appiconset/icon_256x256@2x.png",
+      "reason": "excluded suffix: .png"
+    },
+    {
+      "path": "apps/YouTubeFirstContentTab/Safari/YouTube First Content Tab/YouTube First Content Tab/Assets.xcassets/AppIcon.appiconset/icon_32x32.png",
+      "reason": "excluded suffix: .png"
+    },
+    {
+      "path": "apps/YouTubeFirstContentTab/Safari/YouTube First Content Tab/YouTube First Content Tab/Assets.xcassets/AppIcon.appiconset/icon_32x32@2x.png",
+      "reason": "excluded suffix: .png"
+    },
+    {
+      "path": "apps/YouTubeFirstContentTab/Safari/YouTube First Content Tab/YouTube First Content Tab/Assets.xcassets/AppIcon.appiconset/icon_512x512.png",
+      "reason": "excluded suffix: .png"
+    },
+    {
+      "path": "apps/YouTubeFirstContentTab/Safari/YouTube First Content Tab/YouTube First Content Tab/Assets.xcassets/AppIcon.appiconset/icon_512x512@2x.png",
+      "reason": "excluded suffix: .png"
+    },
+    {
+      "path": "apps/YouTubeFirstContentTab/Safari/YouTube First Content Tab/YouTube First Content Tab/Resources/Icon.png",
+      "reason": "excluded suffix: .png"
+    },
+    {
+      "path": "apps/YouTubeHomeReload/extension/icons/icon-1024.png",
+      "reason": "excluded suffix: .png"
+    },
+    {
+      "path": "apps/YouTubeHomeReload/extension/icons/icon-128.png",
+      "reason": "excluded suffix: .png"
+    },
+    {
+      "path": "apps/YouTubeHomeReload/extension/icons/icon-256.png",
+      "reason": "excluded suffix: .png"
+    },
+    {
+      "path": "apps/YouTubeHomeReload/extension/icons/icon-48.png",
+      "reason": "excluded suffix: .png"
+    },
+    {
+      "path": "apps/YouTubeHomeReload/extension/icons/icon-512.png",
+      "reason": "excluded suffix: .png"
+    },
+    {
+      "path": "automation/codex/skills/tool skills/drawio-skill/data/SHAPE-INDEX-NOTICE.md",
+      "reason": "excluded directory: data"
+    },
+    {
+      "path": "automation/codex/skills/tool skills/drawio-skill/data/lobe-icons.json",
+      "reason": "excluded directory: data"
+    },
+    {
+      "path": "automation/codex/skills/tool skills/drawio-skill/data/shape-index.json.gz",
+      "reason": "excluded directory: data"
+    },
+    {
+      "path": "automation/codex/skills/tool skills/playwright-cli/SKILL.md",
+      "reason": "excluded root: automation/codex/skills/tool skills/playwright-cli/SKILL.md"
+    },
+    {
+      "path": "automation/codex/skills/tool skills/scriptify/scripts/mine-logs.py",
+      "reason": "excluded root: automation/codex/skills/tool skills/scriptify/scripts/mine-logs.py"
+    },
+    {
+      "path": "automation/codex/skills/tool skills/scriptify/scripts/test-mine-logs.py",
+      "reason": "excluded root: automation/codex/skills/tool skills/scriptify/scripts/test-mine-logs.py"
+    },
+    {
+      "path": "automation/codex/skills/workflow skills/design-taste/SKILL.md",
+      "reason": "excluded root: automation/codex/skills/workflow skills/design-taste/SKILL.md"
+    },
+    {
+      "path": "automation/codex/skills/workflow skills/watch/scripts/config.py",
+      "reason": "excluded root: automation/codex/skills/workflow skills/watch/scripts/config.py"
+    },
+    {
+      "path": "automation/codex/skills/workflow skills/web-research/assets/deep-report-template.html",
+      "reason": "generated/private report or inventory"
+    },
+    {
+      "path": "automation/codex/skills/workflow skills/web-research/scripts/deep_report_selftest.py",
+      "reason": "generated/private report or inventory"
+    },
+    {
+      "path": "automation/codex/skills/workflow skills/web-research/scripts/render_deep_report.py",
+      "reason": "generated/private report or inventory"
+    },
+    {
+      "path": "automation/codex/skills/workflow skills/web-research/scripts/selftest.py",
+      "reason": "excluded root: automation/codex/skills/workflow skills/web-research/scripts/selftest.py"
+    },
+    {
+      "path": "automation/local-bin/personal-repo-sync",
+      "reason": "private-only maintenance synchronizer with repository identity and external-write authority"
+    },
+    {
+      "path": "automation/memory-tests/test_redaction.py",
+      "reason": "intentionally synthetic secret fixtures are retained only in the private archive"
+    },
+    {
+      "path": "automation/memory-tools/memory-secret-scan",
+      "reason": "credential-named file"
+    },
+    {
+      "path": "docs/COMPONENT_COVERAGE.md",
+      "reason": "unknown path"
+    },
+    {
+      "path": "docs/COMPONENT_INVENTORY.json",
+      "reason": "excluded file: COMPONENT_INVENTORY.json"
+    },
+    {
+      "path": "docs/REPOSITORY_MAP.md",
+      "reason": "unknown path"
+    },
+    {
+      "path": "public/export-policy.json",
+      "reason": "unknown path"
+    },
+    {
+      "path": "scripts/build-public-toolkit.py",
+      "reason": "unknown path"
+    },
+    {
+      "path": "scripts/inventory-from-machine.py",
+      "reason": "unknown path"
+    },
+    {
+      "path": "scripts/sync-from-machine.sh",
+      "reason": "unknown path"
+    },
+    {
+      "path": "scripts/test-public-toolkit.py",
+      "reason": "unknown path"
+    },
+    {
+      "path": "third-party-local/AmethystFork/LOCAL_BRANCH",
+      "reason": "excluded root: third-party-local"
+    },
+    {
+      "path": "third-party-local/AmethystFork/LOCAL_HEAD",
+      "reason": "excluded root: third-party-local"
+    },
+    {
+      "path": "third-party-local/AmethystFork/UPSTREAM_BASE",
+      "reason": "excluded root: third-party-local"
+    },
+    {
+      "path": "third-party-local/AmethystFork/local-commits.patch",
+      "reason": "excluded root: third-party-local"
+    },
+    {
+      "path": "third-party-local/AmethystFork/working-tree.patch",
+      "reason": "excluded root: third-party-local"
+    }
+  ],
+  "schema_version": 1
+}

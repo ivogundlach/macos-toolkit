@@ -1,0 +1,3 @@
+#!/bin/sh
+export GROK_HOME=/Users/YOUR_USERNAME/.opencodex/no-grok
+exec /opt/homebrew/bin/opencodex "$@"

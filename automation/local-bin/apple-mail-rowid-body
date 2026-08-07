@@ -1,0 +1,259 @@
+#!/usr/bin/env python3
+"""Read Apple Mail messages by Envelope Index row id.
+
+Usage:
+  apple-mail-rowid-body 5915 5916
+  apple-mail-rowid-body --json 5915
+
+Read-only helper. It maps Mail's Envelope Index row ids to the matching
+.emlx files and prints decoded message text with minimal metadata.
+"""
+
+from __future__ import annotations
+
+import argparse
+import email
+import html
+import json
+import re
+import sqlite3
+import subprocess
+import sys
+from email import policy
+from pathlib import Path
+
+
+HOME = Path.home()
+MAIL_ROOT = HOME / "Library" / "Mail" / "V10"
+DB = MAIL_ROOT / "MailData" / "Envelope Index"
+
+
+def decode_emlx(path: Path) -> email.message.EmailMessage:
+    data = path.read_bytes()
+    first_newline = data.find(b"\n")
+    if first_newline != -1 and data[:first_newline].strip().isdigit():
+        data = data[first_newline + 1 :]
+    return email.message_from_bytes(data, policy=policy.default)
+
+
+def html_to_text(value: str) -> str:
+    value = re.sub(r"(?is)<(script|style).*?</\1>", " ", value)
+    value = re.sub(r"(?i)<br\s*/?>", "\n", value)
+    value = re.sub(r"(?i)</p\s*>", "\n", value)
+    value = re.sub(r"(?s)<[^>]+>", " ", value)
+    value = html.unescape(value)
+    return re.sub(r"[ \t\r\f\v]+", " ", value)
+
+
+def message_text(msg: email.message.EmailMessage) -> str:
+    plain_parts: list[str] = []
+    html_parts: list[str] = []
+
+    for part in msg.walk() if msg.is_multipart() else [msg]:
+        if part.is_multipart():
+            continue
+        disposition = (part.get_content_disposition() or "").lower()
+        if disposition == "attachment":
+            continue
+        ctype = part.get_content_type().lower()
+        try:
+            content = part.get_content()
+        except Exception:
+            payload = part.get_payload(decode=True) or b""
+            charset = part.get_content_charset() or "utf-8"
+            content = payload.decode(charset, errors="replace")
+        if not isinstance(content, str):
+            continue
+        if ctype == "text/plain":
+            plain_parts.append(content)
+        elif ctype == "text/html":
+            html_parts.append(html_to_text(content))
+
+    text = "\n\n".join(plain_parts or html_parts)
+    text = text.replace("\xa0", " ")
+    lines = [re.sub(r"[ \t]+", " ", line).strip() for line in text.splitlines()]
+    compact: list[str] = []
+    blank = False
+    for line in lines:
+        if not line:
+            if not blank:
+                compact.append("")
+            blank = True
+            continue
+        compact.append(line)
+        blank = False
+    return "\n".join(compact).strip()
+
+
+def find_emlx_by_header(message_id_header: str | None) -> Path | None:
+    if not message_id_header:
+        return None
+    header = message_id_header.strip()
+    needles = [f"Message-ID: {header}", f"Message-Id: {header}", f"Message-id: {header}"]
+    paths: list[Path] = []
+    for needle in needles:
+        proc = subprocess.run(
+            ["rg", "-l", "--text", "-F", needle, str(MAIL_ROOT)],
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+        )
+        paths.extend(Path(line) for line in proc.stdout.splitlines())
+    if not paths:
+        return None
+    unique_paths = list(dict.fromkeys(paths))
+    for path in unique_paths:
+        if path.suffix == ".emlx" or path.name.endswith(".partial.emlx"):
+            return path
+    return None
+
+
+def find_emlx_by_header_anywhere(message_id_header: str | None) -> Path | None:
+    if not message_id_header:
+        return None
+    needle = message_id_header.strip("<>")
+    proc = subprocess.run(
+        ["rg", "-l", "--text", "-F", needle, str(MAIL_ROOT)],
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        text=True,
+    )
+    for line in proc.stdout.splitlines():
+        path = Path(line)
+        if path.suffix == ".emlx" or path.name.endswith(".partial.emlx"):
+            try:
+                msg = decode_emlx(path)
+            except Exception:
+                continue
+            if (msg.get("Message-ID") or "").strip() == message_id_header.strip():
+                return path
+    return None
+
+
+def find_emlx(candidates: list[int]) -> Path | None:
+    names: list[str] = []
+    for candidate in candidates:
+        if not candidate:
+            continue
+        names.append(f"{candidate}.emlx")
+        names.append(f"{candidate}.partial.emlx")
+    if not names:
+        return None
+    find_expr: list[str] = []
+    for index, name in enumerate(names):
+        if index:
+            find_expr.append("-o")
+        find_expr.extend(["-name", name])
+    proc = subprocess.run(
+        ["find", str(MAIL_ROOT), *find_expr],
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        text=True,
+    )
+    for line in proc.stdout.splitlines():
+        path = Path(line)
+        if path.is_file():
+            return path
+    return None
+
+
+def load_rows(rowids: list[int]) -> list[dict]:
+    placeholders = ",".join("?" for _ in rowids)
+    query = f"""
+        select m.ROWID,
+               m.message_id,
+               m.global_message_id,
+               m.remote_id,
+               mgd.message_id_header,
+               datetime(m.date_received, 'unixepoch', 'localtime') as received,
+               datetime(m.date_sent, 'unixepoch', 'localtime') as sent,
+               a.address,
+               a.comment,
+               s.subject,
+               mb.url
+        from messages m
+        left join message_global_data mgd on m.global_message_id = mgd.ROWID
+        left join addresses a on m.sender = a.ROWID
+        left join subjects s on m.subject = s.ROWID
+        left join mailboxes mb on m.mailbox = mb.ROWID
+        where m.ROWID in ({placeholders})
+        order by m.date_received asc
+    """
+    with sqlite3.connect(DB) as con:
+        return [
+            {
+                "rowid": rowid,
+                "message_id": message_id,
+                "global_message_id": global_message_id,
+                "remote_id": remote_id,
+                "message_id_header_index": message_id_header,
+                "received": received,
+                "sent": sent,
+                "from": address,
+                "from_name": comment,
+                "subject": subject,
+                "mailbox": mailbox,
+            }
+            for (
+                rowid,
+                message_id,
+                global_message_id,
+                remote_id,
+                message_id_header,
+                received,
+                sent,
+                address,
+                comment,
+                subject,
+                mailbox,
+            ) in con.execute(query, rowids)
+        ]
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--json", action="store_true", help="emit JSON")
+    parser.add_argument("rowids", nargs="+", type=int)
+    args = parser.parse_args()
+
+    items = []
+    for row in load_rows(args.rowids):
+        path = find_emlx_by_header(row["message_id_header_index"])
+        if not path:
+            path = find_emlx([row["rowid"], row["remote_id"], row["global_message_id"], row["message_id"]])
+        if not path:
+            path = find_emlx_by_header_anywhere(row["message_id_header_index"])
+        row["emlx"] = str(path) if path else None
+        if path:
+            msg = decode_emlx(path)
+            row["message_id_header"] = msg.get("Message-ID")
+            row["to"] = msg.get("To")
+            row["cc"] = msg.get("Cc")
+            row["reply_to"] = msg.get("Reply-To")
+            row["body"] = message_text(msg)
+        else:
+            row["body"] = ""
+        items.append(row)
+
+    if args.json:
+        json.dump(items, sys.stdout, ensure_ascii=False, indent=2)
+        print()
+    else:
+        for index, item in enumerate(items):
+            if index:
+                print("\n" + "=" * 72 + "\n")
+            print(f"rowid: {item['rowid']}")
+            print(f"received: {item['received']}")
+            print(f"from: {item['from_name'] or ''} <{item['from'] or ''}>")
+            print(f"to: {item.get('to') or ''}")
+            print(f"subject: {item['subject'] or ''}")
+            print()
+            print(item["body"])
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

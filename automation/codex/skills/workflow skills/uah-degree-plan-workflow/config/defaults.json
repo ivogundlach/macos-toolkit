@@ -1,0 +1,13 @@
+{
+  "college_root": "/Users/YOUR_USERNAME/Files/College",
+  "legacy_college_root": "/Users/YOUR_USERNAME/FIles/College",
+  "memory_root": "/Users/YOUR_USERNAME/Files/College/.memory",
+  "active_schedule": "/Users/YOUR_USERNAME/Files/College/UAH_DegreeWorks_Schedule_Tabs.html",
+  "degreeworks_pdf": "/Users/YOUR_USERNAME/Files/College/Ellucian Degree Works Dashboard.pdf",
+  "checklist_html": "/Users/YOUR_USERNAME/Files/College/UAH Checklist.html",
+  "planning_html": "/Users/YOUR_USERNAME/Files/College/UAH_Planning_NoSchedule.html",
+  "firecrawl_audit_dir": "/Users/YOUR_USERNAME/Files/College/.firecrawl/audit",
+  "default_completion_term": "Spring 2028",
+  "forbidden_terms": ["Winter", "Summer 2028"],
+  "spring_2027_credit_cap": 16
+}

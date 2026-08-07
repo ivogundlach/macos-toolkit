@@ -1,0 +1,57 @@
+{
+  "verification_statuses": [
+    "confirmed",
+    "corrected",
+    "contested",
+    "demoted",
+    "unverified"
+  ],
+  "workstream_statuses": [
+    "completed",
+    "partial",
+    "unverified",
+    "omitted"
+  ],
+  "candidate_dimensions": [
+    {
+      "id": "definitions-scope",
+      "focus": "Definitions, boundaries, terminology, and what the report does and does not cover."
+    },
+    {
+      "id": "history",
+      "focus": "Chronology, prior cycles, causal turning points, and limits of historical analogy."
+    },
+    {
+      "id": "current-evidence",
+      "focus": "The strongest current empirical findings, data quality, methods, and publication status."
+    },
+    {
+      "id": "theory",
+      "focus": "Major explanatory frameworks, competing interpretations, and testable implications."
+    },
+    {
+      "id": "practice",
+      "focus": "Implementation, operator evidence, real-world outcomes, friction, and failure modes."
+    },
+    {
+      "id": "economics-incentives",
+      "focus": "Costs, benefits, funding, incentives, distributional effects, and conflicts of interest."
+    },
+    {
+      "id": "institutions-stakeholders",
+      "focus": "Relevant institutions, affected groups, governance, law, policy, and power relationships."
+    },
+    {
+      "id": "countercase",
+      "focus": "The strongest evidence-based challenge, failures, downside, and disconfirming evidence."
+    },
+    {
+      "id": "contradictions",
+      "focus": "Direct clashes between claims, reasons for disagreement, and evidence that could resolve them."
+    },
+    {
+      "id": "frontier-gaps",
+      "focus": "Unknowns, missing data, research gaps, and the highest-value next questions."
+    }
+  ]
+}

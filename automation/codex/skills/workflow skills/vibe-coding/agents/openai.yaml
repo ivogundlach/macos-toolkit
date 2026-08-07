@@ -1,0 +1,4 @@
+interface:
+  display_name: "Vibe Coding"
+  short_description: "Hands-off coding from request to verified result"
+  default_prompt: "Use $vibe-coding to implement this coding request as the smallest maintainable, verified change."

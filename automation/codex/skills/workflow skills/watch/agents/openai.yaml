@@ -1,0 +1,4 @@
+interface:
+  display_name: "Watch"
+  short_description: "Understand visual evidence in videos"
+  default_prompt: "Use $watch to inspect this video and answer from its frames and transcript."

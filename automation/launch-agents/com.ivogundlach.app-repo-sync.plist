@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.ivogundlach.app-repo-sync</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>/Users/YOUR_USERNAME/.local/bin/app-repo-sync</string>
+    </array>
+    <!-- Idempotent: a clean tree is a no-op, so running on every login is free
+         and recovers a calendar interval missed while the Mac was asleep. -->
+    <key>RunAtLoad</key>
+    <true/>
+    <!-- Two intervals, not one. The 23:30 archive job has been missing runs
+         because the Mac is often asleep at that hour; a midday slot means an
+         evening miss costs at most half a day of history. 22:30 also lands
+         before the archive snapshot, so per-app history is committed first. -->
+    <key>StartCalendarInterval</key>
+    <array>
+        <dict>
+            <key>Hour</key>
+            <integer>12</integer>
+            <key>Minute</key>
+            <integer>30</integer>
+        </dict>
+        <dict>
+            <key>Hour</key>
+            <integer>22</integer>
+            <key>Minute</key>
+            <integer>30</integer>
+        </dict>
+    </array>
+    <key>StandardOutPath</key>
+    <string>/Users/YOUR_USERNAME/.local/state/app-repo-sync/launchd.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/YOUR_USERNAME/.local/state/app-repo-sync/launchd.err</string>
+</dict>
+</plist>

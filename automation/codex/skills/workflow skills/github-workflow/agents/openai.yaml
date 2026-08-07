@@ -1,0 +1,4 @@
+interface:
+  display_name: "GitHub Workflow"
+  short_description: "Safely manage GitHub repositories and changes"
+  default_prompt: "Use $github-workflow to manage this GitHub repository safely and verify the result."

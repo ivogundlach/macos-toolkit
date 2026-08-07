@@ -1,0 +1,10 @@
+{
+  "checks": [
+    "index",
+    "current",
+    "wiki",
+    "ledger",
+    "lint"
+  ],
+  "global_memory_root": "/Users/YOUR_USERNAME/.memory"
+}

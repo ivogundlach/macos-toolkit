@@ -1,0 +1,131 @@
+#!/usr/bin/env python3
+# semantic-index-status — one-shot health check for the semantic search index pipeline
+# (LaunchAgent com.ivogundlach.memory.semantic-index; daily @ 17:00 via the
+# semantic-index-retry in-job-retry wrapper).
+#
+# WHY THIS EXISTS: low/near-zero Antigravity (agy) usage is NOT a reliable signal that
+# the pipeline is broken — the builders hash-cache every file, so only NEW/CHANGED files
+# are ever sent to agy. A perfectly healthy run on a stable corpus makes almost zero agy
+# calls. Judge health by status files + DB freshness + overall_rc, which is what this
+# prints. Read-only; safe to run anytime.
+#
+#   usage: semantic-index-status [--auth]
+#     --auth   also run the live agy auth probe (~8s) the scheduler uses before each run
+import json, os, sqlite3, sys, time, datetime
+from pathlib import Path
+
+HOME = Path.home()
+MEM = HOME / ".memory"
+SEM_STATUS   = MEM / "semantic-index-status.json"
+SEM_DB       = MEM / "semantic-index.sqlite"
+WARN = 0
+
+def age(ts_iso_or_epoch):
+    """Return (human, days_old) for an ISO8601 string or epoch int."""
+    try:
+        if isinstance(ts_iso_or_epoch, (int, float)):
+            dt = datetime.datetime.fromtimestamp(ts_iso_or_epoch).astimezone()
+        else:
+            s = str(ts_iso_or_epoch)
+            # normalize a colon-less tz offset (+0200 -> +02:00) for older fromisoformat
+            import re as _re
+            s = _re.sub(r'([+-]\d{2})(\d{2})$', r'\1:\2', s)
+            dt = datetime.datetime.fromisoformat(s)
+        days = (datetime.datetime.now(dt.tzinfo) - dt).total_seconds() / 86400
+        return dt.strftime("%Y-%m-%d %H:%M"), days
+    except Exception:
+        return str(ts_iso_or_epoch), 999
+
+def load(p):
+    try: return json.loads(Path(p).read_text())
+    except Exception: return None
+
+def report_phase(name, status_path, max_days):
+    global WARN
+    s = load(status_path)
+    print(f"\n=== {name} ===")
+    if not s:
+        print(f"  ✗ no status file ({status_path}) — phase has never written a result"); WARN += 1; return
+    when, days = age(s.get("finished") or s.get("started"))
+    rc = s.get("overall_rc", "?")
+    roots = s.get("roots", [])
+    ok_roots = sum(1 for r in roots if r.get("build_rc", 0) == 0)
+    stale = days > max_days
+    rc_bad = rc not in (0, "0")
+    flag = "✓" if (not stale and not rc_bad) else "✗"
+    if stale or rc_bad: WARN += 1
+    print(f"  {flag} last run: {when}  ({days:.1f} days ago)   overall_rc={rc}   model={s.get('model','?')}")
+    print(f"     roots: {ok_roots}/{len(roots)} clean   phase={s.get('phase','?')}")
+    if stale:  print(f"     ⚠ STALE: older than {max_days}d cadence — check logs in ~/.memory/logs/")
+    if rc_bad: print(f"     ⚠ overall_rc != 0 — at least one root failed last run")
+
+def next_fire():
+    now = datetime.datetime.now()
+    n = now.replace(hour=17, minute=0, second=0, microsecond=0)
+    if now.hour >= 17:
+        n += datetime.timedelta(days=1)
+    print("\n=== next scheduled run (daily @17:00; in-job retry on transient defer) ===")
+    print(f"  semantic: {n.strftime('%Y-%m-%d %H:%M')}")
+
+def db_report():
+    global WARN
+    print("\n=== semantic index (semantic-index.sqlite) ===")
+    if not SEM_DB.exists():
+        print("  ✗ DB missing"); WARN += 1; return
+    try:
+        # mode=ro FIRST, immutable=1 only as a fallback. immutable promises the
+        # file cannot change, so sqlite skips the -wal and reads a pre-checkpoint
+        # snapshot: on this WAL database that is a stale record count and a stale
+        # "newest indexed" — i.e. this check would report an index that was just
+        # rebuilt as hours old, raising a false staleness alarm about work that
+        # already happened. The fallback is kept for the case it was added for
+        # (2026-07-06): a WAL DB whose -shm cannot be created fails to open ro at
+        # all, and a stale reading beats no reading. Same fix as in
+        # memory-retrieval-eval, where the stale read cost a real diagnosis.
+        try:
+            c = sqlite3.connect(f"file:{SEM_DB}?mode=ro", uri=True)
+        except sqlite3.OperationalError:
+            c = sqlite3.connect(f"file:{SEM_DB}?immutable=1", uri=True)
+        total = c.execute("SELECT COUNT(*) FROM docs").fetchone()[0]
+        blank = c.execute("SELECT COUNT(*) FROM docs WHERE summary IS NULL OR trim(summary)=''").fetchone()[0]
+        last  = c.execute("SELECT MAX(indexed_at) FROM docs").fetchone()[0]
+        roots = c.execute("SELECT root_tag, COUNT(*) FROM docs GROUP BY root_tag ORDER BY 2 DESC").fetchall()
+        c.close()
+    except Exception as e:
+        print(f"  ✗ DB read error: {e}"); WARN += 1; return
+    when, _ = age(int(last)) if last else ("?", 999)
+    bflag = "✓" if blank == 0 else "✗"
+    if blank: WARN += 1
+    print(f"  ✓ {total} records across {len(roots)} roots   newest indexed: {when}")
+    print(f"  {bflag} blank/empty summaries: {blank}  (should be 0 — >0 means agy enrichment failed)")
+    print("     " + "  ".join(f"{t}:{n}" for t, n in roots))
+
+def auth_probe():
+    print("\n=== live agy auth probe (~8s) ===")
+    import subprocess
+    try:
+        t = time.time()
+        r = subprocess.run(["agy", "-p", "reply with the single word READY", "--print-timeout", "30s"],
+                           capture_output=True, text=True, timeout=50, stdin=subprocess.DEVNULL)
+        out = (r.stdout or "") + (r.stderr or "")
+        bad = r.returncode != 0 or any(x in out.lower() for x in
+              ("authentication required", "visit the url", "log in:")) or not out.strip()
+        print(f"  {'✗' if bad else '✓'} agy auth: {'NOT READY — next run will DEFER (run: agy -p ok)' if bad else 'READY'}  ({time.time()-t:.0f}s)")
+        if bad: globals().__setitem__('WARN', WARN + 1)
+    except FileNotFoundError:
+        print("  ✗ agy CLI not found on PATH")
+    except Exception as e:
+        print(f"  ✗ probe error: {e}")
+
+if __name__ == "__main__":
+    print("semantic index health  —  " + datetime.datetime.now().strftime("%Y-%m-%d %H:%M"))
+    report_phase("SEMANTIC phase", SEM_STATUS,   max_days=2)
+    db_report()
+    next_fire()
+    if "--auth" in sys.argv:
+        auth_probe()
+    else:
+        print("\n(run with --auth to also probe agy login state)")
+    print(f"\nVERDICT: {'✓ HEALTHY' if WARN == 0 else f'⚠ {WARN} warning(s) — investigate above'}")
+    print("NOTE: low Antigravity usage is NORMAL — only changed files hit agy (hash-cache).")
+    sys.exit(1 if WARN else 0)

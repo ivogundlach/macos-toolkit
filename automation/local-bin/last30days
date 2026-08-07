@@ -1,0 +1,25 @@
+#!/usr/bin/env zsh
+# Run the local Last30Days Codex skill engine with Ivo's stable defaults.
+# Usage:
+#   last30days --preflight
+#   last30days "SwiftUI app ideas"
+#   last30days "OpenAI vs Anthropic" --emit=html
+
+set -euo pipefail
+
+SKILL_DIR="/Users/YOUR_USERNAME/.codex/skills/last30days"
+PY="/opt/homebrew/opt/python@3.14/bin/python3.14"
+
+if [[ ! -x "$PY" ]]; then
+  PY="$(command -v python3.12 || command -v python3.13 || command -v python3.14 || true)"
+fi
+
+if [[ -z "${PY:-}" ]]; then
+  print -u2 "last30days needs Python 3.12+."
+  exit 1
+fi
+
+export LAST30DAYS_PYTHON="$PY"
+export LAST30DAYS_MEMORY_DIR="${LAST30DAYS_MEMORY_DIR:-/Users/YOUR_USERNAME/.local/state/last30days/reports}"
+
+exec "$PY" "$SKILL_DIR/scripts/last30days.py" "$@"

@@ -1,0 +1,5 @@
+{
+  "cli": "gws",
+  "format": "json",
+  "shared_skill": "gws-shared"
+}

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Apple Mail Reply Drafter"
+  short_description: "Draft Apple Mail thread replies"
+  default_prompt: "Use $apple-mail-reply-drafter to draft a reply in the existing Apple Mail thread."

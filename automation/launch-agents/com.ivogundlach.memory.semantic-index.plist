@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>SEMANTIC_QUERY_LOG_DISABLE</key>
+		<string>1</string>
+		<key>MEMORY_ROOT</key>
+		<string>/Users/YOUR_USERNAME/.memory</string>
+		<key>PATH</key>
+		<string>/Users/YOUR_USERNAME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+	</dict>
+	<key>Label</key>
+	<string>com.ivogundlach.memory.semantic-index</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/Users/YOUR_USERNAME/.local/bin/semantic-index-retry</string>
+		<string>--semantic-only</string>
+	</array>
+	<key>StandardErrorPath</key>
+	<string>/Users/YOUR_USERNAME/.memory/logs/semantic-index.launchd.err</string>
+	<key>StandardOutPath</key>
+	<string>/Users/YOUR_USERNAME/.memory/logs/semantic-index.launchd.log</string>
+	<key>StartCalendarInterval</key>
+	<dict>
+		<key>Hour</key>
+		<integer>17</integer>
+		<key>Minute</key>
+		<integer>0</integer>
+	</dict>
+</dict>
+</plist>

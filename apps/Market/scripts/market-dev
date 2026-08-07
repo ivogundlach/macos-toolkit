@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+# market-dev — one-shot dev loop for the Market app.
+#
+# Wraps the rebuild/reinstall/test cycle done by hand:
+#   build   -> app/packaging/build-app.sh      (rebuilds release binary + bundle)
+#   install -> app/packaging/install.sh --quit (quits running app, backs up, installs)
+#   test    -> tests/test_*.py with the project venv (falls back to python3)
+#
+# Note: build-app.sh internally runs app/scripts/build.sh release, and install.sh
+# requires an already-built dist/Market.app — so install implies a preceding build.
+#
+# Usage:
+#   market-dev           # full cycle: build -> install -> test  (default)
+#   market-dev build     # bundle only
+#   market-dev install   # build + install
+#   market-dev test      # tests only
+#   market-dev all       # same as default
+#
+# Override project root with MARKET_ROOT (default: ~/Projects/Market).
+set -euo pipefail
+
+ROOT="${MARKET_ROOT:-$HOME/Projects/Market}"
+PKG="$ROOT/app/packaging"
+TESTS="$ROOT/tests"
+
+[[ -d "$ROOT" ]] || { echo "market-dev: no project at $ROOT" >&2; exit 1; }
+
+run_build()   { echo "==> build";   "$PKG/build-app.sh"; }
+run_install() { echo "==> install"; "$PKG/install.sh" --quit; }
+run_test() {
+  echo "==> test"
+  local py="$ROOT/venv/bin/python"
+  [[ -x "$py" ]] || py="$(command -v python3)"
+  local failed=0 f found=0
+  shopt -s nullglob
+  for f in "$TESTS"/test_*.py; do
+    found=1
+    echo "--- $(basename "$f")"
+    "$py" "$f" || failed=1
+  done
+  [[ "$found" == 1 ]] || { echo "market-dev: no tests found in $TESTS" >&2; return 1; }
+  return $failed
+}
+
+cmd="${1:-all}"
+case "$cmd" in
+  build)   run_build ;;
+  install) run_build; run_install ;;
+  test)    run_test ;;
+  all)     run_build; run_install; run_test ;;
+  -h|--help) sed -n '2,22p' "$0"; exit 0 ;;
+  *) echo "market-dev: unknown command '$cmd' (use build|install|test|all)" >&2; exit 2 ;;
+esac
+
+echo "market-dev: $cmd done"

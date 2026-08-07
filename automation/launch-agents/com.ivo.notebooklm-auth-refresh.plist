@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key><string>com.ivo.notebooklm-auth-refresh</string>
+	<key>ProgramArguments</key>
+	<array><string>/Users/YOUR_USERNAME/.local/state/notebooklm-sync/auth_keepalive.sh</string></array>
+	<key>RunAtLoad</key><true/>
+	<key>StartInterval</key><integer>86400</integer>
+	<key>StandardOutPath</key><string>/Users/YOUR_USERNAME/.local/state/notebooklm-sync/notebooklm_keepalive.out.log</string>
+	<key>StandardErrorPath</key><string>/Users/YOUR_USERNAME/.local/state/notebooklm-sync/notebooklm_keepalive.err.log</string>
+</dict>
+</plist>

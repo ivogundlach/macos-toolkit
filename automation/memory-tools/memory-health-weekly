@@ -1,0 +1,86 @@
+#!/usr/bin/env bash
+# memory-health-weekly — the three checks that catch a memory system being
+# quietly wrong while every liveness check stays green.
+#
+#   index     — does MEMORY.md still match the notes on disk?
+#   coverage  — is there authored content no configured root indexes?
+#   restore   — can the corpus actually be recovered from its remote?
+#   vectors   — is the embedding index complete and same-model as the query side?
+#   retrieval — do real questions still find their answers? (recall@k)
+#
+# Run order is deliberate: coverage explains retrieval. A question that misses
+# because its answer lives in an unindexed folder is not a ranking problem, and
+# reading a fresh coverage result first stops that being misdiagnosed.
+#
+#   usage: memory-health-weekly [--version]
+#
+# Scheduled Sundays 18:15 by com.ivogundlach.memory-health-weekly. Always exits 0:
+# each check records its own verdict for the Tool Status Dashboard, and a WEAK
+# result is not a BROKEN job. Conflating them would make launchd report the
+# scheduler as failing every time recall dipped, sending the fix to the wrong place.
+#
+# Every step runs under a watchdog. This is not theoretical: the coverage scan
+# hung for 15+ minutes in a single opendir() the first time it ran under launchd,
+# because launchd jobs hold no TCC grant and a protected directory blocks instead
+# of failing. A weekly job that can hang forever is worse than no weekly job.
+set -uo pipefail
+export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
+
+TOOLS="$HOME/.memory/tools"
+STATE="$HOME/.local/state/memory-health-weekly"
+mkdir -p "$STATE"
+LOG="$STATE/run.log"
+[ -f "$LOG" ] && [ "$(stat -f%z "$LOG" 2>/dev/null || echo 0)" -gt 1000000 ] && : > "$LOG"
+
+case "${1:-}" in
+  --version|-V) echo "memory-health-weekly (index integrity + coverage + restore drill + retrieval eval)"; exit 0 ;;
+  --help|-h)    sed -n '2,20p' "$0" | sed 's/^#\{1,\} \{0,1\}//'; exit 0 ;;
+esac
+
+log() { printf '%s memory-health-weekly: %s\n' "$(date +%Y-%m-%dT%H:%M:%S%z)" "$*" | tee -a "$LOG"; }
+
+# Portable watchdog: no coreutils `timeout` on a stock macOS, and depending on a
+# Homebrew binary would make the safety net the most fragile part of the job.
+bounded() {
+  local secs="$1" name="$2"; shift 2
+  "$@" >>"$LOG" 2>&1 &
+  local pid=$!
+  ( sleep "$secs"; kill -9 "$pid" 2>/dev/null ) >/dev/null 2>&1 &
+  local killer=$!
+  wait "$pid"; local rc=$?
+  # Reap the watchdog quietly. Without the wait, bash prints "Terminated: 15" to
+  # stderr for every step, which lands in launchd.err and buries real errors
+  # under routine noise — the fastest way to make an error log worth ignoring.
+  kill "$killer" 2>/dev/null
+  wait "$killer" 2>/dev/null
+  if [ "$rc" -ge 128 ]; then
+    log "WARN: $name exceeded ${secs}s and was killed (its last verdict is left intact)"
+  else
+    log "$name finished rc=$rc"
+  fi
+  return 0
+}
+
+log "start"
+# Cheapest check first, and the only one that reads what actually enters context
+# every session: a dangling index line keeps asserting facts from a deleted note.
+bounded  60 index     python3 "$TOOLS/memory-index-check"
+bounded 180 coverage  python3 "$TOOLS/memory-coverage-drift"
+bounded 300 restore   "$TOOLS/memory-backup-verify"
+# Before retrieval, for the same reason coverage runs before retrieval: a recall
+# drop caused by the vector arm having gone dark is not a ranking regression, and
+# seeing this verdict first sends the fix to the right place.
+VEC_PY="${MEMORY_VENV_PY:-$HOME/.local/share/memory-venv/bin/python}"
+if [ -x "$VEC_PY" ]; then
+  bounded 120 vectors "$VEC_PY" "$TOOLS/memory-vector-build" --version
+else
+  log "vectors skipped (no venv at $VEC_PY; search runs on keyword arms)"
+fi
+# The contract suite, in full — including the corpus walk the dashboard's 5s
+# health check cannot afford. This run is what refreshes the stamp that
+# `memory-selftest --version` reads, so if this job stops running the dashboard
+# reports the suite stale instead of quietly reporting nothing at all.
+bounded 120 contracts python3 "$HOME/.memory/tests/run-all"
+MEMORY_EVAL_EXIT_OK=1 bounded 600 retrieval python3 "$TOOLS/memory-retrieval-eval"
+log "done"
+exit 0

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Grill With Memory"
+  short_description: "Batch-calibrate uncertain work and checkpoint decisions."
+  default_prompt: "Use $grill-with-memory for light or full batched calibration with recommended defaults before planning."

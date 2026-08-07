@@ -1,0 +1,150 @@
+#!/usr/bin/env bash
+# semantic-agy-reauth — interactive AGY/Antigravity login recovery for semantic indexing.
+# Only needed when agy is TRULY logged out (OAuth expired/revoked). Transient agy
+# flakiness never routes here — the scheduler self-heals those silently.
+# Usage:
+#   semantic-agy-reauth             # open Terminal and run the login flow there
+#   semantic-agy-reauth --terminal  # run the login flow in the current terminal
+set -uo pipefail
+export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+AUTH_NEEDED="$HOME/.memory/.semantic-agy-auth-needed"
+AUTH_NOTIFIED="$HOME/.memory/.semantic-agy-auth-notified"
+NO_BROWSER_BIN="$HOME/.memory/.semantic-no-browser-bin"
+
+clear_flags() { rm -f "$AUTH_NEEDED" "$AUTH_NOTIFIED"; }
+
+install_no_browser_guard() {
+  mkdir -p "$NO_BROWSER_BIN"
+  cat > "$NO_BROWSER_BIN/open" <<'SH'
+#!/bin/sh
+echo "blocked browser opener during Semantic index AGY auth probe: open $*" >&2
+exit 126
+SH
+  chmod +x "$NO_BROWSER_BIN/open"
+}
+
+# Browser-suppressed probe that CLASSIFIES auth: ok | logged_out | transient.
+# Mirrors memory-semantic-build so "already authenticated" is judged identically.
+# Match ONLY the user-facing OAuth login URL — never agy's internal "not logged
+# into Antigravity" glog noise, which prints on healthy runs too.
+AUTH_LOGOUT_RE='Authentication required|Please visit the URL to log ?in|accounts\.google\.com/o/oauth2'
+agy_probe_log_has_logout() {
+  local marker="$1" log_dir="$HOME/.gemini/antigravity-cli/log" f
+  [ -n "$marker" ] && [ -d "$log_dir" ] || return 1
+  while IFS= read -r -d '' f; do
+    grep -qiE "$AUTH_LOGOUT_RE" "$f" 2>/dev/null && return 0
+  done < <(find "$log_dir" -type f -name 'cli-*.log' -newer "$marker" -print0 2>/dev/null)
+  return 1
+}
+agy_auth_state() {
+  local out marker p w rc
+  out="$(mktemp 2>/dev/null)" || { echo transient; return 0; }
+  marker="$(mktemp 2>/dev/null)" || marker=""
+  [ -n "$marker" ] && : > "$marker"
+  install_no_browser_guard
+  ( PATH="$NO_BROWSER_BIN:$PATH" BROWSER=/usr/bin/false agy -p "ok" --print-timeout 30s </dev/null >"$out" 2>&1 ) & p=$!
+  # Watchdog stdout detached (>/dev/null) so it can't hold a $(...) capture pipe open.
+  ( sleep 45; kill -KILL "$p" 2>/dev/null ) >/dev/null 2>&1 & w=$!
+  wait "$p" 2>/dev/null; rc=$?
+  kill "$w" 2>/dev/null; wait "$w" 2>/dev/null
+  if grep -qiE "$AUTH_LOGOUT_RE" "$out" 2>/dev/null; then rm -f "$out" "$marker"; echo logged_out; return 0; fi
+  if [ "$rc" -eq 0 ] && [ -s "$out" ]; then rm -f "$out" "$marker"; echo ok; return 0; fi
+  # Some logged-out agy builds write the OAuth URL only to their fresh CLI log
+  # while captured stdout/stderr says just "timeout waiting for response".
+  # Still match only the URL/login prompt, not the noisy internal glog phrase.
+  if agy_probe_log_has_logout "$marker"; then rm -f "$out" "$marker"; echo logged_out; return 0; fi
+  rm -f "$out" "$marker"
+  # No logout URL, but no clean answer either — corroborate liveness cheaply.
+  if ( PATH="$NO_BROWSER_BIN:$PATH" BROWSER=/usr/bin/false agy models </dev/null 2>/dev/null | grep -qiE 'Gemini|Claude|GPT' ); then
+    echo ok
+  else
+    echo transient
+  fi
+  return 0
+}
+
+pause_close() {
+  ( : </dev/tty ) 2>/dev/null || return 0   # no usable controlling terminal -> skip pause
+  printf '\nPress Return to close this window. '
+  read -r _ </dev/tty 2>/dev/null || true
+}
+
+# --- dispatch: open a Terminal window and re-run there ---
+if [ "${1:-}" != "--terminal" ]; then
+  osascript >/dev/null 2>&1 <<'OSA'
+tell application "Terminal"
+  activate
+  do script "exec /Users/YOUR_USERNAME/.local/bin/semantic-agy-reauth --terminal"
+end tell
+OSA
+  exit 0
+fi
+
+# --- interactive flow (runs inside a Terminal window) ---
+printf '\n=== Semantic index AGY reauthentication ===\n\n'
+
+if ! command -v agy >/dev/null 2>&1; then
+  printf 'ERROR: agy CLI not found on PATH.\n' >&2
+  pause_close; exit 127
+fi
+
+printf 'Checking current AGY login (this can take up to a minute)...\n'
+st="$(agy_auth_state)"
+
+if [ "$st" = ok ]; then
+  clear_flags
+  printf 'AGY is already authenticated. Nothing to do.\n'
+  printf 'The semantic index will retry on its next scheduled run.\n'
+  pause_close; exit 0
+fi
+
+if [ "$st" = transient ]; then
+  printf 'AGY did NOT report a logout — your login still looks valid; agy/Gemini is just\n'
+  printf 'temporarily slow. No sign-in is needed; the scheduled build will retry later.\n'
+  printf 'If this alert keeps reappearing, sign in to the Antigravity desktop app, then re-run me.\n'
+  pause_close; exit 0
+fi
+
+# st = logged_out — drive an INTERACTIVE login. `agy -p` is non-interactive and
+# can only PRINT the login URL; it can never prompt for the pasted code, which is
+# why the old flow could not actually log you back in. Interactive agy can.
+printf 'AGY is logged out. Starting the interactive Antigravity sign-in now.\n\n'
+printf '  1. A browser will open (or a sign-in URL will be printed below).\n'
+printf '  2. Sign in with your Google account (you@example.com).\n'
+printf '  3. If a code is shown, paste it here at AGY’s prompt.\n'
+printf '  4. When AGY shows you are signed in, type  /quit  (or press Ctrl-D) to finish.\n\n'
+printf 'Fallback: if no sign-in appears, open the Antigravity desktop app, sign in there,\n'
+printf 'then re-run this window — the CLI shares that login.\n\n'
+printf 'Launching AGY...\n\n'
+
+# Interactive session — browser NOT suppressed here; this is the sanctioned login.
+agy -i "You are completing Antigravity CLI sign-in. If you can read this reply, you are logged in — type /quit to finish." </dev/tty >/dev/tty 2>&1 || true
+
+# Verify — allow a few tries so a sign-in via EITHER the CLI prompt above OR the
+# Antigravity desktop app can be confirmed without re-launching this whole flow.
+attempt=1
+while :; do
+  printf '\nVerifying AGY auth...\n'
+  st="$(agy_auth_state)"
+  if [ "$st" = ok ]; then
+    clear_flags
+    printf 'AGY auth verified — you are signed in.\n'
+    printf 'The semantic index will retry on its next scheduled run. Done.\n'
+    pause_close; exit 0
+  fi
+  if [ "$st" = transient ]; then
+    printf 'AGY reported NO logout (just a slow response) — your session is likely fine.\n'
+    printf 'The scheduled build will retry later. Re-run only if the alert reappears.\n'
+    pause_close; exit 0
+  fi
+  # still logged_out
+  if [ "$attempt" -ge 3 ]; then
+    printf 'Still logged out after %s tries.\n' "$attempt" >&2
+    printf 'Easiest fix: open the Antigravity desktop app, sign in there, then re-run this window.\n' >&2
+    pause_close; exit 1
+  fi
+  printf '\nStill logged out. Finish the sign-in (in the browser/URL above, OR open the\n'
+  printf 'Antigravity desktop app and sign in), then press Return here to re-check. '
+  read -r _ </dev/tty 2>/dev/null || true
+  attempt=$((attempt+1))
+done

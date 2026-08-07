@@ -1,0 +1,4 @@
+interface:
+  display_name: "UAH Degree Plan Workflow"
+  short_description: "Rebuild UAH degree plans safely"
+  default_prompt: "Use $uah-degree-plan-workflow to update my UAH degree plan from the local DegreeWorks files."

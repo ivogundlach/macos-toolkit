@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# semantic-agy-notify — visible, clickable AGY auth failure alert for semantic indexing.
+# Called by memory-semantic-build when the scheduled semantic build cannot authenticate.
+set -uo pipefail
+export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+
+PHASE="${1:-semantic}"
+STATE="$HOME/.memory/.semantic-agy-notify-last"
+now="$(date +%s)"
+last="$(cat "$STATE" 2>/dev/null || echo 0)"
+
+# Avoid stacking one modal per hourly retry.
+if [ $((now - last)) -lt 3000 ]; then
+  exit 0
+fi
+mkdir -p "$(dirname "$STATE")"
+printf '%s\n' "$now" > "$STATE"
+
+osascript <<OSA >/dev/null 2>&1
+set msg to "Semantic index could not run the ${PHASE} phase because AGY/Antigravity is not authenticated.
+
+Click Reauthenticate Now to open Terminal.
+
+If Safari shows a code, paste it into that Terminal window when AGY asks.
+
+After login, the semantic index will retry on its next scheduled run.
+
+Manual command:
+/Users/YOUR_USERNAME/.local/bin/semantic-agy-reauth"
+set answer to button returned of (display dialog msg with title "Semantic index AGY Login Needed" buttons {"Later", "Reauthenticate Now"} default button "Reauthenticate Now" cancel button "Later")
+if answer is "Reauthenticate Now" then
+  tell application "Terminal"
+    activate
+    do script "exec /Users/YOUR_USERNAME/.local/bin/semantic-agy-reauth --terminal"
+  end tell
+end if
+OSA

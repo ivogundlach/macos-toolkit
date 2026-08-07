@@ -1,0 +1,422 @@
+#!/usr/bin/env python3
+"""Launch a fresh, headless Codex process as the designated Luna worker."""
+
+from __future__ import annotations
+
+import argparse
+import os
+import re
+import shutil
+import stat
+import subprocess
+import sys
+from dataclasses import dataclass
+from typing import Sequence
+
+
+WRAPPER_VERSION = "1.1.0"
+CANDIDATE_PATHS = (
+    "/Applications/ChatGPT.app/Contents/Resources/codex",
+    "/Users/YOUR_USERNAME/.local/bin/codex",
+)
+REQUIRED_CAPABILITIES = (
+    "--ephemeral",
+    "--skip-git-repo-check",
+    "--model",
+    "--sandbox",
+    "--cd",
+    "--add-dir",
+)
+SANDBOXES = ("read-only", "workspace-write", "danger-full-access")
+REASONING_LEVELS = ("high", "xhigh", "max")
+TRUSTED_WORKER_PROMPT = (
+    "You are already the designated Luna worker. Implement the supplied contract "
+    "directly under its exact scope and constraints. Do not delegate, spawn agents, "
+    "or invoke /Users/YOUR_USERNAME/.local/bin/luna-implement. Obey the supplied "
+    "contract and return exactly one terminal report in this structure: "
+    "STATUS: complete | partial | blocked; OBJECTIVE: one-line restatement; "
+    "CHANGES: file-by-file actual changes; VERIFIED: exact commands and concrete "
+    "evidence; JUDGMENT CALLS: decisions left open or none; GAPS: unfinished work, "
+    "ambiguity, failed checks, or none. Choose exactly one allowed STATUS value."
+)
+
+
+class ValidationError(Exception):
+    """Represent a concise, safe pre-launch validation failure."""
+
+
+class _SingleReasoningAction(argparse.Action):
+    """Accept one exact reasoning selection and reject duplicate occurrences."""
+
+    def __call__(self, parser, namespace, values, option_string=None):
+        if getattr(namespace, "_reasoning_provided", False):
+            parser.error("--reasoning may be specified only once")
+        setattr(namespace, self.dest, values)
+        setattr(namespace, "_reasoning_provided", True)
+
+
+@dataclass(frozen=True)
+class Candidate:
+    requested: str
+    resolved: str
+    device: int
+    inode: int
+    uid: int
+    mode: int
+    capabilities: tuple[str, ...]
+    disable_features: tuple[str, ...]
+    version_text: str
+    bundled: bool
+
+
+@dataclass(frozen=True)
+class Directory:
+    requested: str
+    resolved: str
+    device: int
+    inode: int
+
+
+def _error(message: str) -> None:
+    print(f"luna-implement: {message}", file=sys.stderr)
+
+
+def _parser() -> argparse.ArgumentParser:
+    return argparse.ArgumentParser(
+        prog="luna-implement",
+        add_help=False,
+        usage="luna-implement [--cd DIR] [--add-dir DIR ...] "
+        "[--sandbox read-only|workspace-write|danger-full-access] "
+        "[--reasoning high|xhigh|max]",
+        description="Launch a fresh headless Codex Luna worker (default reasoning: high).",
+    )
+
+
+def _parse(argv: Sequence[str]) -> argparse.Namespace:
+    parser = _parser()
+    parser.add_argument("--cd", metavar="DIR")
+    parser.add_argument("--add-dir", action="append", default=[], metavar="DIR")
+    parser.add_argument("--sandbox", choices=SANDBOXES, default="workspace-write")
+    parser.add_argument(
+        "--reasoning",
+        choices=REASONING_LEVELS,
+        default=None,
+        action=_SingleReasoningAction,
+        metavar="high|xhigh|max",
+    )
+    parser.add_argument("--help", action="store_true")
+    parser.add_argument("--version", action="store_true")
+    options = parser.parse_args(argv)
+    if options.reasoning is None:
+        options.reasoning = "high"
+    return options
+
+
+def _help() -> None:
+    print(
+        "Usage: luna-implement [--cd DIR] [--add-dir DIR ...] "
+        "[--sandbox read-only|workspace-write|danger-full-access] "
+        "[--reasoning high|xhigh|max]\n"
+        "Contract is read only from piped stdin; default sandbox is workspace-write.\n"
+        "Reasoning defaults to high; choose high, xhigh, or max.\n"
+        "Options: --help, --version, --reasoning high|xhigh|max"
+    )
+
+
+def _probe(command: Sequence[str], label: str) -> str:
+    try:
+        result = subprocess.run(
+            list(command),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            errors="replace",
+            timeout=10,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise ValidationError(f"{label} probe timed out") from exc
+    except OSError as exc:
+        raise ValidationError(f"{label} probe could not run ({exc.__class__.__name__})") from exc
+    if result.returncode != 0:
+        raise ValidationError(f"{label} probe exited {result.returncode}")
+    return f"{result.stdout}\n{result.stderr}"
+
+
+def _codesign_verify(path: str) -> None:
+    codesign = shutil.which("codesign")
+    if codesign is None:
+        return
+    try:
+        result = subprocess.run(
+            [codesign, "--verify", "--deep", "--strict", path],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            errors="replace",
+            timeout=10,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise ValidationError("codesign verification timed out") from exc
+    except OSError as exc:
+        raise ValidationError(f"codesign verification could not run ({exc.__class__.__name__})") from exc
+    if result.returncode != 0:
+        raise ValidationError("codesign verification failed")
+
+
+def _identity(path: str) -> os.stat_result:
+    try:
+        result = os.stat(path)
+    except OSError as exc:
+        raise ValidationError(f"resolved target is unavailable ({exc.__class__.__name__})") from exc
+    if not stat.S_ISREG(result.st_mode):
+        raise ValidationError("resolved target is not a regular file")
+    if not (stat.S_IMODE(result.st_mode) & 0o111) or not os.access(path, os.X_OK):
+        raise ValidationError("resolved target is not executable")
+    if result.st_uid not in (0, os.getuid()):
+        raise ValidationError("resolved target owner is not trusted")
+    if stat.S_IMODE(result.st_mode) & 0o022:
+        raise ValidationError("resolved target is group/world writable")
+    return result
+
+
+def _enabled_feature_names(feature_text: str) -> tuple[str, ...]:
+    found = []
+    for feature in ("multi_agent_v2", "multi_agent"):
+        match = re.search(
+            rf"^{feature}\s+\S+\s+(true|false)\s*$", feature_text, re.MULTILINE
+        )
+        if match is not None and match.group(1) == "true":
+            found.append(feature)
+    return tuple(found)
+
+
+def _validate_candidate(requested: str) -> Candidate:
+    resolved = os.path.realpath(requested)
+    identity = _identity(resolved)
+    bundled = requested == CANDIDATE_PATHS[0]
+    if bundled:
+        _codesign_verify(resolved)
+
+    version_text = _probe([resolved, "--version"], "version")
+    if not re.search(r"\bcodex(?:-cli)?\b", version_text, re.IGNORECASE):
+        raise ValidationError("version output is not Codex-identifying")
+
+    help_text = _probe([resolved, "exec", "--help"], "exec-help")
+    missing = [cap for cap in REQUIRED_CAPABILITIES if cap not in help_text]
+    if "--config" not in help_text and not re.search(r"(?<![A-Za-z0-9])-c(?![A-Za-z0-9])", help_text):
+        missing.append("config override")
+    if missing:
+        raise ValidationError("missing capabilities: " + ", ".join(missing))
+    try:
+        feature_text = _probe([resolved, "features", "list"], "features")
+    except ValidationError:
+        feature_text = ""
+    disable_features = _enabled_feature_names(feature_text)
+    if disable_features and "--disable" not in help_text:
+        raise ValidationError("multi_agent feature advertised without --disable support")
+
+    return Candidate(
+        requested=requested,
+        resolved=resolved,
+        device=identity.st_dev,
+        inode=identity.st_ino,
+        uid=identity.st_uid,
+        mode=stat.S_IMODE(identity.st_mode),
+        capabilities=REQUIRED_CAPABILITIES + ("config override",),
+        disable_features=disable_features,
+        version_text=version_text,
+        bundled=bundled,
+    )
+
+
+def _select_candidate() -> Candidate | None:
+    failures: list[tuple[str, str]] = []
+    for requested in CANDIDATE_PATHS:
+        try:
+            candidate = _validate_candidate(requested)
+        except ValidationError as exc:
+            failures.append((requested, str(exc)))
+            continue
+        for failed_path, reason in failures:
+            _error(f"candidate {failed_path}: {reason}")
+        return candidate
+    for failed_path, reason in failures:
+        _error(f"candidate {failed_path}: {reason}")
+    return None
+
+
+def _directory_lstat_path(path: str) -> str:
+    stripped = path.rstrip(os.sep)
+    return stripped or os.sep
+
+
+def _validate_directory(label: str, requested: str) -> Directory:
+    if requested == "":
+        raise ValidationError(f"{label} is unavailable (empty path)")
+    try:
+        lexical_stat = os.lstat(_directory_lstat_path(requested))
+    except OSError as exc:
+        raise ValidationError(f"{label} is unavailable ({exc.__class__.__name__})") from exc
+    if stat.S_ISLNK(lexical_stat.st_mode):
+        raise ValidationError(f"{label} must not be an explicit symlink")
+    if not stat.S_ISDIR(lexical_stat.st_mode):
+        raise ValidationError(f"{label} is not a directory")
+
+    resolved = os.path.realpath(requested)
+    if os.path.abspath(resolved) == os.path.abspath(os.path.dirname(resolved)):
+        raise ValidationError(f"{label} must not be the filesystem root")
+    try:
+        resolved_stat = os.stat(resolved)
+    except OSError as exc:
+        raise ValidationError(f"{label} resolved target is unavailable ({exc.__class__.__name__})") from exc
+    if not stat.S_ISDIR(resolved_stat.st_mode):
+        raise ValidationError(f"{label} resolved target is not a directory")
+    return Directory(requested, resolved, resolved_stat.st_dev, resolved_stat.st_ino)
+
+
+def _revalidate_directory(directory: Directory) -> None:
+    try:
+        current = os.stat(directory.resolved)
+    except OSError as exc:
+        raise ValidationError(f"directory changed before exec ({exc.__class__.__name__})") from exc
+    if (
+        not stat.S_ISDIR(current.st_mode)
+        or current.st_dev != directory.device
+        or current.st_ino != directory.inode
+    ):
+        raise ValidationError("directory identity changed before exec")
+
+
+def _revalidate_candidate(candidate: Candidate) -> None:
+    current = _identity(candidate.resolved)
+    if (
+        current.st_dev != candidate.device
+        or current.st_ino != candidate.inode
+        or current.st_uid != candidate.uid
+        or stat.S_IMODE(current.st_mode) != candidate.mode
+    ):
+        raise ValidationError("Codex candidate identity changed before exec")
+    if candidate.bundled:
+        _codesign_verify(candidate.resolved)
+
+
+def _version() -> int:
+    candidate = _select_candidate()
+    if candidate is None:
+        return 1
+    feature_text = ",".join(candidate.disable_features) or "none"
+    print(
+        f"luna-implement {WRAPPER_VERSION}; validated-codex={candidate.resolved}; "
+        f"identity=dev:{candidate.device},ino:{candidate.inode},uid:{candidate.uid},"
+        f"mode:{candidate.mode:04o}; capabilities={','.join(candidate.capabilities)}; "
+        f"disabled-features={feature_text}"
+    )
+    return 0
+
+
+def _launch(options: argparse.Namespace) -> int:
+    if sys.stdin.isatty():
+        _error("contract must be piped on stdin; tty input is rejected")
+        return 2
+    try:
+        stdin_mode = os.fstat(sys.stdin.fileno()).st_mode
+    except OSError as exc:
+        _error(f"contract stdin is unavailable ({exc.__class__.__name__})")
+        return 2
+    if stat.S_ISCHR(stdin_mode):
+        _error("contract must be piped on stdin; no-stdin input is rejected")
+        return 2
+
+    directories: list[Directory] = []
+    try:
+        if options.cd is not None:
+            directories.append(_validate_directory("--cd", options.cd))
+        for index, path in enumerate(options.add_dir, start=1):
+            directories.append(_validate_directory(f"--add-dir #{index}", path))
+    except ValidationError as exc:
+        _error(str(exc))
+        return 2
+
+    candidate = _select_candidate()
+    if candidate is None:
+        return 3
+
+    try:
+        for directory in directories:
+            _revalidate_directory(directory)
+        _revalidate_candidate(candidate)
+    except ValidationError as exc:
+        _error(str(exc))
+        return 4
+
+    command = [
+        candidate.resolved,
+        "exec",
+        "--ephemeral",
+        "--skip-git-repo-check",
+        "--sandbox",
+        options.sandbox,
+    ]
+    if options.cd is not None:
+        command.extend(("--cd", directories[0].resolved))
+    add_start = 1 if options.cd is not None else 0
+    for directory in directories[add_start:]:
+        command.extend(("--add-dir", directory.resolved))
+    command.extend(
+        (
+            "--model",
+            "gpt-5.6-luna",
+            "-c",
+            f'model_reasoning_effort="{options.reasoning}"',
+        )
+    )
+    for feature in candidate.disable_features:
+        command.extend(("--disable", feature))
+    command.append(TRUSTED_WORKER_PROMPT)
+
+    environment = dict(os.environ)
+    environment["IVO_LUNA_IMPLEMENTER"] = "1"
+    try:
+        os.execve(candidate.resolved, command, environment)
+    except OSError as exc:
+        _error(f"Codex exec could not start ({exc.__class__.__name__})")
+        return 5
+    return 5
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    if os.environ.get("IVO_LUNA_IMPLEMENTER") == "1":
+        _error("nested invocation rejected while IVO_LUNA_IMPLEMENTER=1")
+        return 2
+    options = _parse(sys.argv[1:] if argv is None else argv)
+    if options.help:
+        if options.version:
+            _error("--help and --version cannot be combined")
+            return 2
+        _help()
+        return 0
+    if options.version:
+        if (
+            options.cd is not None
+            or options.add_dir
+            or options.sandbox != "workspace-write"
+            or getattr(options, "_reasoning_provided", False)
+        ):
+            _error("--version cannot be combined with launch options")
+            return 2
+        return _version()
+    return _launch(options)
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except BrokenPipeError:
+        raise SystemExit(1)
+    except Exception:
+        _error("internal validation failure")
+        raise SystemExit(2)

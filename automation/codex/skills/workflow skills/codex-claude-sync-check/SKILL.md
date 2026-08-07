@@ -1,0 +1,76 @@
+---
+name: codex-claude-sync-check
+description: >-
+  Use when Ivo asks to verify, check, audit, repair, or explain whether the
+  canonical Codex instructions and skills under `/Users/YOUR_USERNAME/.codex/`
+  satisfy the Claude Code, Gemini, and Antigravity mirror contract. Trigger after
+  AGENTS.md or skill edits, on phrases like "sync to Claude", "verify mirrors",
+  "did this propagate to Claude", "check Codex/Claude drift", or when a task
+  needs confirmation that Claude Code desktop will see the same agentic-OS
+  changes as Codex. Verification-first: do not edit synced mirror copies
+  directly.
+---
+
+# Codex Claude Sync Check
+
+Verify that `/Users/YOUR_USERNAME/.codex/` remains the single source of truth and that generated mirrors match it.
+
+## Rules
+
+- Keep `/Users/YOUR_USERNAME/CLAUDE.md` and `/Users/YOUR_USERNAME/AGENTS.md` absent; the sync must never recreate, edit, or automatically delete either path.
+- Never edit `/Users/YOUR_USERNAME/.gemini/config/AGENTS.md`, `/Users/YOUR_USERNAME/.antigravitycli/AGENTS.md`, `/Users/YOUR_USERNAME/.claude/skills/`, or Gemini custom-skill mirrors directly.
+- Use `/Users/YOUR_USERNAME/.local/bin/codex-sync-verify` for read-only verification.
+- Run `/Users/YOUR_USERNAME/.local/bin/codex-to-claude-sync` only when Ivo asked to sync, an approved AGENTS/skill edit just happened, or the task explicitly includes repairing drift.
+- After any sync, rerun `/Users/YOUR_USERNAME/.local/bin/codex-sync-verify`.
+- If drift remains, report the exact verifier finding and stop. Do not hand-patch mirrors.
+- If the user wants to change skill or AGENTS behavior, use `skill-creator` or `improve-system` first and edit only canonical files.
+- Never create backups of mirror trees or canonical files unless Ivo explicitly asks. Orphan deletion during sync is intended propagation, not data loss to guard against.
+
+## Config
+
+Read `config/defaults.json` when path details matter. It lists the canonical root, mirror roots, forbidden user-root instruction paths, verifier command, and sync command.
+
+## Check-Only Workflow
+
+1. Run:
+
+```bash
+/Users/YOUR_USERNAME/.local/bin/codex-sync-verify
+```
+
+2. If it exits 0, report that AGENTS and skills are in sync.
+3. If it exits nonzero, rerun with verbose output:
+
+```bash
+/Users/YOUR_USERNAME/.local/bin/codex-sync-verify -v
+```
+
+4. Summarize only the drift lines that matter: forbidden user-root instruction path exists, retained mirror is missing or differs, or rsync reports skill differences.
+
+## Sync-And-Check Workflow
+
+Use this after approved canonical edits or when Ivo explicitly asks to sync/fix drift.
+
+1. Run:
+
+```bash
+/Users/YOUR_USERNAME/.local/bin/codex-to-claude-sync
+```
+
+2. Then run:
+
+```bash
+/Users/YOUR_USERNAME/.local/bin/codex-sync-verify
+```
+
+3. If the verifier passes, report that mirrors are synced.
+4. If it fails, rerun the verifier with `-v` and report the remaining drift without editing mirrors.
+
+## Output
+
+Keep the answer short:
+
+- `Synced`: yes/no.
+- `Checked`: root-path absence, AGENTS mirrors, skills, or all.
+- `Action taken`: check-only, sync-and-check, or drift report.
+- `Remaining drift`: none, or concise file/skill list.

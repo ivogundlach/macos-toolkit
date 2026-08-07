@@ -1,0 +1,120 @@
+#!/usr/bin/env bash
+# codex-sync-verify — check that the generated mirrors match canonical ~/.codex.
+#
+# Canonical write path is ~/.codex (AGENTS.md + skills/). codex-to-claude-sync
+# one-way mirrors it into the Claude / Gemini / Antigravity copies. This script
+# reports whether each mirror is in sync. It REPLICATES the sync transforms so it
+# never false-positives:
+#   * AGENTS.md mirrors = a sync-header line + the de-headered source (emit_with_header).
+#   * User-root AGENTS.md and CLAUDE.md must be absent to prevent duplicate loading.
+#   * skill mirrors     = rsync of each SKILL.md folder, category folders flattened
+#                         to a sanitized <skill-name>, same excludes as the sync.
+# Read-only: never writes. Exit 0 = all in sync, 1 = drift found.
+#
+# Usage:
+#   codex-sync-verify        # summary
+#   codex-sync-verify -v     # also print the offending files / rsync items
+set -euo pipefail
+
+VERBOSE=0
+[[ "${1:-}" == "-v" || "${1:-}" == "--verbose" ]] && VERBOSE=1
+
+HOME_DIR="${HOME:-/Users/YOUR_USERNAME}"
+CODEX_HOME="${CODEX_HOME:-$HOME_DIR/.codex}"
+CLAUDE_HOME="${CLAUDE_HOME:-$HOME_DIR/.claude}"
+GEMINI_HOME="${GEMINI_HOME:-$HOME_DIR/.gemini}"
+ANTIGRAVITY_CLI_HOME="${ANTIGRAVITY_CLI_HOME:-$HOME_DIR/.antigravitycli}"
+
+drift=0
+
+note()  { printf '  %s\n' "$*"; }
+ok()    { printf 'OK    %s\n' "$*"; }
+bad()   { printf 'DRIFT %s\n' "$*"; drift=1; }
+
+# --- AGENTS.md -> 2 mirrors; user-root duplicates must stay absent ----------
+# Replicate emit_with_header: header line + blank, then source minus any prior
+# sync-header lines, with leading blank lines trimmed.
+emit_with_header() {
+  local source="$1"
+  printf '<!-- Synced from %s by codex-to-claude-sync. Edit the Codex source, not this generated file. -->\n\n' "$source"
+  grep -v 'by codex-to-claude-sync\. Edit the Codex source' "$source" | sed '/./,$!d'
+}
+
+AGENTS_SRC="$CODEX_HOME/AGENTS.md"
+echo "== AGENTS.md =="
+if [[ -f "$AGENTS_SRC" ]]; then
+  expected="$(mktemp)"; trap 'rm -f "$expected"' EXIT
+  emit_with_header "$AGENTS_SRC" > "$expected"
+  for legacy_target in \
+    "$HOME_DIR/CLAUDE.md" \
+    "$HOME_DIR/AGENTS.md" ; do
+    if [[ -e "$legacy_target" || -L "$legacy_target" ]]; then
+      bad "$legacy_target (must be absent; user-root instructions duplicate global guidance)"
+    else
+      ok "$legacy_target (absent)"
+    fi
+  done
+  for target in \
+    "$GEMINI_HOME/config/AGENTS.md" \
+    "$ANTIGRAVITY_CLI_HOME/AGENTS.md" ; do
+    if [[ ! -e "$target" ]]; then
+      bad "$target (missing)"
+    elif cmp -s "$expected" "$target"; then
+      ok "$target"
+    else
+      bad "$target (content differs)"
+      [[ "$VERBOSE" == 1 ]] && diff -u "$target" "$expected" | sed 's/^/    /' | head -40
+    fi
+  done
+else
+  bad "$AGENTS_SRC (canonical source missing)"
+fi
+
+# --- skills/**/SKILL.md -> 2 mirror trees -----------------------------------
+skill_name_for_path() {  # mirrors the sync's sanitizer
+  basename "$(dirname "$1")" \
+    | tr '[:upper:]' '[:lower:]' \
+    | sed -E 's/[^a-z0-9._-]+/-/g; s/^-+//; s/-+$//'
+}
+
+echo "== skills =="
+SKILLS_ROOT="$CODEX_HOME/skills"
+if [[ -d "$SKILLS_ROOT" ]]; then
+  while IFS= read -r -d '' skill_md; do
+    name="$(skill_name_for_path "$skill_md")"
+    [[ -n "$name" ]] || continue
+    src_dir="$(dirname "$skill_md")"
+    for target_dir in \
+      "$CLAUDE_HOME/skills/$name" \
+      "$GEMINI_HOME/config/plugins/custom-skills/skills/$name" ; do
+      if [[ ! -d "$target_dir" ]]; then
+        bad "skill '$name' -> $target_dir (missing)"
+        continue
+      fi
+      # Dry-run, checksum-based, same excludes/--delete as the sync. Keep only
+      # content/new/deleted items (drop attr-only '.'-prefixed itemize lines).
+      items="$(rsync -a -ni -c --delete \
+                 --exclude '.DS_Store' --exclude '.memory' \
+                 --exclude '.git' --exclude '.mcp.json' \
+                 "$src_dir/" "$target_dir/" 2>/dev/null \
+               | grep -vE '^\.' || true)"
+      if [[ -z "$items" ]]; then
+        ok "skill '$name'"
+      else
+        bad "skill '$name' -> $target_dir"
+        [[ "$VERBOSE" == 1 ]] && printf '%s\n' "$items" | sed 's/^/    /'
+      fi
+    done
+  done < <(find "$SKILLS_ROOT" -type f -name SKILL.md -print0 | sort -z)
+else
+  bad "$SKILLS_ROOT (canonical skills dir missing)"
+fi
+
+echo
+if [[ "$drift" == 0 ]]; then
+  echo "codex-sync-verify: all mirrors in sync"
+else
+  echo "codex-sync-verify: DRIFT found — run codex-to-claude-sync to propagate"
+  echo "  (if a mirror was hand-edited, that edit will be overwritten — move it to ~/.codex first)"
+fi
+exit "$drift"

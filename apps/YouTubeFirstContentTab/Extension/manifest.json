@@ -1,0 +1,24 @@
+{
+  "manifest_version": 3,
+  "name": "YouTube Defaults",
+  "version": "1.5.4",
+  "description": "Applies Ivo's channel, playback, playlist, sidebar, and UI defaults to YouTube.",
+  "icons": {
+    "48": "icons/icon-48.png",
+    "96": "icons/icon-96.png",
+    "128": "icons/icon-128.png",
+    "256": "icons/icon-256.png"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://www.youtube.com/*",
+        "https://youtube.com/*",
+        "https://m.youtube.com/*"
+      ],
+      "js": ["content.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
+    }
+  ]
+}

@@ -1,0 +1,19 @@
+{
+  "canonical_root": "/Users/YOUR_USERNAME/.codex",
+  "canonical_agents": "/Users/YOUR_USERNAME/.codex/AGENTS.md",
+  "canonical_skills": "/Users/YOUR_USERNAME/.codex/skills",
+  "sync_command": "/Users/YOUR_USERNAME/.local/bin/codex-to-claude-sync",
+  "verify_command": "/Users/YOUR_USERNAME/.local/bin/codex-sync-verify",
+  "forbidden_user_root_instructions": [
+    "/Users/YOUR_USERNAME/CLAUDE.md",
+    "/Users/YOUR_USERNAME/AGENTS.md"
+  ],
+  "agents_mirrors": [
+    "/Users/YOUR_USERNAME/.gemini/config/AGENTS.md",
+    "/Users/YOUR_USERNAME/.antigravitycli/AGENTS.md"
+  ],
+  "skill_mirrors": [
+    "/Users/YOUR_USERNAME/.claude/skills",
+    "/Users/YOUR_USERNAME/.gemini/config/plugins/custom-skills/skills"
+  ]
+}

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Skill Audit"
+  short_description: "Audit the canonical skill corpus for drift"
+  default_prompt: "Use $skill-audit to audit the canonical skill corpus and report evidence-backed findings."

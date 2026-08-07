@@ -1,0 +1,1096 @@
+#!/usr/bin/env python3
+"""queue-when-usage — queue a message into an existing Claude Code / Codex thread;
+it fires the moment usage is available again (retry loop on usage-limit errors).
+
+Commands:
+  sessions <claude|codex> [--json] [--limit N]   list recent threads
+  add <claude|codex> --session <id|last|new> [--cwd DIR] [--auto] <prompt...>
+  jobs [--json]                                  list queued/finished jobs
+  cancel <job-id>                                cancel a pending job
+  run <job-id>                                   (internal) runner loop
+
+Backend for the UsageQueue.app frontend. State: ~/.local/state/queue-when-usage/
+"""
+import base64, fcntl, json, os, re, shutil, signal, sqlite3, subprocess, sys, time, uuid
+
+HOME = os.path.expanduser("~")
+STATE = os.path.join(HOME, ".local/state/queue-when-usage")
+JOBS = os.path.join(STATE, "jobs")
+LOGS = os.path.join(STATE, "logs")
+LOCKS = os.path.join(STATE, "locks")
+for d in (JOBS, LOGS, LOCKS):
+    os.makedirs(d, exist_ok=True)
+
+INTERVAL = int(os.environ.get("QWU_INTERVAL", "600"))
+MAX_HOURS = float(os.environ.get("QWU_MAX_HOURS", "24"))
+
+LIMIT_RE = re.compile(
+    r"usage limit|rate.?limit|limit (reached|exceeded|will reset|resets)"
+    r"|out of (usage|credits)|quota|too many requests|overloaded|\b429\b"
+    r"|try again (at|later)|hit your (session|weekly|usage) limit|high load"
+    r"|out of usage credits"
+    r"|monthly spend limit"
+    r"|reached your .* limit|switch models? with /model",
+    re.I,
+)
+
+RESET_AT_RE = re.compile(
+    r"(?:try again at|resets(?: at)?)\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?", re.I)
+
+
+def parse_reset_epoch(text):
+    """Extract the advertised reset wall-clock time; return epoch or None."""
+    m = RESET_AT_RE.search(text)
+    if not m:
+        return None
+    hour, minute = int(m.group(1)), int(m.group(2) or 0)
+    ampm = (m.group(3) or "").lower()
+    if not (0 <= hour <= 23 and 0 <= minute <= 59):
+        return None
+    if ampm == "pm" and hour != 12:
+        hour += 12
+    elif ampm == "am" and hour == 12:
+        hour = 0
+    now = time.localtime()
+    target = time.mktime((now.tm_year, now.tm_mon, now.tm_mday, hour, minute, 0,
+                          0, 0, -1))
+    if target <= time.time() + 60:   # already past → it means tomorrow
+        target += 86400
+    return target
+
+
+# ---------- usage-window reset resolution ----------
+# Some limit messages (e.g. "You've hit your monthly spend limit") carry NO reset
+# time, so the runner used to fall back to blind 10-minute polling. Instead work
+# out when the current usage window actually resets and sleep until then.
+
+WINDOW_5H = 5 * 3600
+CLAUDE_JSON = os.path.join(HOME, ".claude.json")
+CLAUDE_KEEPER_HIST = os.path.join(HOME, ".local/state/claude-window-keeper/ping-history-claude")
+CODEX_USAGE_HISTORY = os.path.join(
+    HOME, "Library/Application Support/CodexBar/usage-history.jsonl")
+
+
+def _iso_to_epoch(s):
+    """Parse an ISO-8601 timestamp (optional Z / offset) to epoch, or None."""
+    if not s:
+        return None
+    try:
+        from datetime import datetime
+        return datetime.fromisoformat(s.replace("Z", "+00:00")).timestamp()
+    except (ValueError, TypeError):
+        return None
+
+
+def reconstruct_5h_reset(roots, extra_stamp_files):
+    """Reset epoch of the CURRENT 5-hour window, reconstructed from recent
+    activity: every message timestamp in the given session-log roots plus any
+    epoch lines in extra_stamp_files (claude-window-keeper's ping history). Walk
+    the stamps as fixed 5h-from-first-message windows. 0 if no activity in the
+    last 24h. Mirrors ~/.local/bin/claude-window-keeper's own reconstruction so
+    both agree on when a window resets; unlike the cached server value this is
+    always fresh and survives a blocked account (a failing `claude -p` does not
+    refresh ~/.claude.json). Blind spot: claude.ai web/mobile usage isn't logged
+    locally, so a web-anchored window can read slightly late."""
+    import glob, calendar
+    now = int(time.time())
+    horizon = now - 24 * 3600
+    ts_re = re.compile(rb'"timestamp":"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})')
+    stamps = set()
+    for root in roots:
+        if not os.path.isdir(root):
+            continue
+        for path in glob.glob(os.path.join(root, "**", "*.jsonl"), recursive=True):
+            try:
+                if os.path.getmtime(path) < horizon:
+                    continue
+                with open(path, "rb") as fh:
+                    data = fh.read()
+            except OSError:
+                continue
+            for m in ts_re.finditer(data):
+                try:
+                    t = calendar.timegm(time.strptime(m.group(1).decode(),
+                                                       "%Y-%m-%dT%H:%M:%S"))
+                except ValueError:
+                    continue
+                if t >= horizon:
+                    stamps.add(t)
+    for f in extra_stamp_files:
+        try:
+            with open(f) as fh:
+                for line in fh:
+                    line = line.strip()
+                    if line.isdigit() and int(line) >= horizon:
+                        stamps.add(int(line))
+        except OSError:
+            pass
+    if not stamps:
+        return 0
+    s = sorted(stamps)
+    start = s[0]
+    for t in s[1:]:
+        if t - start >= WINDOW_5H:
+            start = t
+    return start + WINDOW_5H
+
+
+def claude_cached_reset():
+    """Nearest future reset among Claude's own cached, active usage limits
+    (~/.claude.json). Fallback only: this cache is refreshed by interactive
+    Claude use and goes stale while the account is blocked."""
+    try:
+        with open(CLAUDE_JSON) as f:
+            util = (json.load(f).get("cachedUsageUtilization") or {}).get("utilization") or {}
+    except Exception:
+        return None
+    now = time.time()
+    cands = []
+    fh = _iso_to_epoch((util.get("five_hour") or {}).get("resets_at"))
+    if fh:
+        cands.append(fh)
+    for lim in util.get("limits") or []:
+        if lim.get("is_active"):
+            e = _iso_to_epoch(lim.get("resets_at"))
+            if e:
+                cands.append(e)
+    future = [e for e in cands if e > now]
+    return min(future) if future else None
+
+
+def codex_reset_from_history():
+    """Nearest future window reset Codex recorded in CodexBar's live usage
+    history (the same source the menu-bar usage meter reads), preferring the
+    5-hour primary window."""
+    now, primary, any_future = time.time(), None, None
+    try:
+        with open(CODEX_USAGE_HISTORY) as f:
+            for line in f:
+                try:
+                    o = json.loads(line)
+                except ValueError:
+                    continue
+                if o.get("provider") != "codex":
+                    continue
+                r = _iso_to_epoch(o.get("resetsAt"))
+                if not r or r <= now:
+                    continue
+                any_future = r if any_future is None else min(any_future, r)
+                if o.get("windowKind") == "primary":
+                    primary = r if primary is None else min(primary, r)
+    except OSError:
+        return None
+    return primary or any_future
+
+
+def usage_reset_epoch(agent, text):
+    """Best estimate of when the blocking usage window resets (epoch), or None:
+    (1) a reset time the CLI advertised in `text`; (2) reconstruction from recent
+    session activity (Claude) or the live usage meter (Codex); (3) the cached
+    server value. None means no reset time is knowable — poll as a last resort."""
+    advertised = parse_reset_epoch(text)
+    if advertised:
+        return advertised
+    now = time.time()
+    if agent == "claude":
+        recon = reconstruct_5h_reset(
+            [os.path.join(HOME, ".claude/projects"),
+             os.path.join(HOME, "Library/Application Support/Claude/projects")],
+            [CLAUDE_KEEPER_HIST])
+        if recon and recon > now:
+            return recon
+        return claude_cached_reset()
+    if agent == "codex":
+        return codex_reset_from_history()
+    return None
+
+
+def which(name, extra):
+    for p in extra:
+        if os.path.exists(p):
+            return p
+    return shutil.which(name) or name
+
+
+CLAUDE = which("claude", ["/opt/homebrew/bin/claude"])
+CODEX = which("codex", ["/Applications/ChatGPT.app/Contents/Resources/codex",
+                        "/opt/homebrew/bin/codex", os.path.join(HOME, ".local/bin/codex")])
+NOTIFIER = os.path.join(HOME, ".local/bin/tool-status-notify")
+
+
+def notify(msg):
+    try:
+        subprocess.run([NOTIFIER, "UsageQueue", msg], capture_output=True, timeout=20)
+    except Exception:
+        pass
+
+
+# ---------- session listing ----------
+
+def titles_from_lines(lines):
+    """Extract (custom_title, ai_title) from raw jsonl lines; last occurrence wins."""
+    custom, ai = None, None
+    for line in lines:
+        if '"custom-title"' not in line and '"ai-title"' not in line:
+            continue
+        try:
+            obj = json.loads(line)
+        except Exception:
+            continue
+        if obj.get("type") == "custom-title" and obj.get("customTitle"):
+            custom = obj["customTitle"]
+        elif obj.get("type") == "ai-title" and obj.get("aiTitle"):
+            ai = obj["aiTitle"]
+    return custom, ai
+
+
+def tail_lines(path, nbytes=262144):
+    try:
+        with open(path, "rb") as f:
+            f.seek(0, 2)
+            f.seek(max(0, f.tell() - nbytes))
+            return f.read().decode("utf-8", errors="replace").splitlines()
+    except Exception:
+        return []
+
+
+def live_model_claude(path):
+    """Model of the most recent assistant turn — the desktop store's `model`
+    field is written at session start and goes stale when it's changed in-app."""
+    for line in reversed(tail_lines(path)):
+        if '"model"' not in line:
+            continue
+        try:
+            obj = json.loads(line)
+        except Exception:
+            continue
+        m = (obj.get("message") or {}).get("model")
+        if m and not m.startswith("<"):
+            return m
+    return None
+
+
+def live_settings_codex(path):
+    """model/effort from the newest turn_context — fresher than the state db."""
+    for line in reversed(tail_lines(path)):
+        if '"turn_context"' not in line:
+            continue
+        try:
+            obj = json.loads(line)
+        except Exception:
+            continue
+        if obj.get("type") == "turn_context":
+            pl = obj.get("payload") or {}
+            return pl.get("model"), pl.get("effort")
+    return None, None
+
+
+def first_user_text_claude(path):
+    cwd, text = None, None
+    head = []
+    try:
+        with open(path, "r", errors="replace") as f:
+            for i, line in enumerate(f):
+                if i > 150:
+                    break
+                head.append(line)
+                try:
+                    obj = json.loads(line)
+                except Exception:
+                    continue
+                if cwd is None and obj.get("cwd"):
+                    cwd = obj["cwd"]
+                if text is None and obj.get("type") == "user" and not obj.get("isSidechain"):
+                    c = (obj.get("message") or {}).get("content")
+                    if isinstance(c, list):
+                        c = " ".join(p.get("text", "") for p in c if isinstance(p, dict))
+                    if isinstance(c, str):
+                        c = c.strip()
+                        if c and not c.startswith("<") and not c.startswith("Caveat:"):
+                            text = c
+        # Title records can sit anywhere; check head lines plus the file tail.
+        custom, ai = titles_from_lines(head)
+        try:
+            with open(path, "rb") as f:
+                f.seek(0, 2)
+                size = f.tell()
+                f.seek(max(0, size - 262144))
+                tail = f.read().decode("utf-8", errors="replace").splitlines()
+            c2, a2 = titles_from_lines(tail)
+            custom, ai = c2 or custom, a2 or ai
+        except Exception:
+            pass
+        title = custom or ai
+        if title:
+            text = title
+    except Exception:
+        pass
+    return cwd, text
+
+
+def claude_desktop_index():
+    """Map cliSessionId -> {archived, title} from the desktop app's session store."""
+    idx = {}
+    root = os.path.join(HOME, "Library/Application Support/Claude/claude-code-sessions")
+    if not os.path.isdir(root):
+        return idx
+    for dirpath, _, fns in os.walk(root):
+        for fn in fns:
+            if not (fn.startswith("local_") and fn.endswith(".json")):
+                continue
+            try:
+                with open(os.path.join(dirpath, fn)) as f:
+                    d = json.load(f)
+            except Exception:
+                continue
+            sid = d.get("cliSessionId")
+            if not sid:
+                continue
+            cur = idx.get(sid)
+            if cur is None or d.get("lastActivityAt", 0) >= cur.get("_ts", 0):
+                idx[sid] = {"archived": bool(d.get("isArchived")),
+                            "title": d.get("title") or None,
+                            "model": d.get("model") or None,
+                            "effort": d.get("effort") or None,
+                            "_ts": d.get("lastActivityAt", 0)}
+    return idx
+
+
+def claude_session_file(session_id):
+    root = os.path.join(HOME, ".claude/projects")
+    for dirpath, _, files in os.walk(root):
+        name = session_id + ".jsonl"
+        if name in files:
+            return os.path.join(dirpath, name)
+    return None
+
+
+def register_claude_desktop(job):
+    """Register a completed CLI session as a native Claude desktop session."""
+    cli_id = job.get("thread_id")
+    rollout = claude_session_file(cli_id) if cli_id else None
+    if not rollout:
+        raise RuntimeError("Claude session file not found: %s" % cli_id)
+
+    created_ms = int(os.path.getmtime(rollout) * 1000)
+    updated_ms = created_ms
+    title = job.get("thread") or job["prompt"][:120]
+    model = job.get("model")
+    effort = job.get("effort")
+    completed = 0
+    with open(rollout, errors="replace") as handle:
+        for line in handle:
+            try:
+                obj = json.loads(line)
+            except ValueError:
+                continue
+            stamp = obj.get("timestamp")
+            if stamp:
+                try:
+                    from datetime import datetime
+                    ms = int(datetime.fromisoformat(stamp.replace("Z", "+00:00")).timestamp() * 1000)
+                    created_ms = min(created_ms, ms)
+                    updated_ms = max(updated_ms, ms)
+                except (ValueError, TypeError):
+                    pass
+            if obj.get("type") == "ai-title" and obj.get("aiTitle"):
+                title = obj["aiTitle"]
+            message = obj.get("message") or {}
+            if obj.get("type") == "assistant" and message.get("role") == "assistant":
+                if any(part.get("type") == "text" and part.get("text")
+                       for part in message.get("content", []) if isinstance(part, dict)):
+                    completed += 1
+                model = message.get("model") or model
+
+    root = os.path.join(HOME, "Library/Application Support/Claude/claude-code-sessions")
+    candidates = []
+    for dirpath, _, files in os.walk(root):
+        for name in files:
+            if not (name.startswith("local_") and name.endswith(".json")):
+                continue
+            path = os.path.join(dirpath, name)
+            try:
+                data = json.load(open(path))
+            except Exception:
+                continue
+            if data.get("cwd") == job["cwd"] or data.get("originCwd") == job["cwd"]:
+                candidates.append((data.get("lastActivityAt", 0), dirpath))
+    if not candidates:
+        raise RuntimeError("No Claude desktop workspace found for %s" % job["cwd"])
+    desktop_dir = max(candidates)[1]
+    local_id = job.get("desktop_session_id") or ("local_" + str(uuid.uuid4()))
+    metadata = {
+        "sessionId": local_id, "cliSessionId": cli_id,
+        "cwd": job["cwd"], "originCwd": job["cwd"],
+        "lastFocusedAt": updated_ms, "createdAt": created_ms,
+        "lastActivityAt": updated_ms, "model": model, "effort": effort,
+        "sessionSettings": {"ultracode": False}, "isArchived": False,
+        "title": title, "titleSource": "auto",
+        "permissionMode": "bypassPermissions",
+        "remoteMcpServersConfig": [],
+        "chromePermissionMode": "skip_all_permission_checks",
+        "completedTurns": max(1, completed), "bridgeSessionIds": [],
+        "alwaysAllowedReasons": [], "sessionPermissionUpdates": [],
+        "classifierSummaryEnabled": True, "spawnSeed": {},
+    }
+    target = os.path.join(desktop_dir, local_id + ".json")
+    temp = target + ".tmp"
+    with open(temp, "w") as handle:
+        json.dump(metadata, handle, indent=2)
+    os.replace(temp, target)
+    job["desktop_session_id"] = local_id
+    return local_id
+
+
+def want(archived, status):
+    return status == "all" or (status == "archived") == archived
+
+
+T3_DB = os.path.join(HOME, ".t3/userdata/state.sqlite")
+
+
+def t3_model_effort(model_selection_json):
+    """Return the model and effort selected for a T3 Code thread."""
+    try:
+        selection = json.loads(model_selection_json or "{}")
+    except (TypeError, ValueError):
+        return None, None
+    model = selection.get("model")
+    effort = None
+    for option in selection.get("options") or []:
+        if isinstance(option, dict) and option.get("id") == "effort":
+            effort = option.get("value")
+            break
+    return model, effort
+
+
+def sessions_t3_claude(status="active"):
+    """List resumable Claude threads owned by T3 Code, read-only.
+
+    T3's projection thread id is not accepted by ``claude --resume``. The
+    provider runtime's ``resume`` cursor is the underlying Claude session id
+    and therefore becomes the row id returned to the app.
+    """
+    if not os.path.isfile(T3_DB):
+        return []
+    query = """
+        SELECT t.title, t.updated_at, t.archived_at, t.model_selection_json,
+               p.workspace_root, s.provider_name, r.provider_name,
+               r.adapter_key, r.resume_cursor_json
+          FROM projection_threads AS t
+          JOIN projection_projects AS p ON p.project_id = t.project_id
+          JOIN projection_thread_sessions AS s ON s.thread_id = t.thread_id
+          JOIN provider_session_runtime AS r ON r.thread_id = t.thread_id
+         WHERE t.deleted_at IS NULL
+           AND s.provider_name = 'claudeAgent'
+           AND r.provider_name = 'claudeAgent'
+           AND r.adapter_key = 'claudeAgent'
+    """
+    rows = []
+    try:
+        con = sqlite3.connect("file:%s?mode=ro" % T3_DB, uri=True, timeout=2)
+        try:
+            for (title, updated_at, archived_at, selection_json, workspace,
+                 _, _, _, cursor_json) in con.execute(query):
+                try:
+                    cursor = json.loads(cursor_json or "{}")
+                except (TypeError, ValueError):
+                    continue
+                resume_id = cursor.get("resume")
+                if not isinstance(resume_id, str) or not resume_id.strip():
+                    continue
+                archived = bool(archived_at)
+                if not want(archived, status):
+                    continue
+                model, effort = t3_model_effort(selection_json)
+                rows.append({
+                    "id": resume_id,
+                    "agent": "claude",
+                    "cwd": workspace or HOME,
+                    "mtime": int(_iso_to_epoch(updated_at) or 0),
+                    "label": (title or "T3 Code thread")[:120],
+                    "archived": archived,
+                    "model": model,
+                    "effort": effort,
+                    "source": "t3",
+                })
+        finally:
+            con.close()
+    except (OSError, sqlite3.Error):
+        return []
+    return rows
+
+
+def sessions_claude(limit, status="active"):
+    desktop = claude_desktop_index()
+    files = []
+    root = os.path.join(HOME, ".claude/projects")
+    for proj in os.listdir(root) if os.path.isdir(root) else []:
+        pdir = os.path.join(root, proj)
+        if not os.path.isdir(pdir):
+            continue
+        for fn in os.listdir(pdir):
+            if not fn.endswith(".jsonl"):
+                continue
+            sid = fn[:-6]
+            # Only threads the desktop app knows about — headless/agent-spawned
+            # sessions never appear in its sidebar and shouldn't appear here.
+            meta = desktop.get(sid)
+            if meta is None:
+                continue
+            p = os.path.join(pdir, fn)
+            # Order by the desktop app's own last-activity clock so this list
+            # matches the Recents sidebar; the transcript mtime is a different
+            # clock (last CLI write) and drifts out of sync. Fall back to it
+            # only when the desktop never recorded an activity timestamp.
+            ts_ms = meta.get("_ts") or 0
+            sort_ms = ts_ms or int(os.path.getmtime(p) * 1000)
+            files.append((sort_ms, p, sid, meta))
+    files.sort(key=lambda r: r[0], reverse=True)
+    desktop_rows = []
+    for sort_ms, path, sid, meta in files:
+        archived = meta.get("archived", False)
+        if not want(archived, status):
+            continue
+        cwd, text = first_user_text_claude(path)
+        label = meta.get("title") or text
+        if not label:
+            continue
+        desktop_rows.append({"id": sid, "agent": "claude", "cwd": cwd or HOME, "mtime": int(sort_ms / 1000),
+                             "label": label[:120], "archived": archived,
+                             "model": live_model_claude(path) or meta.get("model"),
+                             "effort": meta.get("effort")})
+
+    # Merge both Claude surfaces before applying the limit. T3 rows win a
+    # duplicate underlying session id so the app can keep the source visible.
+    merged = {row["id"]: row for row in desktop_rows}
+    for row in sessions_t3_claude(status):
+        merged[row["id"]] = row
+    rows = sorted(merged.values(), key=lambda row: row["mtime"], reverse=True)
+    return rows if limit == 0 else rows[:limit]
+
+
+def codex_thread_settings():
+    """Map thread id -> app metadata from the Codex app's state db."""
+    out = {}
+    for attempt in range(3):
+        try:
+            con = sqlite3.connect(
+                "file:%s?mode=ro" % os.path.join(HOME, ".codex/state_5.sqlite"),
+                uri=True, timeout=2)
+            for tid, m, e, source, title in con.execute(
+                    "SELECT id, model, reasoning_effort, source, title FROM threads"):
+                out[tid] = (m, e, source, title)
+            con.close()
+            break
+        except Exception:
+            time.sleep(0.2)
+    return out
+
+
+def codex_thread_names():
+    names = {}
+    try:
+        with open(os.path.join(HOME, ".codex/session_index.jsonl"), "r", errors="replace") as f:
+            for line in f:
+                try:
+                    obj = json.loads(line)
+                except Exception:
+                    continue
+                if obj.get("id") and obj.get("thread_name"):
+                    names[obj["id"]] = obj["thread_name"]
+    except Exception:
+        pass
+    return names
+
+
+def sessions_codex(limit, status="active"):
+    names = codex_thread_names()
+    settings = codex_thread_settings()
+    files = []
+    roots = []
+    if status in ("active", "all"):
+        roots.append((os.path.join(HOME, ".codex/sessions"), False))
+    if status in ("archived", "all"):
+        roots.append((os.path.join(HOME, ".codex/archived_sessions"), True))
+    for root, archived in roots:
+        for dirpath, _, fns in os.walk(root):
+            for fn in fns:
+                if fn.startswith("rollout-") and fn.endswith(".jsonl"):
+                    p = os.path.join(dirpath, fn)
+                    files.append((os.path.getmtime(p), p, archived))
+    files.sort(reverse=True)
+    out = []
+    for mtime, path, archived in files:
+        file_sid = os.path.basename(path)[-42:-6]
+        meta = settings.get(file_sid)
+        # Include named threads and native interactive app threads. Exclude
+        # headless `codex exec` sessions and subagents.
+        if file_sid not in names and (not meta or meta[2] != "vscode"):
+            continue
+        sid, cwd, text = None, None, None
+        try:
+            with open(path, "r", errors="replace") as f:
+                for i, line in enumerate(f):
+                    if i > 200:
+                        break
+                    try:
+                        obj = json.loads(line)
+                    except Exception:
+                        continue
+                    pl = obj.get("payload") or {}
+                    if obj.get("type") == "session_meta" and sid is None:
+                        sid, cwd = pl.get("id"), pl.get("cwd")
+                    elif text is None and obj.get("type") == "event_msg" and pl.get("type") == "user_message":
+                        t = (pl.get("message") or "").strip()
+                        if t and not t.startswith("<"):
+                            text = t
+                    elif text is None and obj.get("type") == "response_item" and \
+                            pl.get("type") == "message" and pl.get("role") == "user":
+                        t = " ".join(c.get("text", "") for c in pl.get("content", [])
+                                     if isinstance(c, dict)).strip()
+                        if t and not t.startswith("<") and not t.startswith("# AGENTS.md"):
+                            text = t
+        except Exception:
+            continue
+        db_title = meta[3] if meta else None
+        if sid and (text or sid in names or db_title):
+            dm, de, _, db_title = settings.get(sid, (None, None, None, None))
+            lm, le = live_settings_codex(path)
+            out.append({"id": sid, "agent": "codex", "cwd": cwd or HOME, "mtime": int(mtime),
+                        "label": (names.get(sid) or db_title or text)[:120], "archived": archived,
+                        "model": lm or dm, "effort": le or de})
+        if limit != 0 and len(out) >= limit:
+            break
+    return out
+
+
+def sessions_all(limit, status="active"):
+    """List all open Claude Desktop/T3 Code and Codex threads together."""
+    rows = sessions_claude(0, status) + sessions_codex(0, status)
+    merged = {(row["agent"], row["id"]): row for row in rows}
+    rows = sorted(merged.values(), key=lambda row: row["mtime"], reverse=True)
+    return rows if limit == 0 else rows[:limit]
+
+
+# ---------- jobs ----------
+
+def job_path(jid):
+    return os.path.join(JOBS, jid + ".json")
+
+
+def launchd_label(jid):
+    return "com.ivogundlach.queue-when-usage.job." + re.sub(r"[^A-Za-z0-9.-]", "-", jid)
+
+
+def load_job(jid):
+    with open(job_path(jid)) as f:
+        return json.load(f)
+
+
+def save_job(job):
+    job["updated"] = int(time.time())
+    tmp = job_path(job["id"]) + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(job, f, indent=1)
+    os.replace(tmp, job_path(job["id"]))
+
+
+def cmd_add(args):
+    agent = args.pop(0)
+    session, cwd, auto, model, effort, images, label = "last", None, False, None, None, [], None
+    inherit = False
+    while args and args[0].startswith("--"):
+        a = args.pop(0)
+        if a == "--session":
+            session = args.pop(0)
+        elif a == "--cwd":
+            cwd = args.pop(0)
+        elif a == "--auto":
+            auto = True
+        elif a == "--model":
+            model = args.pop(0)
+        elif a == "--effort":
+            effort = args.pop(0)
+        elif a == "--image":
+            images.append(args.pop(0))
+        elif a == "--label":
+            label = args.pop(0)
+        elif a == "--inherit":
+            inherit = True
+        else:
+            sys.exit("unknown flag: " + a)
+    prompt = " ".join(args).strip()
+    if not prompt:
+        sys.exit("empty prompt")
+    jid = time.strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:6]
+    # Snapshot attachments now — the original (e.g. a screenshot) may be gone
+    # by the time usage resets and the job actually delivers.
+    stored = []
+    if images:
+        att_dir = os.path.join(STATE, "attachments")
+        os.makedirs(att_dir, exist_ok=True)
+        for i, src in enumerate(images):
+            dst = os.path.join(att_dir, "%s-%d%s" % (jid, i, os.path.splitext(src)[1].lower()))
+            try:
+                shutil.copy2(src, dst)
+                stored.append(dst)
+            except OSError as e:
+                sys.exit("cannot read image %s: %s" % (src, e))
+    job = {"id": jid, "agent": agent, "session": session, "cwd": cwd or HOME,
+           "images": stored, "thread": label, "inherit": inherit,
+           "auto": auto, "model": model, "effort": effort,
+           "prompt": prompt, "status": "queued", "attempts": 0,
+           "created": int(time.time()), "pid": None,
+           "launchd_label": launchd_label(jid),
+           "log": os.path.join(LOGS, jid + ".log")}
+    if agent == "claude" and session == "new":
+        job["thread_id"] = str(uuid.uuid4())
+    save_job(job)
+    # launchd owns the runner, so quitting UsageQueue cannot terminate queued work
+    # as part of the app's process coalition.
+    r = subprocess.run([
+        "/bin/launchctl", "submit", "-l", job["launchd_label"],
+        "-o", job["log"], "-e", job["log"], "--",
+        "/bin/sh", "-c", '"$1" "$2" run "$3"; /bin/launchctl remove "$4"',
+        "usagequeue-runner", sys.executable, os.path.abspath(__file__), jid,
+        job["launchd_label"],
+    ], capture_output=True, text=True)
+    if r.returncode != 0:
+        job["status"] = "failed"
+        job["error"] = "cannot launch background runner: " + (r.stderr or r.stdout).strip()
+        save_job(job)
+        sys.exit(job["error"])
+    print(jid)
+
+
+MEDIA_TYPES = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+               ".gif": "image/gif", ".webp": "image/webp"}
+
+
+def claude_image_payload(job):
+    """stream-json user message with the prompt plus base64 image blocks."""
+    content = [{"type": "text", "text": job["prompt"]}]
+    for p in job.get("images") or []:
+        mt = MEDIA_TYPES.get(os.path.splitext(p)[1].lower())
+        if not mt:
+            continue
+        with open(p, "rb") as f:
+            data = base64.b64encode(f.read()).decode()
+        content.append({"type": "image",
+                        "source": {"type": "base64", "media_type": mt, "data": data}})
+    return json.dumps({"type": "user",
+                       "message": {"role": "user", "content": content}}) + "\n"
+
+
+def build_cmd(job):
+    """Returns (cmd, stdin_payload_or_None)."""
+    agent, session, auto = job["agent"], job["session"], job["auto"]
+    # "Same as chat": pass no model/effort flags. Resuming a thread makes the CLI
+    # restore that thread's own settings — always current, unlike a file read.
+    model, effort = (None, None) if job.get("inherit") else (job.get("model"), job.get("effort"))
+    images = job.get("images") or []
+    if agent == "claude":
+        cmd = [CLAUDE, "-p"]
+        if auto:
+            cmd.append("--dangerously-skip-permissions")
+        if model:
+            cmd += ["--model", model]
+        if effort:
+            cmd += ["--effort", effort]
+        if session == "last":
+            cmd.append("--continue")
+        elif session != "new":
+            cmd += ["--resume", session]
+        elif job.get("attempts", 0) > 1:
+            cmd += ["--resume", job["thread_id"]]
+        else:
+            cmd += ["--session-id", job["thread_id"]]
+        if images:
+            cmd += ["--input-format", "stream-json",
+                    "--output-format", "stream-json", "--verbose"]
+            return cmd, claude_image_payload(job)
+        cmd.append(job["prompt"])
+    else:
+        cmd = [CODEX, "exec"]
+        if session == "last":
+            cmd += ["resume", "--last"]
+        elif session != "new":
+            cmd += ["resume", session]
+        cmd.append("--skip-git-repo-check")
+        if auto:
+            cmd.append("--dangerously-bypass-approvals-and-sandbox")
+        if model:
+            cmd += ["-m", model]
+        if effort:
+            cmd += ["-c", 'model_reasoning_effort="%s"' % effort]
+        for p in images:
+            cmd += ["-i", p]
+        cmd.append(job["prompt"])
+    return cmd, None
+
+
+def run_new_codex_thread(job):
+    """Create and run an app-visible Codex thread through the app-server."""
+    p = subprocess.Popen(
+        [CODEX, "app-server", "--stdio"], cwd=job["cwd"],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        text=True, bufsize=1)
+
+    def send(request_id, method, params):
+        p.stdin.write(json.dumps({"id": request_id, "method": method,
+                                  "params": params}) + "\n")
+        p.stdin.flush()
+
+    transcript = []
+    try:
+        send(1, "initialize", {"clientInfo": {"name": "UsageQueue",
+                                                "title": "UsageQueue",
+                                                "version": "1"}})
+        thread_params = {
+            "cwd": job["cwd"],
+            "approvalPolicy": "never" if job["auto"] else "on-request",
+            "sandbox": "danger-full-access" if job["auto"] else "workspace-write",
+            "threadSource": "user",
+        }
+        if job.get("model"):
+            thread_params["model"] = job["model"]
+        send(2, "thread/start", thread_params)
+
+        thread_id = None
+        for line in p.stdout:
+            transcript.append(line)
+            try:
+                event = json.loads(line)
+            except ValueError:
+                continue
+            if event.get("id") == 2:
+                thread_id = ((event.get("result") or {}).get("thread") or {}).get("id")
+                if not thread_id:
+                    raise RuntimeError("Codex did not return a new thread id")
+                inputs = [{"type": "text", "text": job["prompt"]}]
+                inputs += [{"type": "localImage", "path": path}
+                           for path in job.get("images") or []]
+                turn = {"threadId": thread_id, "input": inputs}
+                if job.get("model"):
+                    turn["model"] = job["model"]
+                if job.get("effort"):
+                    turn["effort"] = job["effort"]
+                send(3, "turn/start", turn)
+            if event.get("method") == "turn/completed":
+                result = event.get("params") or {}
+                status = ((result.get("turn") or {}).get("status") or "").lower()
+                if status in ("completed", "complete"):
+                    job["thread_id"] = thread_id
+                    return 0, "".join(transcript)
+                return 1, "".join(transcript)
+        return p.wait(), "".join(transcript)
+    finally:
+        if p.poll() is None:
+            p.terminate()
+            try:
+                p.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                p.kill()
+
+
+def cmd_run(jid):
+    job = load_job(jid)
+    job["pid"] = os.getpid()
+    session_lock = None
+    if job["agent"] == "claude" and job["session"] not in ("new", "last"):
+        lock_name = re.sub(r"[^A-Za-z0-9.-]", "-", job["session"])
+        session_lock = open(os.path.join(LOCKS, "claude-" + lock_name + ".lock"), "w")
+        try:
+            fcntl.flock(session_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            job["status"] = "queued"
+            job["error"] = "Waiting for the previous message in this Claude chat to finish."
+            save_job(job)
+            fcntl.flock(session_lock, fcntl.LOCK_EX)
+        job["error"] = None
+    deadline = time.time() + MAX_HOURS * 3600
+    while True:
+        job["attempts"] += 1
+        job["status"] = "running"
+        save_job(job)
+        print("=== attempt %d at %s ===" % (job["attempts"], time.ctime()), flush=True)
+        try:
+            if job["agent"] == "codex" and job["session"] == "new":
+                rc, out = run_new_codex_thread(job)
+            else:
+                cmd, payload = build_cmd(job)
+                if payload is not None:
+                    r = subprocess.run(cmd, cwd=job["cwd"], capture_output=True,
+                                       text=True, input=payload)
+                else:
+                    r = subprocess.run(cmd, cwd=job["cwd"], capture_output=True,
+                                       text=True, stdin=subprocess.DEVNULL)
+                out = (r.stdout or "") + "\n" + (r.stderr or "")
+                rc = r.returncode
+        except Exception as e:
+            out, rc = "runner error: %s" % e, 1
+        print(out[-8000:], flush=True)
+        if rc == 0:
+            if job["agent"] == "claude" and job["session"] == "new":
+                try:
+                    local_id = register_claude_desktop(job)
+                except Exception as error:
+                    job["status"] = "failed"
+                    job["error"] = "delivered but could not register in Claude: %s" % error
+                    save_job(job)
+                    notify("Claude response completed but desktop registration failed.")
+                    return
+            job["status"] = "done"
+            save_job(job)
+            if job["agent"] == "codex" and job["session"] == "new" and job.get("thread_id"):
+                subprocess.run(["/usr/bin/open", "codex://threads/" + job["thread_id"]],
+                               capture_output=True)
+            elif job["agent"] == "claude" and job["session"] == "new":
+                subprocess.run(["/usr/bin/open", "claude://claude.ai/code/" + local_id],
+                               capture_output=True)
+            notify("%s: queued message delivered (attempt %d)." % (job["agent"], job["attempts"]))
+            return
+        if LIMIT_RE.search(out[-4000:]):
+            if time.time() >= deadline:
+                job["status"] = "gave_up"
+                save_job(job)
+                notify("%s: gave up after %gh, still rate-limited." % (job["agent"], MAX_HOURS))
+                return
+            # Sleep until the usage window actually resets instead of blindly
+            # polling. +90s buffer absorbs clock skew and minute rounding.
+            reset = usage_reset_epoch(job["agent"], out[-4000:])
+            now = time.time()
+            if reset and reset > now:
+                wait = min(reset + 90, deadline) - now
+                job["next_attempt"] = int(now + wait)
+                job["status"] = "waiting"
+                save_job(job)
+                print("--- usage limit; window resets %s; sleeping %dm ---"
+                      % (time.strftime("%H:%M", time.localtime(reset)), wait // 60),
+                      flush=True)
+                time.sleep(max(1, wait))
+            else:
+                # No reset time knowable from any source — poll as a last resort.
+                job["next_attempt"] = int(now + INTERVAL)
+                job["status"] = "waiting"
+                save_job(job)
+                print("--- usage limit; no reset time available; retry in %ds ---"
+                      % INTERVAL, flush=True)
+                time.sleep(INTERVAL)
+            continue
+        job["status"] = "failed"
+        job["error"] = out[-500:]
+        save_job(job)
+        notify("%s: queued message FAILED (rc=%d, not a usage limit)." % (job["agent"], rc))
+        return
+
+
+FINISHED = ("done", "failed", "gave_up", "cancelled")
+KEEP_HOURS = float(os.environ.get("QWU_KEEP_HOURS", "24"))
+
+
+def delete_job(job):
+    for p in [job_path(job["id"]), job.get("log") or ""] + (job.get("images") or []):
+        try:
+            os.remove(p)
+        except OSError:
+            pass
+
+
+def cmd_clear():
+    """Remove all finished jobs (active ones are kept)."""
+    n = 0
+    for fn in os.listdir(JOBS):
+        if fn.endswith(".json"):
+            try:
+                job = load_job(fn[:-5])
+            except Exception:
+                continue
+            if job["status"] in FINISHED:
+                delete_job(job)
+                n += 1
+    print("cleared %d" % n)
+
+
+def cmd_jobs(as_json):
+    jobs, cutoff = [], time.time() - KEEP_HOURS * 3600
+    for fn in sorted(os.listdir(JOBS), reverse=True):
+        if fn.endswith(".json"):
+            try:
+                job = load_job(fn[:-5])
+            except Exception:
+                continue
+            # Auto-prune finished jobs older than KEEP_HOURS.
+            if job["status"] in FINISHED and job.get("updated", job.get("created", 0)) < cutoff:
+                delete_job(job)
+                continue
+            jobs.append(job)
+    # mark dead runners
+    for j in jobs:
+        if j["status"] in ("queued", "running", "waiting") and j.get("pid"):
+            try:
+                os.kill(j["pid"], 0)
+            except OSError:
+                j["status"] = "failed"
+                j["error"] = "runner process died"
+                save_job(j)
+    if as_json:
+        print(json.dumps(jobs))
+    else:
+        for j in jobs:
+            print("%s  %-7s %-6s %-8s %s" % (j["id"], j["agent"], j["session"][:6],
+                                             j["status"], j["prompt"][:60]))
+
+
+def cmd_cancel(jid):
+    job = load_job(jid)
+    label = job.get("launchd_label")
+    if label:
+        subprocess.run(["/bin/launchctl", "remove", label], capture_output=True)
+    if job["status"] in ("queued", "running", "waiting") and job.get("pid"):
+        try:
+            os.killpg(os.getpgid(job["pid"]), signal.SIGTERM)
+        except OSError:
+            try:
+                os.kill(job["pid"], signal.SIGTERM)
+            except OSError:
+                pass
+    job["status"] = "cancelled"
+    save_job(job)
+    print("cancelled " + jid)
+
+
+def main():
+    a = sys.argv[1:]
+    if not a:
+        sys.exit(__doc__)
+    cmd = a.pop(0)
+    if cmd == "sessions":
+        agent = a.pop(0)
+        as_json, limit, status = "--json" in a, 12, "active"
+        if "--limit" in a:
+            limit = int(a[a.index("--limit") + 1])
+        if "--status" in a:
+            status = a[a.index("--status") + 1]
+        rows = (sessions_all(limit, status) if agent == "all"
+                else sessions_claude(limit, status) if agent == "claude"
+                else sessions_codex(limit, status))
+        print(json.dumps(rows) if as_json else
+              "\n".join("%s  %s  %s" % (r["id"][:8], r["cwd"], r["label"][:70]) for r in rows))
+    elif cmd == "add":
+        cmd_add(a)
+    elif cmd == "run":
+        cmd_run(a[0])
+    elif cmd == "jobs":
+        cmd_jobs("--json" in a)
+    elif cmd == "cancel":
+        cmd_cancel(a[0])
+    elif cmd == "clear":
+        cmd_clear()
+    else:
+        sys.exit("unknown command: " + cmd)
+
+
+if __name__ == "__main__":
+    main()

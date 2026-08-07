@@ -1,0 +1,92 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schemaVersion": {"const": 5},
+    "status": {
+      "type": "string",
+      "enum": ["repaired", "needs_approval", "failed", "no_change"]
+    },
+    "summary": {"type": "string", "maxLength": 1200},
+    "root_cause": {"type": "string", "maxLength": 2400},
+    "proposed_fix": {"type": "string", "maxLength": 1200},
+    "decision_impact": {
+      "type": "string",
+      "enum": ["preserves_decisions", "overrides_decision", "uncertain"]
+    },
+    "decision_basis": {"type": "string", "maxLength": 2400},
+    "research_urls": {
+      "type": "array",
+      "maxItems": 5,
+      "items": {"type": "string", "maxLength": 1200}
+    },
+    "verification": {
+      "type": "array",
+      "maxItems": 20,
+      "items": {"type": "string", "maxLength": 600}
+    },
+    "changed_paths": {
+      "type": "array",
+      "maxItems": 30,
+      "items": {"type": "string", "maxLength": 1000}
+    },
+    "proposed_paths": {
+      "type": "array",
+      "maxItems": 20,
+      "items": {
+        "type": "string",
+        "maxLength": 1000,
+        "pattern": "^/"
+      }
+    },
+    "escalation": {
+      "type": "string",
+      "enum": ["none", "approve", "user_action", "agent"]
+    },
+    "requested_action": {
+      "anyOf": [
+        {"type": "null"},
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {"type": "string", "enum": ["command", "manual", "permission", "config"]},
+            "description": {"type": "string", "maxLength": 1600},
+            "risk": {"type": "string", "maxLength": 1200},
+            "command": {
+              "anyOf": [
+                {"type": "null"},
+                {
+                  "type": "array",
+                  "minItems": 1,
+                  "maxItems": 40,
+                  "items": {"type": "string", "maxLength": 1000}
+                }
+              ]
+            }
+          },
+          "required": ["kind", "description", "risk", "command"]
+        }
+      ]
+    },
+    "hard_stop": {
+      "anyOf": [
+        {"type": "null"},
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "reason": {"type": "string", "maxLength": 1200},
+            "human_action": {"type": "string", "maxLength": 1200}
+          },
+          "required": ["reason", "human_action"]
+        }
+      ]
+    }
+  },
+  "required": [
+    "schemaVersion", "status", "summary", "root_cause", "proposed_fix", "decision_impact", "decision_basis",
+    "research_urls", "verification", "changed_paths", "proposed_paths", "requested_action", "hard_stop"
+  ]
+}

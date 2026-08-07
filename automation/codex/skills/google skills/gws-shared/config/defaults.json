@@ -1,0 +1,6 @@
+{
+  "auth_preference": "existing local gws auth",
+  "format": "json",
+  "page_delay_ms": 100,
+  "page_limit": 10
+}

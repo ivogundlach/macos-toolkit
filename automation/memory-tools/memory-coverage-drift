@@ -1,0 +1,222 @@
+#!/usr/bin/env python3
+"""memory-coverage-drift — find authored content the index cannot see.
+
+The index searches an allowlist of roots (~/.memory/semantic-folders.txt). That is
+the right default: it keeps caches, vendored code and app state out. But it fails
+SILENTLY in one direction — start a new project, keep notes in a new folder, and
+nothing anywhere says "this is not searchable". The memory system looks healthy
+while quietly not covering the newest work, which is the work most likely to be
+searched for.
+
+This walks the home directory for directories holding a meaningful amount of
+authored prose that no configured root covers, and reports them. It reads only;
+it never edits the roots file. Adding a root is a judgement call about what
+belongs in the corpus, and that stays deliberate.
+
+  memory-coverage-drift            human report
+  memory-coverage-drift --json     machine output
+  memory-coverage-drift --version
+
+Exit 0 always when the scan itself worked: uncovered content is information, not
+a fault. State for the Dashboard: ~/.local/state/memory-coverage-drift/last-run.json
+"""
+import json, os, sys, time
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from index_scope import IGNORED_DIR_NAMES, PROSE_EXTS  # noqa: E402
+
+HOME = Path.home()
+ROOTS_FILE = Path(os.environ.get(
+    "MEMORY_SEMANTIC_ROOTS", str(HOME / ".memory/semantic-folders.txt")))
+STATE = HOME / ".local/state/memory-coverage-drift"
+# A handful of stray notes in a folder is not a corpus. This threshold is about
+# "enough authored material that not finding it would be surprising".
+MIN_DOCS = int(os.environ.get("MEMORY_COVERAGE_MIN_DOCS", "12"))
+MAX_DEPTH = int(os.environ.get("MEMORY_COVERAGE_MAX_DEPTH", "3"))
+
+# Not authored memory: OS and app territory, other people's code, media.
+#
+# Desktop and Documents are here for a different reason: they are TCC-protected.
+# Run from a terminal this scan sails through them on the terminal's grant; run
+# from launchd it has no grant, and opendir() on a protected directory BLOCKS
+# rather than failing — observed live, the scheduled job sat in a single
+# scandir() for 15+ minutes at zero CPU. A weekly job that can hang forever is
+# worse than no weekly job. Neither holds memory here (deliverables go to
+# ~/Downloads and ~/Files, and ~/Files is already an indexed root).
+SKIP_TOP = {
+    "Library", "Applications", "Music", "Movies", "Pictures", "Public",
+    "Downloads",           # transient by definition; deliverables land here
+    ".Trash",              # deleted files: the one place content is meant to leave
+    "Desktop", "Documents",           # TCC-protected: opendir blocks under launchd
+    "go", "sdk", "Android", "VirtualBox VMs", "Parallels",
+}
+# Belt to that braces: even with the skip list right, one unreadable mount or a
+# future protected path must not be able to hang the job. The scan stops at the
+# deadline and reports what it has, flagged partial.
+DEADLINE_S = float(os.environ.get("MEMORY_COVERAGE_DEADLINE", "120"))
+
+# Tool state and vendor caches. These dominate a raw scan by file count while
+# containing nothing Ivo wrote, and a detector that reports them is a detector
+# that gets ignored — which is worse than not having one. Matched at any depth.
+TOOL_STATE_DIRS = {
+    ".cargo", ".rustup", ".cache", ".npm", ".yarn", ".pnpm-store", ".bun",
+    ".gradle", ".m2", ".nvm", ".pyenv", ".rbenv", ".deno", ".vscode",
+    ".grok", ".gemini", ".ollama", ".lmstudio", ".continue",
+    "plugins", "marketplace", "node_modules", "Caches", "logs", "log",
+    "state", "share",      # ~/.local/{state,share}: hidden run state and package payloads
+    "attachments", "transcripts", "sessions", "history",
+}
+# Generated mirrors of a canonical source. Their content is real, but indexing
+# them would duplicate the original and adding them as roots is explicitly wrong
+# (AGENTS.md: never edit generated skill mirrors).
+#
+# ~/.cursor is the same class one level up: a tool's own directory, holding the
+# assistant instructions codex-to-claude-sync writes there. Fifteen of them read
+# as prose to any file-extension test, so the scan reported the corpus as missing
+# 15 notes that were never Ivo's to begin with — a false gap nobody could close,
+# because the honest answer was "ignore this", and the only way to say that was
+# to edit this file. That is what IGNORE_FILE is for.
+MIRROR_DIRS = {
+    str(HOME / ".claude/skills"),
+    str(HOME / ".gemini/skills"),
+    str(HOME / ".cursor"),
+}
+
+# Directories deliberately excluded, one absolute path per line, '#' comments.
+# Data rather than code because "this folder is tool output, not my notes" is a
+# fact about the machine that changes whenever a tool is installed, and needing a
+# code edit to record it means the finding just sits there instead. Read at every
+# run; a missing file simply means no extra exclusions.
+IGNORE_FILE = Path(os.environ.get(
+    "MEMORY_COVERAGE_IGNORE", str(HOME / ".memory/coverage-ignore.txt")))
+
+
+def load_ignored():
+    """Absolute paths from IGNORE_FILE. Unreadable or absent -> no exclusions."""
+    out = set()
+    try:
+        for line in IGNORE_FILE.read_text(encoding="utf-8").splitlines():
+            line = line.split("#", 1)[0].strip()
+            if line:
+                out.add(str(Path(os.path.expanduser(line))))
+    except OSError:
+        pass
+    return out
+
+
+def load_roots():
+    roots = []
+    try:
+        for line in ROOTS_FILE.read_text().splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            p = Path(line).expanduser()
+            if p.is_dir():
+                roots.append(p.resolve())
+    except OSError:
+        pass
+    return roots
+
+
+def covered(path, roots):
+    """True when some configured root contains this path (or is inside it —
+    a parent directory whose children are all indexed is not drift)."""
+    for r in roots:
+        if path == r or r in path.parents or path in r.parents:
+            return True
+    return False
+
+
+def count_prose(d, budget=4000, deadline=None):
+    """Prose files at or below this directory, excluding noise trees."""
+    n = 0
+    for dirpath, dirnames, filenames in os.walk(d, onerror=lambda e: None):
+        if deadline is not None and time.monotonic() > deadline:
+            return n
+        dirnames[:] = [x for x in dirnames
+                       if x not in IGNORED_DIR_NAMES and x not in TOOL_STATE_DIRS
+                       and not x.startswith(".git")]
+        for f in filenames:
+            if Path(f).suffix.lower() in PROSE_EXTS:
+                n += 1
+                if n >= budget:
+                    return n
+    return n
+
+
+def scan():
+    roots = load_roots()
+    ignored = MIRROR_DIRS | load_ignored()
+    findings = []
+    deadline = time.monotonic() + DEADLINE_S
+    partial = False
+    stack = [(HOME, 1)]
+    while stack:
+        if time.monotonic() > deadline:
+            partial = True
+            break
+        d, depth = stack.pop()
+        try:
+            children = sorted(p for p in d.iterdir() if p.is_dir() and not p.is_symlink())
+        except OSError:
+            continue
+        for c in children:
+            if c.name in IGNORED_DIR_NAMES or c.name in TOOL_STATE_DIRS:
+                continue
+            if str(c) in ignored:
+                continue
+            if depth == 1 and c.name in SKIP_TOP:
+                continue
+            if covered(c.resolve(), roots):
+                # Already in scope, or an ancestor of something in scope: descend
+                # only in the second case, which `covered` cannot distinguish, so
+                # descending is safe — a covered child is skipped on the next pass.
+                if depth < MAX_DEPTH:
+                    stack.append((c, depth + 1))
+                continue
+            n = count_prose(c, deadline=deadline)
+            if n >= MIN_DOCS:
+                findings.append({"path": str(c), "prose_files": n})
+            elif depth < MAX_DEPTH:
+                stack.append((c, depth + 1))
+    findings.sort(key=lambda f: -f["prose_files"])
+    return findings, partial
+
+
+def main():
+    argv = sys.argv[1:]
+    if any(a in ("-h", "--help") for a in argv):
+        print(__doc__); return 0
+    if any(a in ("--version", "-V") for a in argv):
+        print("memory-coverage-drift (uncovered-content detector for the semantic index)")
+        return 0
+
+    findings, partial = scan()
+    STATE.mkdir(parents=True, exist_ok=True)
+    (STATE / "last-run.json").write_text(json.dumps(
+        {"threshold": MIN_DOCS, "count": len(findings), "partial": partial,
+         "findings": findings[:25]}, indent=2))
+
+    if partial:
+        print(f"NOTE: scan hit its {DEADLINE_S:.0f}s deadline; results are partial",
+              file=sys.stderr)
+    if "--json" in argv:
+        print(json.dumps({"count": len(findings), "partial": partial,
+                          "findings": findings}, indent=2))
+    elif not findings:
+        print(f"coverage drift: none — every directory with >={MIN_DOCS} prose files "
+              "is covered by a configured root")
+    else:
+        print(f"coverage drift: {len(findings)} uncovered director(ies) with "
+              f">={MIN_DOCS} prose files\n")
+        for f in findings[:25]:
+            print(f"  {f['prose_files']:5}  {f['path']}")
+        print("\nAdd the ones that hold real memory to ~/.memory/semantic-folders.txt "
+              "(one absolute path per line, with a comment saying why).")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

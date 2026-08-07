@@ -1,0 +1,5 @@
+{
+  "global_memory_root": "/Users/YOUR_USERNAME/.memory",
+  "lint_after_capture": true,
+  "print_remembered_line": true
+}

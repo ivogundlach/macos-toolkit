@@ -1,0 +1,97 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="${MEMORY_ROOT:-$HOME/.memory}"
+errors=0
+warnings=0
+
+err() {
+  errors=$((errors + 1))
+  printf "ERROR: %s\n" "$1" >&2
+}
+
+warn() {
+  warnings=$((warnings + 1))
+  printf "WARN: %s\n" "$1" >&2
+}
+
+need_file() {
+  [ -f "$ROOT/$1" ] || err "missing $1"
+}
+
+need_dir() {
+  [ -d "$ROOT/$1" ] || err "missing $1/"
+}
+
+need_file "README.md"
+need_file "index.md"
+need_file "current.md"
+need_file "ledger.ndjson"
+need_dir "raw"
+need_dir "wiki"
+need_dir "tools"
+
+if [ -f "$ROOT/ledger.ndjson" ]; then
+  if [ -s "$ROOT/ledger.ndjson" ]; then
+    jq -c . "$ROOT/ledger.ndjson" >/dev/null || err "ledger.ndjson contains invalid JSON"
+  fi
+fi
+
+if [ -f "$ROOT/ledger.ndjson" ] && [ -s "$ROOT/ledger.ndjson" ]; then
+  ids_file="$(mktemp)"
+  refs_file="$(mktemp)"
+  missing_file="$(mktemp)"
+
+  jq -r '.id // empty' "$ROOT/ledger.ndjson" | sort -u > "$ids_file"
+  grep -Rho 'mem_[0-9][0-9A-Za-z_-]*' "$ROOT/current.md" "$ROOT/index.md" "$ROOT/wiki" 2>/dev/null | sort -u > "$refs_file" || true
+  comm -23 "$refs_file" "$ids_file" > "$missing_file"
+
+  if [ -s "$missing_file" ]; then
+    while IFS= read -r id; do
+      err "wiki references missing ledger id: $id"
+    done < "$missing_file"
+  fi
+
+  while IFS= read -r target; do
+    [ -n "$target" ] || continue
+    [ -f "$ROOT/$target" ] || err "ledger target does not exist: $target"
+  done < <(jq -r 'select(.target != null and .target != "") | .target' "$ROOT/ledger.ndjson")
+
+  while IFS= read -r line; do
+    id="${line%%	*}"
+    target="${line#*	}"
+    [ -n "$id" ] && [ -n "$target" ] || continue
+    [ -f "$ROOT/$target" ] || continue
+    grep -q "$id" "$ROOT/$target" || err "ledger entry not cited in its target page: $id -> $target"
+  done < <(jq -r 'select(.target != null and .target != "" and .id != null) | [.id, .target] | @tsv' "$ROOT/ledger.ndjson")
+
+  while IFS= read -r source; do
+    [ -n "$source" ] || continue
+    case "$source" in
+      raw/*)
+        [ -f "$ROOT/$source" ] || err "ledger raw source does not exist: $source"
+        ;;
+    esac
+  done < <(jq -r '.source // empty' "$ROOT/ledger.ndjson")
+
+  rm -f "$ids_file" "$refs_file" "$missing_file"
+fi
+
+if [ -d "$ROOT/wiki" ]; then
+  while IFS= read -r page; do
+    lines="$(wc -l < "$page" | tr -d ' ')"
+    if [ "$lines" -gt 300 ]; then
+      warn "large wiki page over 300 lines: ${page#$ROOT/}"
+    fi
+    if ! grep -q 'mem_[0-9]' "$page"; then
+      warn "wiki page has no ledger references: ${page#$ROOT/}"
+    fi
+  done < <(find "$ROOT/wiki" -type f -name '*.md' | sort)
+fi
+
+if [ "$errors" -gt 0 ]; then
+  printf "memory-lint failed: %s error(s), %s warning(s)\n" "$errors" "$warnings" >&2
+  exit 1
+fi
+
+printf "memory-lint ok: %s warning(s)\n" "$warnings"

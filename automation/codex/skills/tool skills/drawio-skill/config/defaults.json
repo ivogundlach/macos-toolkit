@@ -1,0 +1,6 @@
+{
+  "default_export_format": "png",
+  "preview_width": 2000,
+  "repair_embedded_png": true,
+  "style_preset_dir": "~/.drawio-skill/styles"
+}

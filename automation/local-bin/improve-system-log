@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# improve-system-log — append-only logs for the improve-system skill.
+# Stdlib only; per-day heading dedup. Approval itself happens via popup in the
+# skill; this only records outcomes.
+# Usage:
+#   improve-system-log add "<message>"      # an APPLIED change  -> change-log.md
+#   improve-system-log decline "<message>"  # a REJECTED item    -> declined.md
+set -euo pipefail
+
+STATE_DIR="${IMPROVE_SYSTEM_STATE:-$HOME/.local/state/improve-system}"
+mkdir -p "$STATE_DIR"
+
+append_dated() { # <file> <title-if-new> <message>
+  local file="$1" title="$2" msg="$3" today
+  today="$(date +%F)"
+  [ -f "$file" ] || printf '# %s\n\n' "$title" > "$file"
+  grep -qxF "## $today" "$file" || printf '\n## %s\n' "$today" >> "$file"
+  printf -- '- %s\n' "$msg" >> "$file"
+}
+
+cmd="${1:-}"
+msg="${2:-}"
+case "$cmd" in
+  add)
+    [ -n "$msg" ] || { echo 'usage: improve-system-log add "<message>"' >&2; exit 2; }
+    append_dated "$STATE_DIR/change-log.md" "improve-system change log" "$msg"
+    ;;
+  decline)
+    [ -n "$msg" ] || { echo 'usage: improve-system-log decline "<message>"' >&2; exit 2; }
+    append_dated "$STATE_DIR/declined.md" "improve-system declined items" "$msg"
+    ;;
+  *)
+    echo 'usage: improve-system-log {add "<msg>"|decline "<msg>"}' >&2
+    exit 2
+    ;;
+esac

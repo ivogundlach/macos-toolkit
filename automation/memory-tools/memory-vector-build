@@ -1,0 +1,488 @@
+#!/usr/bin/env python3
+"""memory-vector-build — chunk every indexed file and embed the chunks.
+
+Runs independently of the agy enrichment pass. That separation is deliberate and
+was forced by a live incident: when agy is down, the enrichment builder indexes
+NOTHING for the affected files, so a provider outage becomes a coverage gap. Here
+the raw text is chunked and written regardless, and only the vector column is
+skipped when the embedder is unavailable. Degrade a capability, never a corpus.
+
+  usage: memory-vector-build [--setup] [--only PATH] [--root DIR] [--stats]
+                             [--full] [--version]
+
+  --setup   download the embedding model (network; one time)
+  --only    reindex just the file(s) under PATH
+  --full    complete pass; only a clean --full run stamps the fingerprint that
+            makes the vector arm live for queries
+  --stats   report index state and exit
+
+exit: 0 clean · 1 one or more files failed · 2 usage/setup error
+"""
+import sys, os, json, time, hashlib
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+# Re-exec into the venv interpreter unless we are already running under it.
+# Both the scheduled build and the Tool Status Dashboard reach this through a
+# ~/.local/bin symlink, whose shebang resolves to the SYSTEM python — which has
+# no onnxruntime and no sqlite-vec. Without this the health probe would fail
+# permanently and report a perfectly good index as broken, which is worse than
+# having no probe: it trains you to ignore the one check that matters.
+VENV_PY = os.path.expanduser(
+    os.environ.get("MEMORY_VENV_PY", "~/.local/share/memory-venv/bin/python"))
+
+
+def in_venv(venv_py=None):
+    """True when this interpreter is running INSIDE the memory venv.
+
+    Do NOT compare realpath(sys.executable) to realpath(venv_py). A venv's
+    `python` is a symlink to the base interpreter, so those realpaths are equal
+    whenever the base interpreter is the one on PATH — which is exactly the case
+    this check exists to catch. It silently disabled the re-exec below and made
+    the Tool Status probe report a healthy index as broken with "No module named
+    'onnxruntime'", but only under a PATH where homebrew's python3 came first.
+    sys.prefix is the actual venv marker.
+    """
+    venv_py = venv_py or VENV_PY
+    root = os.path.dirname(os.path.dirname(venv_py))
+    return os.path.realpath(sys.prefix) == os.path.realpath(root)
+
+
+if (os.path.exists(VENV_PY)
+        and not in_venv()
+        and os.environ.get("MEMORY_VECTOR_REEXEC") != "1"):
+    os.environ["MEMORY_VECTOR_REEXEC"] = "1"
+    try:
+        os.execv(VENV_PY, [VENV_PY, os.path.abspath(__file__)] + sys.argv[1:])
+    except OSError:
+        pass          # fall through; --stats and --help still work without it
+
+from index_scope import load_root_excludes
+from file_eligibility import iter_files, read_text, path_tokens, is_code
+from chunker import chunk_file, MAX_CHUNKS_PER_FILE
+import chunk_store as cs
+
+DB = Path(os.environ.get("SEMANTIC_DB",
+                         str(Path.home() / ".memory/semantic-index.sqlite"))).expanduser()
+FOLDERS = Path(os.environ.get("MEMORY_SEMANTIC_FOLDERS",
+                              str(Path.home() / ".memory/semantic-folders.txt"))).expanduser()
+STATE = Path.home() / ".local/state/memory-vector-build"
+BATCH = int(os.environ.get("MEMORY_EMBED_BATCH", "64"))
+# Upper bound on chunks held in memory at once. Caps peak RSS independently of
+# corpus size — see the comment in build() for the 2.3GB that motivated it.
+GROUP_CHUNKS = int(os.environ.get("MEMORY_EMBED_GROUP", "1500"))
+# Vector count past which KNN latency stops being negligible; see stats(). Raised
+# from 60,000 to 1,000,000 on 2026-07-31 when the scan was replaced with a BLAS
+# matrix product: the old number described vec0's curve (60k ~ 20ms), the new one
+# describes the matrix's (1M ~ 40ms). Kept as a real, reachable-in-principle limit
+# rather than deleted -- a growth ceiling that no longer has a number is one that
+# nobody notices arriving.
+VEC_SOFT_LIMIT = int(os.environ.get("MEMORY_VEC_SOFT_LIMIT", "1000000"))
+MAX_FILES_PER_ROOT = int(os.environ.get("SEMANTIC_MAX_FILES_PER_ROOT", "15000"))
+
+
+def roots():
+    """Configured roots, tagged the same way the enrichment builder tags them."""
+    out = []
+    try:
+        lines = FOLDERS.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return out
+    for line in lines:
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        p = Path(os.path.expanduser(line))
+        if not p.is_dir():
+            continue
+        # MUST match tag_for() in memory-semantic-build exactly:
+        #   case "$1" in */.local/bin) printf 'local-bin\n' ;; *) basename "$1" ;;
+        # A divergence orphans every row of the affected root instead of updating
+        # it. Computed from the UNRESOLVED path because basename(1) does not follow
+        # symlinks either. Note ~/.memory tags as ".memory" (leading dot kept), so
+        # it does not collide with the curated notes dir, which tags as "memory".
+        tag = "local-bin" if str(p).endswith("/.local/bin") else p.name
+        out.append((p.resolve(), tag))
+    return out
+
+
+def content_hash(text, fp):
+    """Cache key: file bytes + the full compatibility fingerprint.
+
+    The fingerprint is in the key so that changing the model, the prefixes, or the
+    chunk sizes invalidates every cached file automatically. Without it a contract
+    change would leave old chunks in place looking perfectly fresh.
+    """
+    return hashlib.sha256((fp + ":").encode() + text.encode("utf-8", "ignore")).hexdigest()[:16]
+
+
+def build(only=None, full=False, quiet=False):
+    from embedder import Embedder, EmbedderUnavailable, fingerprint
+    fp = fingerprint()
+    db, vec_ok = cs.open_db(DB, write=True)
+
+    embedder = None
+    embed_err = None
+    # The query path pins one thread (thread-pool spin-up costs more than it saves
+    # on a single short string). Bulk indexing is the opposite case and should use
+    # the machine, so the builder raises the default unless told otherwise.
+    os.environ.setdefault("MEMORY_EMBED_THREADS", str(max(1, (os.cpu_count() or 4) - 2)))
+    if vec_ok:
+        try:
+            embedder = Embedder()
+            embedder.embed_passages(["warmup"])          # fail fast, before the walk
+        except EmbedderUnavailable as e:
+            embedder, embed_err = None, str(e)
+    else:
+        embed_err = "sqlite-vec extension did not load"
+
+    if embed_err and not quiet:
+        print(f"WARN: vectors unavailable ({embed_err}); chunk text will still be "
+              "indexed and search will use keyword arms only", flush=True)
+
+    totals = {"files": 0, "cached": 0, "chunks": 0, "pruned": 0,
+              "failed": 0, "overflow_files": []}
+
+    for root, tag in roots():
+        if only is not None:
+            try:
+                only.relative_to(root)
+            except ValueError:
+                continue
+        have = {r[0]: r[1] for r in db.execute(
+            "SELECT DISTINCT rel_path, file_hash FROM chunks WHERE root_tag=?", (tag,))}
+        paths = sorted(iter_files(root, load_root_excludes(root)))
+        capped = len(paths) > MAX_FILES_PER_ROOT
+        if capped:
+            paths = paths[:MAX_FILES_PER_ROOT]
+
+        eligible, todo = set(), []
+        for p in paths:
+            rel = str(p.relative_to(root))
+            eligible.add(rel)
+            if only is not None and not (p == only or only in p.parents):
+                continue
+            text = read_text(p)
+            if not text.strip():
+                continue
+            h = content_hash(text, fp)
+            if have.get(rel) == h:
+                totals["cached"] += 1
+                continue
+            todo.append((rel, str(p), h, text))
+
+        # Prune files that vanished, were renamed, or became ineligible. Skipped
+        # when the file cap truncated the scan, because unseen is not absent.
+        if only is None and not capped:
+            for rel in sorted(set(have) - eligible):
+                cs.delete_file(db, tag, rel)
+                totals["pruned"] += 1
+
+        # Chunk, embed and write in bounded GROUPS. Two constraints pull against
+        # each other here and the group is what reconciles them:
+        #
+        #   Batch across files, or the fixed per-call cost dominates. Embedding
+        #   per file meant batches of one or two chunks and measured 0.29s/chunk
+        #   against a small fraction of that when batched.
+        #
+        #   Never hold a whole root in memory. Buffering an entire root means the
+        #   text, the chunks and the vectors for it all coexist, so the high-water
+        #   mark tracks the LARGEST ROOT rather than staying constant — a crash
+        #   waiting for the corpus to grow, which is exactly what this index is
+        #   supposed to survive.
+        #
+        # A group is capped by chunk count, so the buffers here stay constant no
+        # matter how large the corpus or any single root becomes. Writes land per
+        # group, so an interrupted build keeps everything already committed
+        # instead of losing a whole root's work.
+        #
+        # NB: this bounds THIS code's buffers, not the process. Measured peak RSS
+        # is ~2.4GB either way, and grouping did not move it — the bulk is
+        # onnxruntime's CPU arena (see MEMORY_EMBED_ARENA below), which scales
+        # with batch and sequence length, not with corpus size.
+        group, group_chunks = [], 0
+
+        def flush(group):
+            """Embed and write one bounded group. Returns nothing; updates totals."""
+            if not group:
+                return
+            vectors_by_file = {}
+            if embedder is not None:
+                # CONTRACT["vector_scope"] == "prose": code, logs and config are
+                # chunked and kept in the corpus, but never embedded. They made
+                # retrieval measurably worse (fusion.py records the numbers), and
+                # skipping them removes two thirds of the embedding work rather
+                # than paying for neighbours that get discarded at query time.
+                flat = [(i, c["text"]) for i, (_r, _a, _h, chs) in enumerate(group)
+                        if not is_code(_r) for c in chs]
+                if flat:
+                    try:
+                        import numpy as np
+                        parts = []
+                        for i in range(0, len(flat), BATCH):
+                            parts.append(embedder.embed_passages(
+                                [t for _i, t in flat[i:i + BATCH]]))
+                        allvecs = np.vstack(parts)
+                        del parts
+                        for pos, (fi, _t) in enumerate(flat):
+                            vectors_by_file.setdefault(fi, []).append(allvecs[pos])
+                        vectors_by_file = {k: np.vstack(v)
+                                           for k, v in vectors_by_file.items()}
+                    except Exception as e:
+                        totals["failed"] += 1
+                        if not quiet:
+                            print(f"  embed failed in {tag}: {e}", flush=True)
+                        vectors_by_file = {}
+            for i, (rel, abspath, h, chunks) in enumerate(group):
+                try:
+                    cs.replace_file(db, tag, rel, abspath, h, chunks,
+                                    vectors_by_file.get(i))
+                    totals["files"] += 1
+                    totals["chunks"] += len(chunks)
+                except Exception as e:
+                    totals["failed"] += 1
+                    if not quiet:
+                        print(f"  write failed {tag}/{rel}: {e}", flush=True)
+
+        for rel, abspath, h, text in todo:
+            chunks, overflow = chunk_file(text, rel)
+            if not chunks:
+                continue
+            if overflow:
+                totals["overflow_files"].append({"root": tag, "path": rel,
+                                                 "dropped": overflow})
+            pt = path_tokens(tag, rel)
+            for c in chunks:
+                c["path_tokens"] = pt
+            group.append((rel, abspath, h, chunks))
+            group_chunks += len(chunks)
+            if group_chunks >= GROUP_CHUNKS:
+                flush(group)
+                group, group_chunks = [], 0
+        flush(group)
+
+        if not quiet:
+            n = db.execute("SELECT count(*) FROM chunks WHERE root_tag=?", (tag,)).fetchone()[0]
+            print(f"vector[{tag}]: {n} chunks", flush=True)
+
+    cs.set_meta(db, "chunk_schema_version", cs.SCHEMA_VERSION)
+    # Only a clean, complete pass may stamp the fingerprint. Until it is stamped,
+    # compatibility() reports 'absent' and queries stay on the keyword arms — so a
+    # half-finished or partly-failed rebuild can never serve mixed-model vectors.
+    if full and totals["failed"] == 0 and embedder is not None:
+        cs.set_meta(db, "embed_fingerprint", fp)
+        cs.set_meta(db, "embed_built_at", int(time.time()))
+    elif full:
+        cs.set_meta(db, "embed_fingerprint", "")
+
+    # Rebuild the derived matrix from whatever the table now holds. Done here, at
+    # the end of EVERY vector build including a one-file `--only`, because the
+    # alternative is a matrix that is correct at build time and progressively
+    # incomplete afterwards. It is a linear read of data already on disk (~50ms
+    # today, a few seconds at a million vectors), so there is no size at which
+    # skipping it is the cheaper choice.
+    matrix_result = {"written": False, "reason": "not attempted"}
+    try:
+        import vector_matrix
+        matrix_result = vector_matrix.build(db, DB, cs.get_meta)
+    except Exception as e:
+        # Never fatal: the matrix is an accelerator over an index that is already
+        # complete and queryable. A failure here costs speed, not results.
+        matrix_result = {"written": False, "reason": str(e)}
+        print(f"note: vector matrix not rebuilt ({e}); vec0 scan will be used",
+              file=sys.stderr)
+
+    # Question vectors (arm D) are refreshed on every build for the same reason
+    # the matrix is: they are derived from docs.questions, which the enrichment
+    # pass has just rewritten. Incremental by question hash, so an unchanged
+    # corpus embeds nothing and this costs one scan of 2.7k rows.
+    #
+    # Non-fatal by construction. This arm ADDS evidence to the fusion; a corpus
+    # with no question vectors ranks exactly as it did before the arm existed.
+    # Failing a completed vector build over it would trade a working index for a
+    # missing accelerator.
+    question_result = {"written": False, "reason": "not attempted"}
+    try:
+        import question_index
+        if embedder is not None:
+            question_result = question_index.build(
+                db, embedder.embed_passages, cs.get_meta, cs.set_meta)
+            question_result.update(question_index.build_matrix(db, DB, cs.get_meta))
+    except Exception as e:
+        question_result = {"written": False, "reason": str(e)}
+        print(f"note: question vectors not rebuilt ({e}); arm D will be absent",
+              file=sys.stderr)
+
+    total_chunks = db.execute("SELECT count(*) FROM chunks").fetchone()[0]
+    orph = cs.orphan_report(db)
+    state, detail = cs.compatibility(db)
+    result = {"ok": totals["failed"] == 0 and not totals["overflow_files"],
+              "at": int(time.time()), "fingerprint": fp, "vector_state": state,
+              "vector_detail": detail, "embed_error": embed_err,
+              "total_chunks": total_chunks, "orphans": orph,
+              "matrix": matrix_result, "questions": question_result,
+              **totals}
+    STATE.mkdir(parents=True, exist_ok=True)
+    (STATE / "last-run.json").write_text(json.dumps(result, indent=2))
+    db.close()
+    return result
+
+
+def stats():
+    db, vec_ok = cs.open_db(DB)
+    out = {"vec_extension": vec_ok}
+    try:
+        out["chunks"] = db.execute("SELECT count(*) FROM chunks").fetchone()[0]
+        out["files"] = db.execute("SELECT count(DISTINCT root_tag||'/'||rel_path) "
+                                  "FROM chunks").fetchone()[0]
+    except Exception as e:
+        out["chunks_error"] = str(e)
+    try:
+        out["vectors"] = db.execute("SELECT count(*) FROM vec_chunks").fetchone()[0]
+    except Exception:
+        out["vectors"] = 0
+    state, detail = cs.compatibility(db)
+    out["vector_state"], out["vector_detail"] = state, detail
+    out["orphans"] = cs.orphan_report(db)
+    # The KNN is a linear scan either way -- neither path has an ANN index -- so
+    # what matters is the constant, and the two paths differ by ~8x. MEASURED on
+    # this machine (float32, dim 384, k=60, best-of-7):
+    #
+    #     vectors     vec0      matrix          vectors     vec0     matrix
+    #      10,000    8.0ms       0.3ms          500,000  168.5ms    19.6ms
+    #      50,000   16.6ms       2.4ms        1,000,000  329.1ms    40.4ms
+    #     100,000   32.8ms       4.5ms        2,000,000       --    98.7ms
+    #
+    # Binary quantization was tried against vec0 and rejected (only 1.3x, and
+    # slower at rerank-pool depth) because the cost there is per-row scan
+    # overhead, not distance width -- which is exactly why replacing the scan
+    # rather than narrowing the distance is what worked.
+    #
+    # The soft limit is set where the FAST path starts to cost real time, not
+    # where the slow one does. At ~2k prose vectors/month it is many decades out;
+    # the check exists so growth announces itself rather than being assumed away.
+    # If it ever fires, the next lever is int8 with a float rescore, NOT an ANN
+    # index -- see the header of vector_matrix.py.
+    out["knn_headroom"] = "ok" if out.get("vectors", 0) < VEC_SOFT_LIMIT else "review"
+    try:
+        import vector_matrix
+        out["matrix"] = vector_matrix.describe(db, DB, cs.get_meta)
+    except Exception as e:
+        out["matrix"] = {"state": "error", "detail": str(e)}
+    try:
+        import question_index
+        out["questions"] = question_index.describe(db, DB, cs.get_meta)
+    except Exception as e:
+        # An absent arm D is a real state, not an error: it is what a corpus
+        # indexed before the arm existed looks like. Reported as such so the
+        # dashboard shows "not built" rather than a stack trace.
+        out["questions"] = {"state": "absent", "detail": str(e)}
+    db.close()
+    return out
+
+
+def main():
+    args = sys.argv[1:]
+    if "--version" in args or "-V" in args:
+        print("memory-vector-build (chunked + embedded retrieval index)")
+        try:
+            from embedder import self_test
+            st = self_test()
+            s = stats()
+            if s["vector_state"] == "mismatch":
+                print(f"  FAIL: {s['vector_detail']} — rebuild required "
+                      "(memory-vector-build --full)", file=sys.stderr)
+                raise SystemExit(1)
+            orph = s["orphans"]
+            if orph.get("vec_orphans"):
+                # The dangerous direction: a vector with no chunk is still a valid
+                # nearest neighbour, so search would surface content that no
+                # longer exists on disk.
+                print(f"  FAIL: {orph['vec_orphans']} vectors reference "
+                      "deleted chunks", file=sys.stderr)
+                raise SystemExit(1)
+            if orph.get("prose_without_vec"):
+                # Prose is the only thing that is SUPPOSED to be embedded, so a
+                # gap here is real missing coverage, not the by-design absence of
+                # code vectors (reported separately and never a failure).
+                print(f"  FAIL: {orph['prose_without_vec']} prose chunks have no "
+                      "vector — rebuild required (memory-vector-build --full)",
+                      file=sys.stderr)
+                raise SystemExit(1)
+            print(f"  ok: {s['chunks']} chunks, {s['vectors']} vectors "
+                  f"({orph.get('code_unembedded', 0)} code chunks unembedded by "
+                  f"design), dim {st['dim']}, state {s['vector_state']}")
+            if s.get("knn_headroom") != "ok":
+                # Deliberately NOT a failure: nothing is broken, and a check that
+                # fails on growth would just get muted. It is a heads-up that the
+                # vector arm now costs real time and wants an ANN index or a prune.
+                print(f"  NOTE: {s['vectors']} vectors is past the {VEC_SOFT_LIMIT} "
+                      "soft limit — KNN is a linear scan, so query latency now "
+                      "grows with the corpus (see stats() for the measured curve)")
+        except SystemExit:
+            raise
+        except Exception as e:
+            print(f"  FAIL: {e}", file=sys.stderr)
+            raise SystemExit(1)
+        raise SystemExit(0)
+    if "--help" in args or "-h" in args:
+        print(__doc__)
+        raise SystemExit(0)
+    if "--setup" in args:
+        from embedder import ensure_model, ensure_rerank_model
+        try:
+            ensure_model()
+        except Exception as e:
+            print(f"setup failed: {e}", file=sys.stderr)
+            raise SystemExit(2)
+        # Best-effort: search works without a reranker, so a reranker that will
+        # not download must not fail a build whose vectors are fine. It reports
+        # itself and the daemon degrades to fusion order.
+        if ensure_rerank_model() is None:
+            print("note: reranker model not provisioned; search will not rerank",
+                  file=sys.stderr)
+    if "--stats" in args:
+        print(json.dumps(stats(), indent=2))
+        raise SystemExit(0)
+    if "--matrix" in args:
+        # Rebuild ONLY the derived matrix, without re-embedding anything. This is
+        # the repair for a matrix that was deleted, interrupted, or left behind by
+        # an older build — none of which need the embedder to touch a single file.
+        import vector_matrix
+        db, _vec = cs.open_db(DB, write=True)
+        print(json.dumps(vector_matrix.build(db, DB, cs.get_meta), indent=2))
+        db.close()
+        raise SystemExit(0)
+    if "--questions" in args:
+        # Rebuild arm D alone. Needs the embedder (unlike --matrix) because a
+        # question with no stored vector has to be embedded, not just copied.
+        import question_index
+        from embedder import Embedder, EmbedderUnavailable
+        db, _vec = cs.open_db(DB, write=True)
+        os.environ.setdefault("MEMORY_EMBED_THREADS",
+                              str(max(1, (os.cpu_count() or 4) - 2)))
+        try:
+            emb = Embedder()
+            emb.embed_passages(["warmup"])
+        except EmbedderUnavailable as e:
+            print(f"embedder unavailable ({e}); cannot build question vectors",
+                  file=sys.stderr)
+            raise SystemExit(2)
+        res = question_index.build(db, emb.embed_passages, cs.get_meta, cs.set_meta,
+                                   progress=lambda a, n: print(f"  embedded {a}/{n}",
+                                                               flush=True))
+        res.update(question_index.build_matrix(db, DB, cs.get_meta))
+        print(json.dumps(res, indent=2))
+        db.close()
+        raise SystemExit(0)
+    only = None
+    if "--only" in args:
+        only = Path(args[args.index("--only") + 1]).expanduser().resolve()
+    res = build(only=only, full=("--full" in args))
+    print(json.dumps({k: v for k, v in res.items() if k != "orphans"}, indent=2))
+    raise SystemExit(0 if res["ok"] else 1)
+
+
+if __name__ == "__main__":
+    main()

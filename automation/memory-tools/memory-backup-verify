@@ -1,0 +1,91 @@
+#!/usr/bin/env bash
+# memory-backup-verify — prove the corpus backup can actually be restored.
+#
+# memory-corpus-backup pushes daily and logs success. That proves a push was
+# ACCEPTED, not that what landed is complete or readable. The classic backup
+# failure is silent and one-directional: credentials rotate, a .gitignore rule
+# widens, a hook starts rejecting, LFS is missing — and the log still says
+# "pushed" every night while the remote drifts away from the working tree.
+#
+# So: clone the remote into a scratch directory, compare it against the live
+# corpus file-by-file, and report. A restore that has never been performed is a
+# hypothesis, not a backup.
+#
+#   usage: memory-backup-verify [--json | --version]
+#   exit:  0 verified | 1 mismatch or unreachable | 2 setup error
+#
+# Read-only with respect to the corpus and the remote. The clone goes to a
+# temporary directory and is removed on exit, including on failure.
+set -uo pipefail
+export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
+
+ROOT="$HOME/.memory"
+STATE="$HOME/.local/state/memory-backup-verify"
+JSON=0
+
+case "${1:-}" in
+  --version|-V) echo "memory-backup-verify (restore drill for the memory corpus backup)"; exit 0 ;;
+  --help|-h)    sed -n '2,18p' "$0" | sed 's/^#\{1,\} \{0,1\}//'; exit 0 ;;
+  --json)       JSON=1 ;;
+esac
+
+mkdir -p "$STATE"
+OUT="$STATE/last-run.json"
+emit() {  # status headline detail
+  printf '{"status":"%s","headline":"%s","detail":"%s","checked_at":"%s"}\n' \
+    "$1" "$2" "$3" "$(date +%Y-%m-%dT%H:%M:%S%z)" > "$OUT"
+  [ "$JSON" = "1" ] && cat "$OUT" || printf '%s: %s\n  %s\n' "$1" "$2" "$3"
+}
+
+cd "$ROOT" 2>/dev/null || { emit error "corpus missing" "$ROOT does not exist"; exit 2; }
+REMOTE="$(git remote get-url origin 2>/dev/null)" || {
+  emit error "no remote" "the corpus has no origin remote configured"; exit 2; }
+
+if ! curl -fsS -m 6 -o /dev/null https://www.gstatic.com/generate_204 2>/dev/null; then
+  # Offline is not a backup failure. Leave the previous verdict in place rather
+  # than overwriting a real result with a network condition.
+  echo "offline; skipping restore drill (previous verdict left intact)"
+  exit 0
+fi
+
+TMP="$(mktemp -d)" || { emit error "no scratch dir" "mktemp failed"; exit 2; }
+trap 'rm -rf "$TMP"' EXIT INT TERM
+
+if ! git clone -q --depth 1 "$REMOTE" "$TMP/restore" 2>"$TMP/err"; then
+  emit fail "remote is not cloneable" "$(tr -d '\n"' < "$TMP/err" | cut -c1-300)"
+  exit 1
+fi
+
+# Compare the files git is actually tracking. Untracked and ignored paths (the
+# rebuildable index, logs, lockfiles) are out of scope by design — the point is
+# whether the irreplaceable content survived the round trip.
+hashes() { git -C "$1" ls-files -s | awk '{print $2, $4}' | sort; }
+hashes "$ROOT" > "$TMP/live"
+hashes "$TMP/restore" > "$TMP/back"
+
+live_n=$(wc -l < "$TMP/live" | tr -d ' ')
+back_n=$(wc -l < "$TMP/back" | tr -d ' ')
+diff_n=$(comm -3 "$TMP/live" "$TMP/back" | wc -l | tr -d ' ')
+
+# Uncommitted local edits are the normal state between the working day and the
+# 17:30 run; they are a pending backup, not a broken one. Report them separately.
+pending=$(git -C "$ROOT" status --porcelain | wc -l | tr -d ' ')
+
+if [ "$diff_n" -eq 0 ]; then
+  emit ok "restore verified" \
+    "$back_n tracked file(s) match the remote byte-for-byte; $pending uncommitted locally"
+  exit 0
+fi
+
+# A difference is only alarming if the REMOTE is missing committed content. If
+# the live side is simply ahead by unpushed commits, tomorrow's run fixes it.
+ahead=$(git -C "$ROOT" rev-list --count '@{u}..HEAD' 2>/dev/null || echo 0)
+if [ "${ahead:-0}" -gt 0 ]; then
+  emit warn "remote is behind" \
+    "$ahead unpushed commit(s); $diff_n path(s) differ (live $live_n / remote $back_n)"
+  exit 0
+fi
+
+emit fail "restore does not match the corpus" \
+  "$diff_n path(s) differ with nothing unpushed (live $live_n / remote $back_n)"
+exit 1

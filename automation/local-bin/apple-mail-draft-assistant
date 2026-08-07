@@ -1,0 +1,2913 @@
+#!/usr/bin/env python3
+"""
+Apple Mail draft assistant.
+
+Usage:
+  apple-mail-draft-assistant scan --json --limit 20
+  apple-mail-draft-assistant sort-junk --json --limit 50
+  apple-mail-draft-assistant create-draft --payload -
+  apple-mail-draft-assistant create-message-draft --payload -
+  apple-mail-draft-assistant add-message-draft-attachments --payload -
+  apple-mail-draft-assistant resolve-manual-review --payload -
+  apple-mail-draft-assistant mark --message-id KEY --status skipped --reason "not a real person"
+  apple-mail-draft-assistant self-test
+
+Draft-only invariant: this helper creates saved Apple Mail reply drafts. It has no send subcommand.
+"""
+
+from __future__ import annotations
+
+import argparse
+import contextlib
+import email
+import email.parser
+import email.policy
+import email.utils
+import fcntl
+import functools
+import hashlib
+import html
+import json
+import os
+import re
+import shutil
+import sqlite3
+import stat
+import subprocess
+import sys
+import tempfile
+import time
+import unicodedata
+import uuid
+from dataclasses import dataclass, replace
+from datetime import datetime
+from html.parser import HTMLParser
+from pathlib import Path
+from typing import Any
+
+
+HOME = Path.home()
+MAIL_ROOT = HOME / "Library" / "Mail" / "V10"
+MAIL_DB = MAIL_ROOT / "MailData" / "Envelope Index"
+STATE_DIR = Path(os.environ.get("DRAFTER_STATE_DIR", HOME / ".local" / "state" / "inbound-response-drafter"))
+STATE_FILE = STATE_DIR / "state.json"
+FAILURES_FILE = STATE_DIR / "failures.jsonl"
+RESOLUTIONS_FILE = STATE_DIR / "resolutions.jsonl"
+LOCK_FILE = STATE_DIR / "state.lock"
+LOCK_WAIT_SECONDS = 15
+CLAIM_STALE_SECONDS = 900
+BODY_CHAR_LIMIT_DEFAULT = 4000
+THREAD_MAX_AGE_DAYS = 180
+THREAD_MAX_MESSAGES = 20
+THREAD_CHAR_LIMIT = 60_000
+ATTACHMENT_WARN_ENCODED_BYTES = 10 * 1024 * 1024
+ATTACHMENT_MAX_ENCODED_BYTES = 20 * 1024 * 1024
+ROWID_BODY_COMMAND = os.environ.get("APPLE_MAIL_ROWID_BODY", "apple-mail-rowid-body")
+
+
+FORBIDDEN_SENDER_PATTERNS = (
+    "no-reply",
+    "noreply",
+    "do-not-reply",
+    "donotreply",
+    "notification",
+    "notifications",
+    "newsletter",
+    "marketing",
+    "mailer-daemon",
+    "postmaster",
+    "bounce",
+)
+
+FORBIDDEN_SUBJECT_PATTERNS = (
+    "newsletter",
+    "unsubscribe",
+    "receipt",
+    "invoice",
+    "statement",
+    "security alert",
+    "verification code",
+)
+
+AUTOMATION_HEADERS = (
+    "list-id",
+    "list-unsubscribe",
+    "list-post",
+    "mailing-list",
+    "x-mailing-list",
+    "x-campaign",
+    "x-campaignid",
+)
+
+REPLY_APPLESCRIPT = r'''
+on run argv
+    set mailId to item 1 of argv as integer
+    set draftBody to item 2 of argv
+    set replySender to item 3 of argv
+    set accountName to item 4 of argv
+    set mailboxName to item 5 of argv
+    set expectedMessageId to item 6 of argv
+    set attachmentLines to paragraphs of (item 7 of argv)
+    tell application "Mail"
+        if accountName is not "" and mailboxName is not "" then
+            set targetAccount to first account whose name is accountName
+            set targetMailbox to first mailbox of targetAccount whose name is mailboxName
+            set theMessage to first message of targetMailbox whose id is mailId
+        else
+            set theMessage to first message of inbox whose id is mailId
+        end if
+        if expectedMessageId is not "" then
+            set messageSource to source of theMessage
+            if messageSource does not contain expectedMessageId then error "source Message-ID mismatch"
+        end if
+        set theReply to reply theMessage without opening window
+        set visible of theReply to false
+        set content of theReply to draftBody
+        set sender of theReply to replySender
+        repeat with attachmentPath in attachmentLines
+            if (attachmentPath as text) is not "" then
+                set newAttachment to make new attachment with properties {file name:(POSIX file (attachmentPath as text))} at after the last paragraph of content of theReply
+                set resolvedAttachmentPath to ""
+                repeat with attemptNumber from 1 to 30
+                    try
+                        set resolvedAttachmentFile to file name of newAttachment
+                        if resolvedAttachmentFile is not missing value then
+                            set resolvedAttachmentPath to POSIX path of resolvedAttachmentFile
+                            exit repeat
+                        end if
+                    end try
+                    delay 0.5
+                end repeat
+                if resolvedAttachmentPath is "" then error "attachment filename did not materialize"
+            end if
+        end repeat
+        save theReply
+        delay 2
+        set sep to ASCII character 31
+        set recipientText to ""
+        repeat with r in to recipients of theReply
+            set recipientText to recipientText & (address of r as text) & linefeed
+        end repeat
+        set attachmentText to ""
+        repeat with savedAttachment in every attachment of content of theReply
+            try
+                set savedAttachmentFile to file name of savedAttachment
+                if savedAttachmentFile is not missing value then set attachmentText to attachmentText & (POSIX path of savedAttachmentFile) & linefeed
+            end try
+        end repeat
+        return (id of theReply as text) & sep & (sender of theReply as text) & sep & recipientText & sep & attachmentText
+    end tell
+end run
+'''
+
+MESSAGE_DRAFT_APPLESCRIPT = r'''
+on run argv
+    set draftSubject to item 1 of argv
+    set draftBody to item 2 of argv
+    set draftSender to item 3 of argv
+    set recipientLines to paragraphs of (item 4 of argv)
+    set attachmentLines to paragraphs of (item 5 of argv)
+    tell application "Mail"
+        set theDraft to make new outgoing message with properties {visible:false, subject:draftSubject, content:draftBody}
+        if draftSender is not "" then set sender of theDraft to draftSender
+        tell theDraft
+            repeat with recipientAddress in recipientLines
+                if (recipientAddress as text) is not "" then
+                    make new to recipient at end of to recipients with properties {address:(recipientAddress as text)}
+                end if
+            end repeat
+            repeat with attachmentPath in attachmentLines
+                if (attachmentPath as text) is not "" then
+                    set newAttachment to make new attachment with properties {file name:(POSIX file (attachmentPath as text))} at after the last paragraph
+                    set resolvedAttachmentPath to ""
+                    repeat with attemptNumber from 1 to 30
+                        try
+                            set resolvedAttachmentFile to file name of newAttachment
+                            if resolvedAttachmentFile is not missing value then
+                                set resolvedAttachmentPath to POSIX path of resolvedAttachmentFile
+                                exit repeat
+                            end if
+                        end try
+                        delay 0.5
+                    end repeat
+                    if resolvedAttachmentPath is "" then error "attachment filename did not materialize"
+                end if
+            end repeat
+            save
+            delay 2
+        end tell
+        set sep to ASCII character 31
+        set recipientText to ""
+        repeat with r in to recipients of theDraft
+            set recipientText to recipientText & (address of r as text) & linefeed
+        end repeat
+        set attachmentText to ""
+        repeat with savedAttachment in every attachment of content of theDraft
+            try
+                set savedAttachmentFile to file name of savedAttachment
+                if savedAttachmentFile is not missing value then set attachmentText to attachmentText & (POSIX path of savedAttachmentFile) & linefeed
+            end try
+        end repeat
+        return (id of theDraft as text) & sep & (sender of theDraft as text) & sep & recipientText & sep & attachmentText
+    end tell
+end run
+'''
+
+ADD_MESSAGE_DRAFT_ATTACHMENTS_APPLESCRIPT = r'''
+on run argv
+    set draftId to item 1 of argv as integer
+    set expectedSender to item 2 of argv
+    set expectedSubject to item 3 of argv
+    set expectedRecipientLines to paragraphs of (item 4 of argv)
+    set attachmentLines to paragraphs of (item 5 of argv)
+    tell application "Mail"
+        set matchingDrafts to every outgoing message whose id is draftId
+        if (count of matchingDrafts) is not 1 then error "exact outgoing draft not found"
+        set theDraft to item 1 of matchingDrafts
+        if visible of theDraft then error "target draft is visible"
+        if (sender of theDraft as text) is not expectedSender then error "target draft sender mismatch"
+        if (subject of theDraft as text) is not expectedSubject then error "target draft subject mismatch"
+
+        set actualRecipientText to ""
+        repeat with r in to recipients of theDraft
+            set actualRecipientText to actualRecipientText & (address of r as text) & linefeed
+        end repeat
+        set expectedRecipientText to ""
+        repeat with recipientAddress in expectedRecipientLines
+            if (recipientAddress as text) is not "" then set expectedRecipientText to expectedRecipientText & (recipientAddress as text) & linefeed
+        end repeat
+        if actualRecipientText is not expectedRecipientText then error "target draft recipient mismatch"
+
+        set attachmentText to ""
+        repeat with attachmentPath in attachmentLines
+            if (attachmentPath as text) is not "" then
+                set alreadyPresent to false
+                repeat with existingAttachment in every attachment of content of theDraft
+                    try
+                        set existingAttachmentFile to file name of existingAttachment
+                        if existingAttachmentFile is not missing value then
+                            set existingAttachmentPath to POSIX path of existingAttachmentFile
+                            if existingAttachmentPath is (attachmentPath as text) then
+                                set alreadyPresent to true
+                                set attachmentText to attachmentText & existingAttachmentPath & linefeed
+                                exit repeat
+                            end if
+                        end if
+                    end try
+                end repeat
+                if not alreadyPresent then
+                    set newAttachment to make new attachment with properties {file name:(POSIX file (attachmentPath as text))} at after the last paragraph of content of theDraft
+                    set resolvedAttachmentPath to ""
+                    repeat with attemptNumber from 1 to 30
+                        try
+                            set resolvedAttachmentFile to file name of newAttachment
+                            if resolvedAttachmentFile is not missing value then
+                                set resolvedAttachmentPath to POSIX path of resolvedAttachmentFile
+                                exit repeat
+                            end if
+                        end try
+                        delay 0.5
+                    end repeat
+                    if resolvedAttachmentPath is "" then error "attachment filename did not materialize"
+                    set attachmentText to attachmentText & resolvedAttachmentPath & linefeed
+                end if
+            end if
+        end repeat
+        save theDraft
+        delay 2
+        set sep to ASCII character 31
+        return (id of theDraft as text) & sep & (sender of theDraft as text) & sep & actualRecipientText & sep & attachmentText
+    end tell
+end run
+'''
+
+JUNK_READ_DELETE_APPLESCRIPT = r'''
+on run argv
+    set accountName to item 1 of argv
+    set mailboxName to item 2 of argv
+    set mailId to item 3 of argv as integer
+    tell application "Mail"
+        set targetAccount to first account whose name is accountName
+        set targetMailbox to first mailbox of targetAccount whose name is mailboxName
+        set m to first message of targetMailbox whose id is mailId
+        set read status of m to true
+        delete m
+        return "marked-read-and-deleted"
+    end tell
+end run
+'''
+
+JUNK_MOVE_TO_INBOX_APPLESCRIPT = r'''
+on run argv
+    set accountName to item 1 of argv
+    set mailboxName to item 2 of argv
+    set mailId to item 3 of argv as integer
+    tell application "Mail"
+        set targetAccount to first account whose name is accountName
+        set sourceMailbox to first mailbox of targetAccount whose name is mailboxName
+        set targetInbox to first mailbox of targetAccount whose name is "INBOX"
+        set m to first message of sourceMailbox whose id is mailId
+
+        -- Marking a message as not junk can itself move it in some accounts.
+        set junk mail status of m to false
+        set inboxMatches to every message of targetInbox whose id is mailId
+        if (count of inboxMatches) is 0 then
+            move m to targetInbox
+        end if
+
+        set verifiedMatches to every message of targetInbox whose id is mailId
+        if (count of verifiedMatches) is 0 then error "message was not found in account Inbox after move"
+        return "moved-to-inbox"
+    end tell
+end run
+'''
+
+
+class PlainTextHTMLParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self.parts: list[str] = []
+
+    def handle_data(self, data: str) -> None:
+        text = data.strip()
+        if text:
+            self.parts.append(text)
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag.lower() in {"br", "p", "div", "li", "tr"}:
+            self.parts.append("\n")
+
+    def text(self) -> str:
+        joined = " ".join(self.parts)
+        joined = re.sub(r"[ \t]*\n[ \t]*", "\n", joined)
+        joined = re.sub(r"\n{3,}", "\n\n", joined)
+        joined = re.sub(r"[ \t]{2,}", " ", joined)
+        return html.unescape(joined).strip()
+
+
+@dataclass
+class MessageRecord:
+    mail_id: int
+    date_received: int
+    read: bool
+    flags: int
+    deleted: bool
+    junk: bool
+    mailbox_url: str
+    sender_address: str
+    sender_name: str
+    subject: str
+    message_id_header: str
+    emlx_path: str | None
+    headers: dict[str, str]
+    body: str
+    body_truncated: bool
+    state_key: str
+    reply_from: str = ""
+    conversation_id: int = 0
+
+
+def fail(message: str, code: int = 1) -> None:
+    print(message, file=sys.stderr)
+    raise SystemExit(code)
+
+
+def ensure_state_dir() -> None:
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    os.chmod(STATE_DIR, 0o700)
+
+
+@contextlib.contextmanager
+def state_lock():
+    ensure_state_dir()
+    lock_fh = LOCK_FILE.open("a+", encoding="utf-8")
+    os.chmod(LOCK_FILE, 0o600)
+    deadline = time.monotonic() + LOCK_WAIT_SECONDS
+    while time.monotonic() < deadline:
+        try:
+            fcntl.flock(lock_fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            break
+        except BlockingIOError:
+            time.sleep(0.05)
+    else:
+        lock_fh.close()
+        fail(f"state lock timed out: {LOCK_FILE}")
+    try:
+        lock_fh.seek(0)
+        lock_fh.truncate()
+        json.dump({"pid": os.getpid(), "acquired_at": time.time()}, lock_fh)
+        lock_fh.flush()
+        yield
+    finally:
+        fcntl.flock(lock_fh.fileno(), fcntl.LOCK_UN)
+        lock_fh.close()
+
+
+def load_state() -> dict[str, Any]:
+    ensure_state_dir()
+    if not STATE_FILE.exists():
+        return {"messages": {}}
+    try:
+        data = json.loads(STATE_FILE.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        fail(f"invalid state file: {STATE_FILE}")
+    if "messages" not in data or not isinstance(data["messages"], dict):
+        data["messages"] = {}
+    legacy = [key for key in data["messages"] if str(key).startswith("fallback:")]
+    if legacy:
+        fail(f"legacy fallback state keys require migration before runtime: {len(legacy)}")
+    return data
+
+
+def save_state(state: dict[str, Any]) -> None:
+    ensure_state_dir()
+    tmp_fd, tmp_path = tempfile.mkstemp(prefix="state.", suffix=".json", dir=STATE_DIR)
+    try:
+        with os.fdopen(tmp_fd, "w", encoding="utf-8") as fh:
+            json.dump(state, fh, indent=2, sort_keys=True)
+            fh.write("\n")
+        os.chmod(tmp_path, 0o600)
+        os.replace(tmp_path, STATE_FILE)
+    finally:
+        with contextlib.suppress(FileNotFoundError):
+            os.unlink(tmp_path)
+
+
+def mark_state(key: str, status: str, reason: str, extra: dict[str, Any] | None = None) -> dict[str, Any]:
+    if status not in {"drafted", "skipped", "failed", "failed-permanent", "deleted-junk"}:
+        fail(f"invalid status: {status}")
+    with state_lock():
+        state = load_state()
+        existing = state["messages"].get(key, {})
+        if existing.get("status") in {"drafted", "skipped", "failed-permanent", "deleted-junk", "resolved"}:
+            return existing
+        attempts = int(existing.get("attempts", 0))
+        if status == "failed":
+            attempts += 1
+            if attempts > 1:
+                status = "failed-permanent"
+        record: dict[str, Any] = {
+            **existing,
+            "status": status,
+            "reason": reason,
+            "updated_at": int(time.time()),
+            "attempts": attempts,
+        }
+        if extra:
+            record.update(extra)
+        state["messages"][key] = record
+        save_state(state)
+    if status == "failed-permanent":
+        record_failure(key, reason)
+    return record
+
+
+def claim_state(key: str, operation_id: str) -> dict[str, Any]:
+    now = int(time.time())
+    with state_lock():
+        state = load_state()
+        existing = state["messages"].get(key, {})
+        status = str(existing.get("status") or "")
+        existing_operation = str(existing.get("operation_id") or "")
+        updated_at = int(existing.get("updated_at") or 0)
+        if status in {"drafted", "skipped", "failed-permanent", "deleted-junk", "resolved"}:
+            return {"claimed": False, "status": status, "reason": "terminal-state"}
+        if status == "creating":
+            if now - updated_at <= CLAIM_STALE_SECONDS:
+                return {"claimed": False, "status": status, "reason": "active-mail-save"}
+            if now - updated_at > CLAIM_STALE_SECONDS:
+                existing.update({
+                    "status": "failed-permanent",
+                    "phase": "manual-review",
+                    "reason": "stale-creating-state; draft save outcome is ambiguous",
+                    "updated_at": now,
+                })
+                state["messages"][key] = existing
+                save_state(state)
+                record_failure(key, existing["reason"], {"phase": "manual-review"})
+                return {"claimed": False, "status": "failed-permanent", "reason": "manual-review"}
+        if status == "processing" and existing_operation == operation_id:
+            return {"claimed": True, "status": "processing", "operation_id": operation_id}
+        if status == "processing" and existing_operation != operation_id:
+            if now - updated_at <= CLAIM_STALE_SECONDS:
+                return {"claimed": False, "status": status, "reason": "active-claim"}
+            attempts = int(existing.get("attempts", 0)) + 1
+            existing["attempts"] = attempts
+            if attempts > 1:
+                existing.update({
+                    "status": "failed-permanent",
+                    "phase": "generation",
+                    "reason": "generation claim expired twice",
+                    "updated_at": now,
+                })
+                state["messages"][key] = existing
+                save_state(state)
+                record_failure(key, existing["reason"], {"phase": "generation"})
+                return {"claimed": False, "status": "failed-permanent", "reason": "retry-exhausted"}
+        existing.update({
+            "status": "processing",
+            "operation_id": operation_id,
+            "phase": "generation",
+            "reason": "claimed",
+            "updated_at": now,
+        })
+        state["messages"][key] = existing
+        save_state(state)
+    return {"claimed": True, "status": "processing", "operation_id": operation_id}
+
+
+def transition_to_creating(key: str, operation_id: str, extra: dict[str, Any]) -> None:
+    with state_lock():
+        state = load_state()
+        existing = state["messages"].get(key, {})
+        if existing.get("status") != "processing" or existing.get("operation_id") != operation_id:
+            fail(f"draft claim mismatch for {key}")
+        existing.update({
+            **extra,
+            "status": "creating",
+            "phase": "mail-save",
+            "reason": "creating-draft",
+            "updated_at": int(time.time()),
+        })
+        state["messages"][key] = existing
+        save_state(state)
+
+
+def finish_operation(key: str, operation_id: str, draft_id: str, extra: dict[str, Any]) -> None:
+    with state_lock():
+        state = load_state()
+        existing = state["messages"].get(key, {})
+        if existing.get("status") != "creating" or existing.get("operation_id") != operation_id:
+            fail(f"draft completion claim mismatch for {key}")
+        existing.update({
+            **extra,
+            "status": "drafted",
+            "phase": "complete",
+            "reason": "draft-created",
+            "draft_id": draft_id,
+            "drafted_at": int(time.time()),
+            "updated_at": int(time.time()),
+        })
+        state["messages"][key] = existing
+        save_state(state)
+
+
+def mark_ambiguous_creation(key: str, operation_id: str, reason: str, extra: dict[str, Any]) -> None:
+    with state_lock():
+        state = load_state()
+        existing = state["messages"].get(key, {})
+        if existing.get("operation_id") != operation_id:
+            fail(f"draft failure claim mismatch for {key}")
+        existing.update({
+            **extra,
+            "status": "failed-permanent",
+            "phase": "manual-review",
+            "reason": reason,
+            "updated_at": int(time.time()),
+        })
+        state["messages"][key] = existing
+        save_state(state)
+    record_failure(key, reason, {"phase": "manual-review", "operation_id": operation_id})
+
+
+def record_failure(key: str, reason: str, extra: dict[str, Any] | None = None) -> None:
+    ensure_state_dir()
+    entry = {"created_at": int(time.time()), "message_id": key, "reason": reason}
+    if extra:
+        entry.update(extra)
+    with FAILURES_FILE.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(entry, sort_keys=True) + "\n")
+    os.chmod(FAILURES_FILE, 0o600)
+
+
+def split_mail_evidence(output: str) -> tuple[str, str, str, str]:
+    """Parse the four-field AppleScript evidence envelope without losing empties."""
+    # AppleScript writes a line ending after the final field.  Do not use
+    # str.strip(): an empty attachment field is represented by a trailing unit
+    # separator and strip() would remove it before split().
+    fields = output.rstrip("\r\n").split("\x1f")
+    if len(fields) != 4:
+        raise RuntimeError(f"Apple Mail evidence had {len(fields)} fields; expected 4")
+    return fields[0], fields[1], fields[2], fields[3]
+def run_osascript(script: str, *args: str, timeout: int = 45) -> str:
+    try:
+        proc = subprocess.run(
+            ["osascript", "-e", script, *args],
+            text=True,
+            capture_output=True,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(f"osascript timed out after {timeout}s") from exc
+    if proc.returncode != 0:
+        raise RuntimeError(proc.stderr.strip() or "osascript failed")
+    return proc.stdout
+
+
+def inbox_mail_ids() -> list[int]:
+    output = run_osascript('tell application "Mail" to get id of every message of inbox')
+    return [int(part) for part in re.findall(r"\d+", output)]
+
+
+def mail_content_by_id(mail_id: int) -> str:
+    script = '''
+on run argv
+    set mailId to item 1 of argv as integer
+    tell application "Mail"
+        return content of first message of inbox whose id is mailId
+    end tell
+end run
+'''
+    return run_osascript(script, str(mail_id)).strip()
+
+
+def mail_junk_status_by_id(mail_id: int) -> bool:
+    script = '''
+on run argv
+    set mailId to item 1 of argv as integer
+    tell application "Mail"
+        return junk mail status of first message of inbox whose id is mailId
+    end tell
+end run
+'''
+    return run_osascript(script, str(mail_id)).strip().lower() == "true"
+
+
+def delete_mail_by_id(mail_id: int) -> None:
+    script = '''
+on run argv
+    set mailId to item 1 of argv as integer
+    tell application "Mail"
+        delete first message of inbox whose id is mailId
+    end tell
+end run
+'''
+    run_osascript(script, str(mail_id))
+
+
+def mark_read_and_delete_mail_in_mailbox(account_name: str, mailbox_name: str, mail_id: int) -> None:
+    run_osascript(JUNK_READ_DELETE_APPLESCRIPT, account_name, mailbox_name, str(mail_id))
+
+
+def move_junk_mail_to_inbox(account_name: str, mailbox_name: str, mail_id: int) -> None:
+    run_osascript(JUNK_MOVE_TO_INBOX_APPLESCRIPT, account_name, mailbox_name, str(mail_id))
+
+
+def sqlite_rows(query: str, params: tuple[Any, ...] = ()) -> list[sqlite3.Row]:
+    if not MAIL_DB.exists():
+        fail(f"Mail database not found: {MAIL_DB}")
+    conn = sqlite3.connect(f"file:{MAIL_DB}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    try:
+        return list(conn.execute(query, params))
+    finally:
+        conn.close()
+
+
+def find_emlx(mail_id: int) -> str | None:
+    matches = list(MAIL_ROOT.glob(f"**/Messages/{mail_id}.emlx"))
+    if not matches:
+        matches = list(MAIL_ROOT.glob(f"**/Messages/{mail_id}.partial.emlx"))
+    if not matches:
+        return None
+    return str(matches[0])
+
+
+def normalized_reply_subject(subject: str) -> str:
+    text = (subject or "").strip().lower()
+    while True:
+        stripped = re.sub(r"^(re|aw|odp|sv|fwd|fw)\s*(\[\d+\])?\s*:\s*", "", text)
+        if stripped == text:
+            return text
+        text = stripped
+
+
+@functools.lru_cache(maxsize=1)
+def pending_draft_targets() -> tuple[frozenset[str], frozenset[str]]:
+    """Message-IDs replied to, and normalized subjects, of unsent drafts on disk.
+
+    Apple Mail does not index Drafts in the Envelope Index and its AppleScript
+    draft listing is unreliable across accounts, so read the drafts directly.
+    """
+    message_ids: set[str] = set()
+    subjects: set[str] = set()
+    for path in MAIL_ROOT.glob("**/Drafts.mbox/**/Messages/*.emlx"):
+        try:
+            msg = read_emlx_message(str(path))
+        except Exception:
+            continue
+        headers = normalized_headers(msg)
+        refs = f"{headers.get('in-reply-to', '')} {headers.get('references', '')}"
+        message_ids.update(m.strip().lower() for m in re.findall(r"<[^<>\s]+>", refs))
+        subject = normalized_reply_subject(headers.get("subject", ""))
+        if subject:
+            subjects.add(subject)
+    return (frozenset(message_ids), frozenset(subjects))
+
+
+def thread_message_ids(conversation_id: int) -> set[str]:
+    if not conversation_id:
+        return set()
+    rows = sqlite_rows(
+        """
+        SELECT message_global_data.message_id_header AS message_id_header
+        FROM messages
+        LEFT JOIN message_global_data ON messages.global_message_id = message_global_data.ROWID
+        WHERE messages.conversation_id = ?
+        """,
+        (conversation_id,),
+    )
+    return {
+        str(row["message_id_header"] or "").strip().lower()
+        for row in rows
+        if str(row["message_id_header"] or "").strip()
+    }
+
+
+def pending_draft_reason(record: MessageRecord) -> str:
+    """Skip while the thread already has an unsent draft awaiting Ivo."""
+    draft_message_ids, draft_subjects = pending_draft_targets()
+    if not draft_message_ids and not draft_subjects:
+        return ""
+    own_id = (record.headers.get("message-id") or record.message_id_header or "").strip().lower()
+    ids = thread_message_ids(record.conversation_id)
+    if own_id:
+        ids.add(own_id)
+    if ids & draft_message_ids:
+        return "thread already has an unsent draft"
+    subject = normalized_reply_subject(record.subject)
+    if subject and subject in draft_subjects:
+        return "thread already has an unsent draft"
+    return ""
+
+
+def has_outgoing_message_after(
+    rows: list[sqlite3.Row] | list[dict[str, Any]],
+    own_addresses: set[str],
+    received_at: int,
+) -> bool:
+    """Return whether Ivo already sent a message after this inbound message."""
+    if received_at <= 0:
+        return False
+    for row in rows:
+        sender = email.utils.parseaddr(str(row["sender_address"] or ""))[1].casefold()
+        sent_at = int(row["message_date"] or 0)
+        if sender in own_addresses and sent_at > received_at:
+            return True
+    return False
+
+
+def sent_reply_reason(record: MessageRecord) -> str:
+    """Skip an inbound message once Ivo has answered later in its thread."""
+    if not record.conversation_id or record.date_received <= 0:
+        return ""
+    rows = sqlite_rows(
+        """
+        SELECT
+          COALESCE(NULLIF(messages.date_sent, 0), messages.date_received, 0) AS message_date,
+          addresses.address AS sender_address
+        FROM messages
+        LEFT JOIN mailboxes ON messages.mailbox = mailboxes.ROWID
+        LEFT JOIN addresses ON messages.sender = addresses.ROWID
+        WHERE messages.conversation_id = ?
+          AND messages.ROWID != ?
+          AND lower(COALESCE(mailboxes.url, '')) NOT LIKE '%draft%'
+          AND COALESCE(NULLIF(messages.date_sent, 0), messages.date_received, 0) > ?
+        """,
+        (record.conversation_id, record.mail_id, record.date_received),
+    )
+    if has_outgoing_message_after(rows, configured_mail_addresses(), record.date_received):
+        return "thread already has a sent reply after this message"
+    return ""
+
+
+def read_emlx_message(path: str) -> email.message.EmailMessage:
+    data = Path(path).read_bytes()
+    newline = data.find(b"\n")
+    if newline == -1:
+        raw = data
+    else:
+        first = data[:newline].strip()
+        try:
+            length = int(first)
+            raw = data[newline + 1 : newline + 1 + length]
+        except ValueError:
+            raw = data[newline + 1 :]
+    return email.parser.BytesParser(policy=email.policy.default).parsebytes(raw)
+
+
+def html_to_text(html_body: str) -> str:
+    parser = PlainTextHTMLParser()
+    parser.feed(html_body)
+    return parser.text()
+
+
+def message_body(msg: email.message.EmailMessage) -> str:
+    plain = msg.get_body(preferencelist=("plain",))
+    if plain is not None:
+        content = plain.get_content()
+        if isinstance(content, str) and content.strip():
+            return content.strip()
+    html_part = msg.get_body(preferencelist=("html",))
+    if html_part is not None:
+        content = html_part.get_content()
+        if isinstance(content, str) and content.strip():
+            return html_to_text(content)
+    if msg.get_content_type() == "text/html":
+        content = msg.get_content()
+        if isinstance(content, str):
+            return html_to_text(content)
+    if msg.get_content_type() == "text/plain":
+        content = msg.get_content()
+        if isinstance(content, str):
+            return content.strip()
+    return ""
+
+
+def normalized_headers(msg: email.message.EmailMessage) -> dict[str, str]:
+    return {k.lower(): str(v) for k, v in msg.items()}
+
+
+def state_key_for(row: sqlite3.Row, headers: dict[str, str], mime_bytes: bytes | None = None) -> str:
+    message_id = (headers.get("message-id") or row["message_id_header"] or "").strip()
+    if message_id:
+        return "rfc:" + message_id
+    if mime_bytes is None:
+        mime_bytes = json.dumps({
+            "date": headers.get("date", ""),
+            "from": headers.get("from", ""),
+            "to": headers.get("to", ""),
+            "subject": headers.get("subject", row["subject"] or ""),
+        }, sort_keys=True).encode("utf-8")
+    return "mime:" + hashlib.sha256(mime_bytes).hexdigest()
+
+
+def state_key_for_fields(mailbox_url: str, date_received: int, sender_address: str, subject: str, headers: dict[str, str], raw_source: str = "") -> str:
+    message_id = (headers.get("message-id") or "").strip()
+    if message_id:
+        return "rfc:" + message_id
+    canonical = raw_source.encode("utf-8", errors="replace") if raw_source else json.dumps({
+        "date": headers.get("date", ""),
+        "from": headers.get("from", sender_address),
+        "to": headers.get("to", ""),
+        "subject": headers.get("subject", subject),
+    }, sort_keys=True).encode("utf-8")
+    return "mime:" + hashlib.sha256(canonical).hexdigest()
+
+
+def parse_sender(sender_address: str, sender_name: str, headers: dict[str, str]) -> tuple[str, str]:
+    header_sender = headers.get("from", "")
+    name, addr = email.utils.parseaddr(header_sender)
+    return (name or sender_name or addr, addr or sender_address)
+
+
+@functools.lru_cache(maxsize=1)
+def configured_mail_addresses() -> set[str]:
+    script = '''
+tell application "Mail"
+    set out to ""
+    repeat with a in every account
+        set accountEmails to email addresses of a
+        repeat with e in accountEmails
+            set out to out & (contents of e) & linefeed
+        end repeat
+    end repeat
+    return out
+end tell
+'''
+    addresses = {
+        email.utils.parseaddr(line.strip())[1].casefold()
+        for line in run_osascript(script).splitlines()
+        if "@" in line
+    }
+    addresses.discard("")
+    if not addresses:
+        raise RuntimeError("Mail returned no configured account addresses")
+    return addresses
+
+
+def recipient_set_from_lines(recipient_text: str) -> set[str]:
+    return {
+        email.utils.parseaddr(value)[1].casefold()
+        for value in recipient_text.splitlines()
+        if value.strip()
+    }
+
+
+def require_exact_saved_recipients(recipient_text: str, expected: set[str], label: str) -> None:
+    actual = recipient_set_from_lines(recipient_text)
+    if actual != expected:
+        raise RuntimeError(
+            f"saved {label} recipient mismatch: expected={sorted(expected)} actual={sorted(actual)}"
+        )
+
+
+def validate_source_state_key(state_key: str, actual_message_id: str) -> None:
+    if actual_message_id:
+        expected = "rfc:" + actual_message_id
+        if state_key != expected:
+            raise RuntimeError("draft state key does not match source RFC Message-ID")
+        return
+    if not re.fullmatch(r"mime:[0-9a-f]{64}", state_key):
+        raise RuntimeError("draft source without RFC Message-ID requires a valid MIME content identity")
+
+
+def recipient_addresses(headers: dict[str, str]) -> list[str]:
+    fields = [
+        "delivered-to",
+        "x-original-to",
+        "envelope-to",
+        "to",
+        "cc",
+        "resent-to",
+        "resent-cc",
+    ]
+    addresses: list[str] = []
+    for field in fields:
+        raw = headers.get(field, "")
+        for _name, addr in email.utils.getaddresses([raw]):
+            addr = addr.strip().casefold()
+            if addr and addr not in addresses:
+                addresses.append(addr)
+    return addresses
+
+
+def addresses_for_header(headers: dict[str, str], field: str) -> list[dict[str, str]]:
+    addresses: list[dict[str, str]] = []
+    for name, address in email.utils.getaddresses([headers.get(field, "")]):
+        address = address.strip()
+        if address:
+            addresses.append({"name": name.strip(), "address": address})
+    return addresses
+
+
+def attachment_names_for(mail_id: int) -> list[str]:
+    rows = sqlite_rows(
+        "SELECT name FROM attachments WHERE message = ? AND name IS NOT NULL ORDER BY ROWID",
+        (mail_id,),
+    )
+    return [str(row["name"]) for row in rows if str(row["name"] or "").strip()]
+
+
+def apply_thread_character_gate(
+    messages: list[dict[str, Any]], omitted: int
+) -> tuple[list[dict[str, Any]], bool, int]:
+    truncated = omitted > 0
+    while len(messages) > 1 and len(json.dumps(messages, ensure_ascii=False)) > THREAD_CHAR_LIMIT:
+        messages.pop(0)
+        omitted += 1
+        truncated = True
+    if messages and len(json.dumps(messages, ensure_ascii=False)) > THREAD_CHAR_LIMIT:
+        messages[0]["body"] = messages[0]["body"][: THREAD_CHAR_LIMIT // 2].rstrip()
+        messages[0]["body_truncated"] = True
+        truncated = True
+    return messages, truncated, omitted
+
+
+def thread_context_for(record: MessageRecord) -> tuple[list[dict[str, Any]], bool, int]:
+    if not record.conversation_id:
+        return ([{
+            "mail_id": record.mail_id,
+            "date": format_mail_timestamp(record.date_received),
+            "sender_name": record.sender_name,
+            "sender_address": record.sender_address,
+            "to": addresses_for_header(record.headers, "to"),
+            "cc": addresses_for_header(record.headers, "cc"),
+            "subject": record.subject,
+            "mailbox": record.mailbox_url,
+            "deleted": record.deleted,
+            "attachments": [],
+            "body": record.body,
+            "body_truncated": record.body_truncated,
+        }], record.body_truncated, 0)
+
+    cutoff = (record.date_received or int(time.time())) - THREAD_MAX_AGE_DAYS * 86400
+    count_row = sqlite_rows(
+        """
+        SELECT COUNT(*) AS message_count
+        FROM messages
+        LEFT JOIN mailboxes ON messages.mailbox = mailboxes.ROWID
+        WHERE messages.conversation_id = ?
+          AND lower(COALESCE(mailboxes.url, '')) NOT LIKE '%draft%'
+        """,
+        (record.conversation_id,),
+    )[0]
+    total_message_count = int(count_row["message_count"] or 0)
+    rows = sqlite_rows(
+        """
+        SELECT
+          messages.ROWID AS mail_id,
+          messages.global_message_id AS global_message_id,
+          messages.date_sent AS date_sent,
+          messages.date_received AS date_received,
+          messages.deleted AS deleted,
+          mailboxes.url AS mailbox_url,
+          addresses.address AS sender_address,
+          addresses.comment AS sender_name,
+          subjects.subject AS subject,
+          message_global_data.message_id_header AS message_id_header
+        FROM messages
+        LEFT JOIN mailboxes ON messages.mailbox = mailboxes.ROWID
+        LEFT JOIN addresses ON messages.sender = addresses.ROWID
+        LEFT JOIN subjects ON messages.subject = subjects.ROWID
+        LEFT JOIN message_global_data ON messages.global_message_id = message_global_data.ROWID
+        WHERE messages.conversation_id = ?
+          AND lower(COALESCE(mailboxes.url, '')) NOT LIKE '%draft%'
+          AND (
+            COALESCE(NULLIF(messages.date_sent, 0), messages.date_received, 0) >= ?
+            OR messages.ROWID = ?
+          )
+        ORDER BY COALESCE(NULLIF(messages.date_sent, 0), messages.date_received) DESC, messages.ROWID DESC
+        LIMIT ?
+        """,
+        (record.conversation_id, cutoff, record.mail_id, THREAD_MAX_MESSAGES),
+    )
+    rows.reverse()
+    messages: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    unreadable_context = 0
+    for row in rows:
+        mail_id = int(row["mail_id"])
+        headers: dict[str, str] = {}
+        body = ""
+        emlx_path = find_emlx(mail_id)
+        if emlx_path:
+            try:
+                msg = read_emlx_message(emlx_path)
+                headers = normalized_headers(msg)
+                body = message_body(msg)
+            except Exception:
+                unreadable_context += 1
+                continue
+        elif mail_id != record.mail_id:
+            unreadable_context += 1
+            continue
+        if mail_id == record.mail_id:
+            headers = headers or record.headers
+            body = body or record.body
+        message_id = (headers.get("message-id") or row["message_id_header"] or "").strip().lower()
+        dedupe_key = f"rfc:{message_id}" if message_id else f"global:{int(row['global_message_id'])}"
+        if dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
+        sender_name, sender_address = parse_sender(
+            str(row["sender_address"] or ""),
+            str(row["sender_name"] or ""),
+            headers,
+        )
+        timestamp = int(row["date_sent"] or row["date_received"] or 0)
+        messages.append({
+            "mail_id": mail_id,
+            "date": format_mail_timestamp(timestamp),
+            "sender_name": sender_name,
+            "sender_address": sender_address,
+            "to": addresses_for_header(headers, "to"),
+            "cc": addresses_for_header(headers, "cc"),
+            "subject": str(row["subject"] or record.subject),
+            "mailbox": str(row["mailbox_url"] or ""),
+            "deleted": bool(row["deleted"]),
+            "attachments": attachment_names_for(mail_id),
+            "body": body,
+            "body_truncated": False,
+        })
+
+    omitted = max(0, total_message_count - len(rows)) + unreadable_context
+    return apply_thread_character_gate(messages, omitted)
+
+
+def format_mail_timestamp(timestamp: int) -> str:
+    if timestamp <= 0:
+        return ""
+    return time.strftime("%Y-%m-%d %H:%M:%S %z", time.localtime(timestamp))
+
+
+def reply_from_for_headers(headers: dict[str, str]) -> str:
+    configured = configured_mail_addresses()
+    for addr in recipient_addresses(headers):
+        if addr in configured:
+            return addr
+    return ""
+
+
+def has_meaningful_text(text: str) -> bool:
+    cleaned = re.sub(r"[\s\u200b\u200c\u200d\ufeff\ufffc]+", "", text or "")
+    return bool(cleaned)
+
+
+def deterministic_skip_reason(record: MessageRecord) -> str | None:
+    sender = (record.sender_address or "").lower()
+    local = sender.split("@", 1)[0]
+    subject = (record.subject or "").lower()
+    if not sender or "@" not in sender:
+        return "missing-sender"
+    for token in FORBIDDEN_SENDER_PATTERNS:
+        if token in local:
+            return f"automated-sender:{token}"
+    for token in FORBIDDEN_SUBJECT_PATTERNS:
+        if token in subject:
+            return f"automated-subject:{token}"
+    for header in AUTOMATION_HEADERS:
+        if record.headers.get(header):
+            return f"bulk-header:{header}"
+    auto_submitted = record.headers.get("auto-submitted", "").lower()
+    if auto_submitted and auto_submitted != "no":
+        return "auto-submitted"
+    precedence = record.headers.get("precedence", "").lower()
+    if precedence in {"bulk", "list", "junk"}:
+        return f"precedence:{precedence}"
+    if not has_meaningful_text(record.body):
+        return "no-readable-body"
+    if not record.reply_from:
+        return "sender-account-unresolved"
+    return None
+
+
+def obvious_junk_reason(record: MessageRecord) -> str | None:
+    for header in ("x-spam-flag", "x-junkmail-status"):
+        value = record.headers.get(header, "").strip().lower()
+        if value in {"yes", "true"}:
+            return f"spam-header:{header}"
+    spam_status = record.headers.get("x-spam-status", "").strip().lower()
+    if spam_status.startswith("yes"):
+        return "spam-header:x-spam-status"
+    return None
+
+
+def junk_protect_reason(record: MessageRecord) -> str | None:
+    """Positive evidence that a Junk message belongs to a conversation Ivo started.
+
+    A spam header is a third-party guess; a threading header pointing at a message
+    Ivo sent is evidence the mail was solicited. Deleting one of these is a false
+    negative that loses real correspondence, so protected messages are always
+    escalated to the Inbox for review instead.
+    """
+    for header in ("in-reply-to", "references"):
+        if record.headers.get(header, "").strip():
+            return f"protected-reply-to-sent-mail:{header}"
+    return None
+
+
+def junk_delete_reason(record: MessageRecord) -> str | None:
+    if junk_protect_reason(record):
+        return None
+    spam_reason = obvious_junk_reason(record)
+    if spam_reason:
+        return spam_reason
+    if not has_meaningful_text(record.body):
+        return "junk-no-meaningful-text"
+    body = (record.body or "").lower()
+    if "this is an advertisement" in body and "unsubscribe" in body:
+        return "junk-advertisement-unsubscribe"
+    return None
+
+
+def parse_mail_date(headers: dict[str, str]) -> int:
+    raw = headers.get("date", "")
+    if raw:
+        try:
+            dt = email.utils.parsedate_to_datetime(raw)
+            if dt.tzinfo is None:
+                return int(dt.timestamp())
+            return int(dt.timestamp())
+        except Exception:
+            pass
+    return int(time.time())
+
+
+def source_message_from_text(source: str) -> email.message.EmailMessage:
+    return email.parser.Parser(policy=email.policy.default).parsestr(source)
+
+
+def applescript_message_fields(mail_id: int) -> tuple[str, str, str, str, bool]:
+    sep = "\x1f"
+    script = '''
+on run argv
+    set mailId to item 1 of argv as integer
+    set sep to ASCII character 31
+    tell application "Mail"
+        set m to first message of inbox whose id is mailId
+        return (sender of m) & sep & (subject of m) & sep & (source of m) & sep & (content of m) & sep & (junk mail status of m)
+    end tell
+end run
+'''
+    output = run_osascript(script, str(mail_id))
+    parts = output.split(sep, 4)
+    if len(parts) != 5:
+        raise RuntimeError(f"unexpected AppleScript message field output for {mail_id}")
+    return parts[0].strip(), parts[1].strip(), parts[2], parts[3].strip(), parts[4].strip().lower() == "true"
+
+
+def parse_junk_mailbox_refs(output: str) -> list[tuple[str, str, list[int]]]:
+    sep = "\x1f"
+    rec_sep = "\x1e"
+    refs: list[tuple[str, str, list[int]]] = []
+    for record in output.split(rec_sep):
+        if not record.strip():
+            continue
+        parts = record.split(sep)
+        if len(parts) != 3 or not parts[0].strip() or not parts[1].strip():
+            raise RuntimeError("malformed Junk mailbox enumeration record")
+        raw_ids = [part.strip() for part in parts[2].split(",")]
+        if not raw_ids or any(not re.fullmatch(r"\d+", part) for part in raw_ids):
+            raise RuntimeError(
+                f"malformed Junk message id list for {parts[0]}/{parts[1]}"
+            )
+        refs.append((parts[0], parts[1], [int(part) for part in raw_ids]))
+    return refs
+
+
+def junk_mailbox_refs() -> list[tuple[str, str, list[int]]]:
+    script = '''
+set fieldSep to ASCII character 31
+set recordSep to ASCII character 30
+set out to ""
+tell application "Mail"
+    repeat with a in every account
+        set accountName to name of a
+        repeat with mb in every mailbox of a
+            set mailboxName to name of mb
+            if mailboxName is "Junk" or mailboxName is "Spam" then
+                set msgIds to id of every message of mb
+                if (count of msgIds) > 0 then
+                    set oldDelims to AppleScript's text item delimiters
+                    set AppleScript's text item delimiters to ","
+                    set idsText to msgIds as text
+                    set AppleScript's text item delimiters to oldDelims
+                    set out to out & accountName & fieldSep & mailboxName & fieldSep & idsText & recordSep
+                end if
+            end if
+        end repeat
+    end repeat
+end tell
+return out
+'''
+    output = run_osascript(script)
+    return parse_junk_mailbox_refs(output)
+
+
+def applescript_message_fields_in_mailbox(account_name: str, mailbox_name: str, mail_id: int) -> tuple[str, str, str, str, bool]:
+    sep = "\x1f"
+    script = '''
+on run argv
+    set accountName to item 1 of argv
+    set mailboxName to item 2 of argv
+    set mailId to item 3 of argv as integer
+    set sep to ASCII character 31
+    tell application "Mail"
+        set targetAccount to first account whose name is accountName
+        set targetMailbox to first mailbox of targetAccount whose name is mailboxName
+        set m to first message of targetMailbox whose id is mailId
+        return (sender of m) & sep & (subject of m) & sep & (source of m) & sep & (content of m) & sep & (junk mail status of m)
+    end tell
+end run
+'''
+    output = run_osascript(script, account_name, mailbox_name, str(mail_id))
+    parts = output.split(sep, 4)
+    if len(parts) != 5:
+        raise RuntimeError(f"unexpected AppleScript message field output for {account_name}/{mailbox_name}/{mail_id}")
+    return parts[0].strip(), parts[1].strip(), parts[2], parts[3].strip(), parts[4].strip().lower() == "true"
+
+
+def load_junk_messages(limit: int, body_char_limit: int) -> list[tuple[str, str, MessageRecord]]:
+    records: list[tuple[str, str, MessageRecord]] = []
+    for account_name, mailbox_name, ids in junk_mailbox_refs():
+        for mail_id in ids:
+            try:
+                sender_raw, subject, source, content, junk = applescript_message_fields_in_mailbox(account_name, mailbox_name, mail_id)
+                msg = source_message_from_text(source)
+                headers = normalized_headers(msg)
+                sender_name, sender_address = parse_sender("", sender_raw, headers)
+                date_received = parse_mail_date(headers)
+                body = content or message_body(msg)
+                body_truncated = len(body) > body_char_limit
+                if body_truncated:
+                    body = body[:body_char_limit].rstrip()
+                mailbox_url = f"apple-mail://{account_name}/{mailbox_name}"
+                record = MessageRecord(
+                    mail_id=mail_id,
+                    date_received=date_received,
+                    read=False,
+                    flags=0,
+                    deleted=False,
+                    junk=junk,
+                    mailbox_url=mailbox_url,
+                    sender_address=sender_address,
+                    sender_name=sender_name,
+                    subject=subject,
+                    message_id_header=(headers.get("message-id") or "").strip(),
+                    emlx_path=None,
+                    headers=headers,
+                    body=body,
+                    body_truncated=body_truncated,
+                    state_key=state_key_for_fields(mailbox_url, date_received, sender_address, subject, headers, source),
+                    reply_from=reply_from_for_headers(headers),
+                )
+                records.append((account_name, mailbox_name, record))
+            except Exception as exc:
+                record_failure(f"junk-mail-id:{mail_id}", f"junk-scan-failed:{exc}")
+                raise RuntimeError(f"junk-scan-failed:{account_name}/{mailbox_name}/{mail_id}:{exc}") from exc
+            if len(records) >= limit:
+                return records
+    records.sort(key=lambda item: item[2].date_received, reverse=True)
+    return records
+
+
+def load_messages_applescript(limit: int, max_age_days: int | None, body_char_limit: int) -> list[MessageRecord]:
+    cutoff = int(time.time()) - (max_age_days * 86400) if max_age_days is not None else None
+    records: list[MessageRecord] = []
+    for mail_id in inbox_mail_ids():
+        try:
+            sender_raw, subject, source, content, junk = applescript_message_fields(mail_id)
+            msg = source_message_from_text(source)
+            headers = normalized_headers(msg)
+            sender_name, sender_address = parse_sender("", sender_raw, headers)
+            reply_from = reply_from_for_headers(headers)
+            date_received = parse_mail_date(headers)
+            if cutoff is not None and date_received and date_received < cutoff:
+                continue
+            body = content or message_body(msg)
+            body_truncated = len(body) > body_char_limit
+            if body_truncated:
+                body = body[:body_char_limit].rstrip()
+            mailbox_url = "apple-mail://inbox"
+            records.append(
+                MessageRecord(
+                    mail_id=mail_id,
+                    date_received=date_received,
+                    read=False,
+                    flags=0,
+                    deleted=False,
+                    junk=junk,
+                    mailbox_url=mailbox_url,
+                    sender_address=sender_address,
+                    sender_name=sender_name,
+                    subject=subject,
+                    message_id_header=(headers.get("message-id") or "").strip(),
+                    emlx_path=None,
+                    headers=headers,
+                    body=body,
+                    body_truncated=body_truncated,
+                    state_key=state_key_for_fields(mailbox_url, date_received, sender_address, subject, headers, source),
+                    reply_from=reply_from,
+                )
+            )
+        except Exception as exc:
+            record_failure(f"mail-id:{mail_id}", f"applescript-scan-failed:{exc}")
+            raise RuntimeError(f"applescript-scan-failed:{mail_id}:{exc}") from exc
+        if len(records) >= limit:
+            break
+    records.sort(key=lambda item: item.date_received, reverse=True)
+    return records
+
+
+def load_messages(limit: int, max_age_days: int | None, body_char_limit: int) -> list[MessageRecord]:
+    inbox_ids = inbox_mail_ids()
+    if not inbox_ids:
+        return []
+    placeholders = ",".join("?" for _ in inbox_ids)
+    try:
+        rows = sqlite_rows(
+            f"""
+            SELECT
+              messages.ROWID AS mail_id,
+              messages.date_received AS date_received,
+              messages.read AS read,
+              messages.flags AS flags,
+              messages.deleted AS deleted,
+              messages.conversation_id AS conversation_id,
+              mailboxes.url AS mailbox_url,
+              addresses.address AS sender_address,
+              addresses.comment AS sender_name,
+              subjects.subject AS subject,
+              message_global_data.message_id_header AS message_id_header
+            FROM messages
+            LEFT JOIN mailboxes ON messages.mailbox = mailboxes.ROWID
+            LEFT JOIN addresses ON messages.sender = addresses.ROWID
+            LEFT JOIN subjects ON messages.subject = subjects.ROWID
+            LEFT JOIN message_global_data ON messages.global_message_id = message_global_data.ROWID
+            WHERE messages.deleted = 0
+              AND messages.ROWID IN ({placeholders})
+            ORDER BY messages.date_received DESC
+            LIMIT ?
+            """,
+            tuple(inbox_ids) + (max(limit * 4, limit),),
+        )
+    except sqlite3.DatabaseError as exc:
+        if "authorization denied" in str(exc).lower():
+            return load_messages_applescript(limit, max_age_days, body_char_limit)
+        raise
+    cutoff = int(time.time()) - (max_age_days * 86400) if max_age_days is not None else None
+    records: list[MessageRecord] = []
+    for row in rows:
+        date_received = int(row["date_received"] or 0)
+        if cutoff is not None and date_received and date_received < cutoff:
+            continue
+        emlx_path = find_emlx(int(row["mail_id"]))
+        headers: dict[str, str] = {}
+        body = ""
+        mime_bytes: bytes | None = None
+        source_fallback_needed = not bool(emlx_path)
+        if emlx_path:
+            try:
+                msg = read_emlx_message(emlx_path)
+                headers = normalized_headers(msg)
+                body = message_body(msg)
+                mime_bytes = msg.as_bytes(policy=email.policy.default)
+            except Exception:
+                source_fallback_needed = True
+        if source_fallback_needed:
+            try:
+                _sender_raw, _subject, source, source_content, _junk = applescript_message_fields(int(row["mail_id"]))
+                source_msg = source_message_from_text(source)
+                headers = normalized_headers(source_msg)
+                mime_bytes = source.encode("utf-8", errors="replace")
+                body = source_content or message_body(source_msg)
+            except Exception as exc:
+                raise RuntimeError(f"source-fallback-failed:{int(row['mail_id'])}:{exc}") from exc
+        clean_mail_body = mail_content_by_id(int(row["mail_id"]))
+        if clean_mail_body:
+            body = clean_mail_body
+        junk = mail_junk_status_by_id(int(row["mail_id"]))
+        sender_name, sender_address = parse_sender(row["sender_address"] or "", row["sender_name"] or "", headers)
+        reply_from = reply_from_for_headers(headers)
+        body_truncated = len(body) > body_char_limit
+        if body_truncated:
+            body = body[:body_char_limit].rstrip()
+        key = state_key_for(row, headers, mime_bytes)
+        records.append(
+            MessageRecord(
+                mail_id=int(row["mail_id"]),
+                date_received=date_received,
+                read=bool(row["read"]),
+                flags=int(row["flags"] or 0),
+                deleted=bool(row["deleted"]),
+                junk=junk,
+                mailbox_url=row["mailbox_url"] or "",
+                sender_address=sender_address,
+                sender_name=sender_name,
+                subject=row["subject"] or "",
+                message_id_header=(headers.get("message-id") or row["message_id_header"] or "").strip(),
+                emlx_path=emlx_path,
+                headers=headers,
+                body=body,
+                body_truncated=body_truncated,
+                state_key=key,
+                reply_from=reply_from,
+                conversation_id=int(row["conversation_id"] or 0),
+            )
+        )
+        if len(records) >= limit:
+            break
+    return records
+
+
+def scan(args: argparse.Namespace) -> None:
+    with state_lock():
+        state = load_state()
+    processed = state.get("messages", {})
+    records = load_messages(args.limit, args.max_age_days, args.body_char_limit)
+    candidates = []
+    skipped = []
+    emitted_conversations: set[int] = set()
+    review_items = []
+    deleted_junk = []
+    for record in records:
+        existing = processed.get(record.state_key, {})
+        status = existing.get("status")
+        if status in {"drafted", "skipped", "failed-permanent", "deleted-junk", "resolved"}:
+            continue
+        junk_reason = obvious_junk_reason(record)
+        if junk_reason:
+            item = {
+                "state_key": record.state_key,
+                "mail_id": record.mail_id,
+                "date_received": record.date_received,
+                "sender_name": record.sender_name,
+                "sender_address": record.sender_address,
+                "subject": record.subject,
+                "reason": junk_reason,
+            }
+            skipped.append(item)
+            review_items.append(item)
+            continue
+        reason = deterministic_skip_reason(record)
+        if reason:
+            item = {
+                "state_key": record.state_key,
+                "mail_id": record.mail_id,
+                "date_received": record.date_received,
+                "sender_name": record.sender_name,
+                "sender_address": record.sender_address,
+                "subject": record.subject,
+                "reason": reason,
+            }
+            skipped.append(item)
+            review_items.append(item)
+            continue
+        pending_reason = sent_reply_reason(record) or pending_draft_reason(record)
+        if not pending_reason and record.conversation_id in emitted_conversations:
+            # One draft per thread per run; a later message in the same thread
+            # would otherwise stack a second draft before Ivo sees the first.
+            pending_reason = "an earlier message in this thread is already being drafted"
+        if pending_reason:
+            # Thread state can change when a draft is sent/deleted or a newer
+            # inbound message arrives, so do not persist this skip per message.
+            skipped.append(
+                {
+                    "state_key": record.state_key,
+                    "mail_id": record.mail_id,
+                    "date_received": record.date_received,
+                    "sender_name": record.sender_name,
+                    "sender_address": record.sender_address,
+                    "subject": record.subject,
+                    "reason": pending_reason,
+                }
+            )
+            continue
+        candidates.append(
+            {
+                "state_key": record.state_key,
+                "mail_id": record.mail_id,
+                "date_received": record.date_received,
+                "mailbox": record.mailbox_url,
+                "sender_name": record.sender_name,
+                "sender_address": record.sender_address,
+                "subject": record.subject,
+                "message_id_header": record.message_id_header,
+                "body": record.body,
+                "body_truncated": record.body_truncated,
+                "reply_from": record.reply_from,
+                "conversation_id": record.conversation_id,
+            }
+        )
+        if record.conversation_id:
+            emitted_conversations.add(record.conversation_id)
+        thread, thread_truncated, thread_omitted_count = thread_context_for(record)
+        candidates[-1]["thread"] = thread
+        candidates[-1]["thread_truncated"] = thread_truncated
+        candidates[-1]["thread_omitted_count"] = thread_omitted_count
+    result = {"candidates": candidates, "skipped": skipped, "review_items": review_items, "deleted_junk": deleted_junk, "count": len(candidates)}
+    print(json.dumps(result, ensure_ascii=False, indent=2 if args.pretty else None))
+
+
+def review_item(record: MessageRecord, reason: str) -> dict[str, Any]:
+    return {
+        "state_key": record.state_key,
+        "mail_id": record.mail_id,
+        "date_received": record.date_received,
+        "mailbox": record.mailbox_url,
+        "sender_name": record.sender_name,
+        "sender_address": record.sender_address,
+        "subject": record.subject,
+        "reason": reason,
+    }
+
+
+def sort_junk(args: argparse.Namespace) -> None:
+    records = load_junk_messages(args.limit, args.body_char_limit)
+    with state_lock():
+        processed = load_state().get("messages", {})
+    deleted_junk = []
+    moved_to_inbox = []
+    action_errors = []
+    for account_name, mailbox_name, record in records:
+        reason = junk_delete_reason(record)
+        if reason:
+            item = review_item(record, reason)
+            existing = processed.get(record.state_key, {})
+            if existing.get("status") == "failed-permanent":
+                item["reason"] = "junk-delete-manual-review:" + str(existing.get("reason") or "retry-exhausted")
+                action_errors.append(item)
+                continue
+            if not args.dry_run:
+                try:
+                    mark_read_and_delete_mail_in_mailbox(account_name, mailbox_name, record.mail_id)
+                    mark_state(record.state_key, "deleted-junk", reason, {
+                        "mail_id": record.mail_id,
+                        "mailbox": record.mailbox_url,
+                        "marked_read_before_delete": True,
+                    })
+                    item["marked_read_before_delete"] = True
+                except Exception as exc:
+                    failure_reason = f"junk-delete-failed:{exc}"
+                    mark_state(record.state_key, "failed", failure_reason, {
+                        "phase": "junk-cleanup",
+                        "mail_id": record.mail_id,
+                        "mailbox": record.mailbox_url,
+                    })
+                    item["delete_error"] = str(exc)
+                    action_errors.append(item)
+                    continue
+            deleted_junk.append(item)
+            continue
+        item = review_item(record, junk_protect_reason(record) or "junk-review-plausibly-real")
+        if not args.dry_run:
+            try:
+                move_junk_mail_to_inbox(account_name, mailbox_name, record.mail_id)
+                mark_state(record.state_key, "moved-junk-to-inbox", item["reason"], {
+                    "mail_id": record.mail_id,
+                    "source_mailbox": record.mailbox_url,
+                    "destination_mailbox": f"apple-mail://{account_name}/INBOX",
+                })
+            except Exception as exc:
+                failure_reason = f"junk-inbox-move-failed:{exc}"
+                mark_state(record.state_key, "failed", failure_reason, {
+                    "phase": "junk-sorting",
+                    "mail_id": record.mail_id,
+                    "mailbox": record.mailbox_url,
+                })
+                item["move_error"] = str(exc)
+                action_errors.append(item)
+                continue
+        moved_to_inbox.append(item)
+    result = {
+        "deleted_junk": deleted_junk,
+        "moved_to_inbox": moved_to_inbox,
+        "action_errors": action_errors,
+        "count": len(records),
+        "dry_run": args.dry_run,
+    }
+    print(json.dumps(result, ensure_ascii=False, indent=2 if args.pretty else None))
+    if action_errors:
+        fail(f"{len(action_errors)} Junk sorting action(s) failed; structured state recorded")
+
+
+def validate_payload(payload: dict[str, Any]) -> None:
+    required = ["state_key", "mail_id", "body"]
+    missing = [key for key in required if key not in payload]
+    if missing:
+        fail(f"draft payload missing keys: {', '.join(missing)}")
+    if not str(payload["body"]).strip():
+        fail("draft payload body is empty")
+
+
+def load_payload(path_arg: str) -> dict[str, Any]:
+    if path_arg == "-":
+        text = sys.stdin.read()
+    else:
+        path = Path(path_arg)
+        stat = path.stat()
+        if stat.st_mode & 0o077:
+            fail(f"refusing unsafe payload file permissions: {path}")
+        text = path.read_text(encoding="utf-8")
+    payload = json.loads(text)
+    if not isinstance(payload, dict):
+        fail("draft payload must be a JSON object")
+    return payload
+
+
+def _required_resolution_text(payload: dict[str, Any], key: str) -> str:
+    value = payload.get(key)
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"resolution payload {key} must be a non-empty string")
+    return value
+
+
+def validate_resolution_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    required = (
+        "state_key",
+        "operation_id",
+        "expected_updated_at",
+        "message_rowid",
+        "mailbox_kind",
+        "sender",
+        "to",
+        "subject",
+        "attachments",
+        "actor",
+        "verified_at",
+    )
+    missing = [key for key in required if key not in payload]
+    if missing:
+        raise ValueError("resolution payload missing keys: " + ", ".join(missing))
+    state_key = _required_resolution_text(payload, "state_key")
+    operation_id = _required_resolution_text(payload, "operation_id")
+    actor = _required_resolution_text(payload, "actor")
+    verified_at = _required_resolution_text(payload, "verified_at")
+    sender = _required_resolution_text(payload, "sender")
+    subject = _required_resolution_text(payload, "subject")
+    expected_updated_at = payload["expected_updated_at"]
+    if isinstance(expected_updated_at, bool) or not isinstance(expected_updated_at, int) or expected_updated_at < 0:
+        raise ValueError("resolution payload expected_updated_at must be a non-negative integer")
+    message_rowid = payload["message_rowid"]
+    if isinstance(message_rowid, bool) or not isinstance(message_rowid, int) or message_rowid <= 0:
+        raise ValueError("resolution payload message_rowid must be a positive integer")
+    mailbox_kind = payload["mailbox_kind"]
+    if mailbox_kind not in {"drafts", "sent"}:
+        raise ValueError("resolution payload mailbox_kind must be drafts or sent")
+    recipients = payload["to"]
+    if not isinstance(recipients, list) or not recipients:
+        raise ValueError("resolution payload to must be a non-empty list")
+    if any(not isinstance(value, str) or not value.strip() for value in recipients):
+        raise ValueError("resolution payload to entries must be non-empty strings")
+    attachments = payload["attachments"]
+    if not isinstance(attachments, list):
+        raise ValueError("resolution payload attachments must be a list")
+    attachment_paths: list[str] = []
+    for value in attachments:
+        if not isinstance(value, str) or not value:
+            raise ValueError("resolution payload attachment paths must be strings")
+        path = Path(value)
+        if not path.is_absolute():
+            raise ValueError(f"resolution attachment path is not absolute: {value}")
+        try:
+            path_stat = path.lstat()
+        except OSError as exc:
+            raise ValueError(f"resolution attachment is unreadable: {value}: {exc}") from exc
+        if stat.S_ISLNK(path_stat.st_mode) or not stat.S_ISREG(path_stat.st_mode):
+            raise ValueError(f"resolution attachment is not a regular file: {value}")
+        if not os.access(path, os.R_OK):
+            raise ValueError(f"resolution attachment is not readable: {value}")
+        attachment_paths.append(str(path))
+    return {
+        "state_key": state_key,
+        "operation_id": operation_id,
+        "expected_updated_at": expected_updated_at,
+        "message_rowid": message_rowid,
+        "mailbox_kind": mailbox_kind,
+        "sender": sender,
+        "to": list(recipients),
+        "subject": subject,
+        "attachments": attachment_paths,
+        "actor": actor,
+        "verified_at": verified_at,
+    }
+
+
+def rowid_body_record(message_rowid: int) -> dict[str, Any]:
+    command = ROWID_BODY_COMMAND
+    if not os.path.isabs(command):
+        command = shutil.which(command) or ""
+    if not command:
+        raise RuntimeError("apple-mail-rowid-body command is unavailable")
+    try:
+        proc = subprocess.run(
+            [command, "--json", str(message_rowid)],
+            text=True,
+            capture_output=True,
+            timeout=45,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise RuntimeError(f"apple-mail-rowid-body lookup failed: {exc}") from exc
+    if proc.returncode != 0:
+        raise RuntimeError(proc.stderr.strip() or "apple-mail-rowid-body lookup failed")
+    try:
+        rows = json.loads(proc.stdout)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("apple-mail-rowid-body returned invalid JSON") from exc
+    if not isinstance(rows, list) or len(rows) != 1 or not isinstance(rows[0], dict):
+        raise RuntimeError("apple-mail-rowid-body lookup was not exactly one record")
+    row = rows[0]
+    try:
+        actual_rowid = int(row.get("rowid"))
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError("apple-mail-rowid-body record has no valid rowid") from exc
+    if actual_rowid != message_rowid:
+        raise RuntimeError("apple-mail-rowid-body returned a different rowid")
+    return row
+
+
+def mailbox_kind_for_url(value: Any) -> str | None:
+    text = str(value or "").strip().casefold()
+    if not text:
+        return None
+    tail = re.split(r"[/\\]", text.rstrip("/\\"))[-1]
+    tail = re.sub(r"[^a-z0-9]+", " ", tail).strip()
+    if tail in {"draft", "drafts", "draft message", "draft messages"} or tail.startswith("draft ") or tail.startswith("drafts "):
+        return "drafts"
+    if tail in {"sent", "sent message", "sent messages", "sent mail"} or tail.startswith("sent "):
+        return "sent"
+    return None
+
+
+def stable_emlx_bytes(path_value: Any) -> tuple[bytes, dict[str, Any]]:
+    if not isinstance(path_value, str) or not path_value:
+        raise RuntimeError("apple-mail-rowid-body did not return an EMLX path")
+    path = Path(path_value)
+    if not path.is_absolute():
+        raise RuntimeError("apple-mail-rowid-body returned a non-absolute EMLX path")
+    observations: list[tuple[int, int, str]] = []
+    data = b""
+    for _ in range(2):
+        try:
+            before = path.stat()
+            if not stat.S_ISREG(before.st_mode) or path.is_symlink():
+                raise RuntimeError("EMLX path is not a regular file")
+            data = path.read_bytes()
+            after = path.stat()
+        except OSError as exc:
+            raise RuntimeError(f"EMLX bytes are unavailable: {exc}") from exc
+        if before.st_size != len(data) or after.st_size != len(data) or before.st_mtime_ns != after.st_mtime_ns:
+            raise RuntimeError("EMLX changed while it was being read")
+        digest = hashlib.sha256(data).hexdigest()
+        observations.append((len(data), after.st_mtime_ns, digest))
+        if len(observations) == 1:
+            time.sleep(0.5)
+    if observations[0] != observations[1]:
+        raise RuntimeError("EMLX was not stable across two observations")
+    size, mtime_ns, digest = observations[0]
+    return data, {"size": size, "mtime_ns": mtime_ns, "sha256": digest}
+
+
+def decode_emlx_bytes(data: bytes) -> email.message.EmailMessage:
+    if not data:
+        raise RuntimeError("EMLX file is empty")
+    newline = data.find(b"\n")
+    raw = data
+    if newline != -1:
+        first = data[:newline].strip()
+        if first.isdigit():
+            declared_length = int(first)
+            raw = data[newline + 1 : newline + 1 + declared_length]
+            if declared_length <= 0 or len(raw) != declared_length:
+                raise RuntimeError("EMLX declared length does not match available bytes")
+    if not raw:
+        raise RuntimeError("EMLX MIME source is empty")
+    return email.parser.BytesParser(policy=email.policy.default).parsebytes(raw)
+
+
+def normalized_address_list(raw_values: list[str], label: str) -> list[str]:
+    addresses: list[str] = []
+    for raw in raw_values:
+        parsed = email.utils.getaddresses([raw])
+        if not parsed or any(not address.strip() or "@" not in address for _name, address in parsed):
+            raise RuntimeError(f"{label} contains an invalid address")
+        addresses.extend(address.strip().casefold() for _name, address in parsed)
+    if not addresses:
+        raise RuntimeError(f"{label} is empty")
+    if len(set(addresses)) != len(addresses):
+        raise RuntimeError(f"{label} contains duplicate addresses")
+    return addresses
+
+
+def normalized_filename(value: Any, label: str) -> str:
+    if not isinstance(value, str):
+        raise RuntimeError(f"{label} has no filename")
+    name = unicodedata.normalize("NFKC", value).strip()
+    if not name or name in {".", ".."} or "/" in name or "\\" in name:
+        raise RuntimeError(f"{label} has an invalid filename")
+    return name.casefold()
+
+
+def external_attachment_root(emlx_path_value: str, message_rowid: int) -> Path:
+    """Return only the Mail Attachments directory paired with this EMLX row."""
+    try:
+        emlx_path = Path(emlx_path_value).resolve(strict=True)
+    except OSError as exc:
+        raise RuntimeError(f"EMLX path cannot be resolved: {exc}") from exc
+    current = Path(emlx_path.anchor)
+    for component in emlx_path.parts[1:]:
+        current /= component
+        try:
+            component_stat = current.lstat()
+        except OSError as exc:
+            raise RuntimeError(f"EMLX path component is unavailable: {current}: {exc}") from exc
+        if stat.S_ISLNK(component_stat.st_mode):
+            raise RuntimeError(f"EMLX path contains a symlink component: {current}")
+    messages_dir = emlx_path.parent
+    if messages_dir.name != "Messages":
+        raise RuntimeError("EMLX path does not have a verified Messages parent")
+    try:
+        messages_stat = messages_dir.lstat()
+        mailbox_stat = messages_dir.parent.lstat()
+    except OSError as exc:
+        raise RuntimeError(f"Mail attachment root is unavailable: {exc}") from exc
+    if not stat.S_ISDIR(messages_stat.st_mode) or stat.S_ISLNK(messages_stat.st_mode):
+        raise RuntimeError("EMLX Messages parent is not a regular directory")
+    if not stat.S_ISDIR(mailbox_stat.st_mode) or stat.S_ISLNK(mailbox_stat.st_mode):
+        raise RuntimeError("EMLX mailbox parent is not a regular directory")
+    attachments_dir = messages_dir.parent / "Attachments"
+    root = attachments_dir / str(message_rowid)
+    try:
+        attachments_stat = attachments_dir.lstat()
+    except OSError as exc:
+        raise RuntimeError(f"Mail attachment root is unavailable: {exc}") from exc
+    if not stat.S_ISDIR(attachments_stat.st_mode) or stat.S_ISLNK(attachments_stat.st_mode):
+        raise RuntimeError("Mail Attachments sibling is not a regular directory")
+    try:
+        root_stat = root.lstat()
+    except OSError as exc:
+        raise RuntimeError(f"Mail attachment row root is unavailable: {exc}") from exc
+    if not stat.S_ISDIR(root_stat.st_mode) or stat.S_ISLNK(root_stat.st_mode):
+        raise RuntimeError("Mail attachment row root is not a regular directory")
+    return root
+
+
+def external_attachment_candidates(root: Path) -> dict[str, Path]:
+    """Index one Mail row's external files, rejecting ambiguous or unsafe paths."""
+    candidates: dict[str, Path] = {}
+    pending = [root]
+    while pending:
+        directory = pending.pop()
+        try:
+            entries = sorted(directory.iterdir(), key=lambda item: item.name.casefold())
+        except OSError as exc:
+            raise RuntimeError(f"Mail attachment directory is unreadable: {directory}: {exc}") from exc
+        for entry in entries:
+            try:
+                entry_stat = entry.lstat()
+            except OSError as exc:
+                raise RuntimeError(f"Mail attachment path is unavailable: {entry}: {exc}") from exc
+            if stat.S_ISLNK(entry_stat.st_mode):
+                raise RuntimeError(f"Mail attachment tree contains a symlink: {entry}")
+            if stat.S_ISDIR(entry_stat.st_mode):
+                pending.append(entry)
+                continue
+            if not stat.S_ISREG(entry_stat.st_mode):
+                raise RuntimeError(f"Mail attachment path is not a regular file: {entry}")
+            name = normalized_filename(entry.name, "external MIME attachment")
+            if name in candidates:
+                raise RuntimeError(f"Mail attachment tree has duplicate normalized filename: {entry.name}")
+            candidates[name] = entry
+    return candidates
+
+
+def read_external_attachment(path: Path) -> tuple[int, str]:
+    try:
+        before = path.lstat()
+        if stat.S_ISLNK(before.st_mode) or not stat.S_ISREG(before.st_mode):
+            raise RuntimeError(f"external MIME attachment is not a regular file: {path}")
+        content = path.read_bytes()
+        after = path.lstat()
+    except OSError as exc:
+        raise RuntimeError(f"external MIME attachment bytes are unavailable: {path}: {exc}") from exc
+    if before.st_size != len(content) or after.st_size != len(content) or before.st_mtime_ns != after.st_mtime_ns:
+        raise RuntimeError(f"external MIME attachment changed while being read: {path}")
+    return len(content), hashlib.sha256(content).hexdigest()
+
+
+def attachment_evidence(
+    paths: list[str],
+    msg: email.message.EmailMessage,
+    emlx_path: str | None = None,
+    message_rowid: int | None = None,
+) -> list[dict[str, Any]]:
+    expected: dict[str, tuple[int, str]] = {}
+    for raw_path in paths:
+        path = Path(raw_path)
+        name = normalized_filename(path.name, "resolution attachment")
+        if name in expected:
+            raise RuntimeError(f"resolution attachments contain duplicate filename: {path.name}")
+        try:
+            content = path.read_bytes()
+        except OSError as exc:
+            raise RuntimeError(f"resolution attachment bytes are unavailable: {path}: {exc}") from exc
+        expected[name] = (len(content), hashlib.sha256(content).hexdigest())
+
+    actual: dict[str, tuple[int, str]] = {}
+    external_candidates: dict[str, Path] | None = None
+    for part in msg.walk() if msg.is_multipart() else [msg]:
+        if part.is_multipart():
+            continue
+        filename = part.get_filename()
+        disposition = (part.get_content_disposition() or "").casefold()
+        if filename is None and disposition != "attachment":
+            continue
+        name = normalized_filename(filename, "saved MIME attachment")
+        if name in actual:
+            raise RuntimeError(f"saved MIME contains duplicate filename: {filename}")
+        decoded = part.get_payload(decode=True)
+        if decoded is None:
+            raise RuntimeError(f"saved MIME attachment has no decoded bytes: {filename}")
+        if decoded:
+            actual[name] = (len(decoded), hashlib.sha256(decoded).hexdigest())
+            continue
+        if emlx_path is None or message_rowid is None:
+            raise RuntimeError(f"saved MIME attachment has no inline bytes: {filename}")
+        if external_candidates is None:
+            external_candidates = external_attachment_candidates(
+                external_attachment_root(emlx_path, message_rowid)
+            )
+        external_path = external_candidates.get(name)
+        if external_path is None:
+            raise RuntimeError(f"external MIME attachment bytes are missing: {filename}")
+        actual[name] = read_external_attachment(external_path)
+    if set(actual) != set(expected):
+        missing = sorted(set(expected) - set(actual))
+        extra = sorted(set(actual) - set(expected))
+        raise RuntimeError(f"saved MIME attachment set mismatch: missing={missing} extra={extra}")
+    for name, expected_value in expected.items():
+        if actual[name] != expected_value:
+            raise RuntimeError(f"saved MIME attachment bytes mismatch: {name}")
+    return [
+        {"filename": name, "byte_length": actual[name][0], "sha256": actual[name][1]}
+        for name in sorted(actual)
+    ]
+
+
+def verify_resolution_evidence(payload: dict[str, Any], row: dict[str, Any], state_record: dict[str, Any]) -> dict[str, Any]:
+    row_mailbox = row.get("mailbox") or row.get("mailbox_url")
+    actual_kind = mailbox_kind_for_url(row_mailbox)
+    if actual_kind != payload["mailbox_kind"]:
+        raise RuntimeError(f"saved message mailbox kind mismatch: expected={payload['mailbox_kind']} actual={actual_kind}")
+    try:
+        actual_rowid = int(row.get("rowid"))
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError("saved message row has no valid rowid") from exc
+    if actual_rowid != payload["message_rowid"]:
+        raise RuntimeError("saved message rowid mismatch")
+    raw_emlx_path = row.get("emlx") or row.get("emlx_path")
+    if not isinstance(raw_emlx_path, str) or not raw_emlx_path:
+        raise RuntimeError("apple-mail-rowid-body did not return an EMLX path")
+    try:
+        verified_emlx_path = str(Path(raw_emlx_path).resolve(strict=True))
+    except OSError as exc:
+        raise RuntimeError(f"EMLX path cannot be resolved: {exc}") from exc
+    data, observation = stable_emlx_bytes(verified_emlx_path)
+    msg = decode_emlx_bytes(data)
+    sender = normalized_address_list([payload["sender"]], "resolution sender")
+    from_values = msg.get_all("From", [])
+    if len(from_values) != 1:
+        raise RuntimeError("saved MIME From header is missing or ambiguous")
+    actual_sender = normalized_address_list(from_values, "saved MIME From")
+    if actual_sender != sender:
+        raise RuntimeError(f"saved MIME From mismatch: expected={sender} actual={actual_sender}")
+    recipients = normalized_address_list(payload["to"], "resolution recipients")
+    to_values = msg.get_all("To", [])
+    actual_recipients = normalized_address_list(to_values, "saved MIME To")
+    if actual_recipients != recipients:
+        raise RuntimeError(f"saved MIME To mismatch: expected={recipients} actual={actual_recipients}")
+    subject_values = msg.get_all("Subject", [])
+    if len(subject_values) != 1:
+        raise RuntimeError("saved MIME Subject header is missing or ambiguous")
+    actual_subject = str(subject_values[0])
+    if actual_subject != payload["subject"]:
+        raise RuntimeError("saved MIME Subject mismatch")
+    expected_message_id = str(state_record.get("expected_message_id") or "").strip()
+    reply_headers: list[str] = []
+    if expected_message_id:
+        reply_headers.extend(msg.get_all("In-Reply-To", []))
+        reply_headers.extend(msg.get_all("References", []))
+        if not any(expected_message_id in value for value in reply_headers):
+            raise RuntimeError("saved MIME is not linked to the expected inbound Message-ID")
+    attachments = attachment_evidence(
+        payload["attachments"],
+        msg,
+        verified_emlx_path,
+        payload["message_rowid"],
+    )
+    return {
+        "message_rowid": actual_rowid,
+        "mailbox_kind": actual_kind,
+        "mailbox": str(row_mailbox or ""),
+        "sender": sender,
+        "to": recipients,
+        "subject": actual_subject,
+        "attachments": attachments,
+        "emlx": {"size": observation["size"], "sha256": observation["sha256"]},
+        "expected_message_id": expected_message_id,
+    }
+
+
+def resolution_evidence_fingerprint(payload: dict[str, Any], evidence: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "state_key": payload["state_key"],
+        "operation_id": payload["operation_id"],
+        "expected_updated_at": payload["expected_updated_at"],
+        **evidence,
+    }
+
+
+def load_resolution_events() -> list[dict[str, Any]]:
+    if not RESOLUTIONS_FILE.exists():
+        return []
+    events: list[dict[str, Any]] = []
+    try:
+        lines = RESOLUTIONS_FILE.read_text(encoding="utf-8").splitlines()
+    except OSError as exc:
+        raise RuntimeError(f"could not read resolution history: {exc}") from exc
+    for line in lines:
+        if not line.strip():
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError("resolution history contains invalid JSON") from exc
+        if not isinstance(event, dict):
+            raise RuntimeError("resolution history contains a non-object event")
+        events.append(event)
+    return events
+
+
+def resolve_manual_review(args: argparse.Namespace) -> None:
+    payload = load_payload(args.payload)
+    try:
+        resolution = validate_resolution_payload(payload)
+        with state_lock():
+            state = load_state()
+            existing = state["messages"].get(resolution["state_key"])
+        if not isinstance(existing, dict):
+            raise RuntimeError("manual-review state record was not found")
+        row = rowid_body_record(resolution["message_rowid"])
+        evidence = verify_resolution_evidence(resolution, row, existing)
+        fingerprint = resolution_evidence_fingerprint(resolution, evidence)
+        with state_lock():
+            state = load_state()
+            current = state["messages"].get(resolution["state_key"])
+            events = load_resolution_events()
+            matching = [
+                event for event in events
+                if event.get("state_key") == resolution["state_key"]
+                and event.get("operation_id") == resolution["operation_id"]
+            ]
+            for event in matching:
+                if event.get("evidence") != fingerprint:
+                    raise RuntimeError("conflicting manual-review resolution evidence")
+            if not isinstance(current, dict):
+                raise RuntimeError("manual-review state record was not found")
+            if current.get("status") == "resolved" and current.get("phase") == "complete" and current.get("reason") == "manual-review-resolved":
+                if not matching:
+                    raise RuntimeError("resolved state has no matching immutable resolution event")
+                print(json.dumps({"status": "resolved", "state_key": resolution["state_key"], "operation_id": resolution["operation_id"], "idempotent": True}, sort_keys=True))
+                return
+            if (
+                current.get("state_key", resolution["state_key"]) != resolution["state_key"]
+                or current.get("operation_id") != resolution["operation_id"]
+                or current.get("updated_at") != resolution["expected_updated_at"]
+                or current.get("status") != "failed-permanent"
+                or current.get("phase") != "manual-review"
+            ):
+                raise RuntimeError("manual-review state generation or phase no longer matches")
+            if not matching:
+                event = {
+                    "event": "manual-review-resolved",
+                    "state_key": resolution["state_key"],
+                    "operation_id": resolution["operation_id"],
+                    "expected_updated_at": resolution["expected_updated_at"],
+                    "actor": resolution["actor"],
+                    "verified_at": resolution["verified_at"],
+                    "created_at": int(time.time()),
+                    "evidence": fingerprint,
+                    "prior_failure": current.copy(),
+                }
+                ensure_state_dir()
+                with RESOLUTIONS_FILE.open("a", encoding="utf-8") as fh:
+                    fh.write(json.dumps(event, sort_keys=True) + "\n")
+                    fh.flush()
+                    os.fsync(fh.fileno())
+                os.chmod(RESOLUTIONS_FILE, 0o600)
+            prior_failure = current.copy()
+            current.update({
+                "status": "resolved",
+                "phase": "complete",
+                "reason": "manual-review-resolved",
+                "resolved_at": int(time.time()),
+                "resolution_actor": resolution["actor"],
+                "resolution_verified_at": resolution["verified_at"],
+                "resolution_evidence": evidence,
+                "prior_failure": prior_failure,
+            })
+            state["messages"][resolution["state_key"]] = current
+            save_state(state)
+        print(json.dumps({"status": "resolved", "state_key": resolution["state_key"], "operation_id": resolution["operation_id"], "idempotent": False}, sort_keys=True))
+    except (OSError, RuntimeError, ValueError, TypeError) as exc:
+        fail(f"manual-review resolution rejected: {exc}")
+
+
+def strip_internal_draft_labels(body: str) -> str:
+    body = re.sub(
+        r"(?im)^[ \t]*\[Codex draft[^\]\r\n]*\][ \t]*(?:\r?\n)?",
+        "",
+        body,
+    )
+    return body.lstrip("\r\n")
+
+
+def create_draft(args: argparse.Namespace) -> None:
+    payload = load_payload(args.payload)
+    validate_payload(payload)
+    state_key = str(payload["state_key"])
+    mail_id = str(int(payload["mail_id"]))
+    body = strip_internal_draft_labels(str(payload["body"]))
+    attachment_paths = validated_attachment_paths(payload.get("attachments", []))
+    reply_from = email.utils.parseaddr(str(payload.get("reply_from") or ""))[1].casefold()
+    account_name = str(payload.get("account_name") or "")
+    mailbox_name = str(payload.get("mailbox_name") or "")
+    if bool(account_name) != bool(mailbox_name):
+        fail("account_name and mailbox_name must be supplied together")
+    expected_message_id = str(payload.get("expected_message_id") or "")
+    if not expected_message_id and state_key.startswith("rfc:"):
+        expected_message_id = state_key[4:]
+    if "\n" in expected_message_id or "\r" in expected_message_id:
+        fail("expected_message_id contains an invalid newline")
+    operation_id = str(payload.get("operation_id") or uuid.uuid4())
+    if not body.strip():
+        fail("draft payload body is empty after removing internal labels")
+    if not reply_from or reply_from not in configured_mail_addresses():
+        fail("draft payload reply_from is missing or not a configured Mail account address")
+    try:
+        if account_name and mailbox_name:
+            source_sender, _source_subject, source, _source_content, _source_junk = applescript_message_fields_in_mailbox(
+                account_name, mailbox_name, int(mail_id)
+            )
+        else:
+            source_sender, _source_subject, source, _source_content, _source_junk = applescript_message_fields(int(mail_id))
+        source_headers = normalized_headers(source_message_from_text(source))
+    except Exception as exc:
+        fail(f"draft source verification failed: {exc}")
+    actual_message_id = (source_headers.get("message-id") or "").strip()
+    if expected_message_id and actual_message_id != expected_message_id:
+        fail("draft source RFC Message-ID mismatch")
+    try:
+        validate_source_state_key(state_key, actual_message_id)
+    except RuntimeError as exc:
+        fail(str(exc))
+    if reply_from_for_headers(source_headers) != reply_from:
+        fail("draft source delivered account does not match reply_from")
+    expected_recipient = email.utils.parseaddr(
+        source_headers.get("reply-to") or source_headers.get("from") or source_sender
+    )[1].casefold()
+    if not expected_recipient:
+        fail("draft source reply recipient could not be resolved")
+    claim = claim_state(state_key, operation_id)
+    if not claim.get("claimed"):
+        fail(f"draft state is not claimable: {claim.get('status')}:{claim.get('reason')}")
+    transition_to_creating(state_key, operation_id, {
+        "mail_id": int(mail_id),
+        "reply_from": reply_from,
+        "account_name": account_name,
+        "mailbox_name": mailbox_name,
+        "expected_message_id": expected_message_id,
+    })
+    try:
+        evidence = run_osascript(
+            REPLY_APPLESCRIPT,
+            mail_id,
+            body,
+            reply_from,
+            account_name,
+            mailbox_name,
+            expected_message_id,
+            "\n".join(attachment_paths),
+        )
+        draft_id, actual_sender, actual_recipient_text, actual_attachment_text = split_mail_evidence(evidence)
+        if email.utils.parseaddr(actual_sender)[1].casefold() != reply_from:
+            raise RuntimeError(f"saved reply sender mismatch: {actual_sender}")
+        require_exact_saved_recipients(actual_recipient_text, {expected_recipient}, "reply")
+        reported_attachments = require_reported_attachment_paths(actual_attachment_text, attachment_paths)
+    except Exception as exc:
+        reason = f"draft-create-failed:{exc}"
+        mark_ambiguous_creation(state_key, operation_id, reason, {
+            "mail_id": int(mail_id),
+            "reply_from": reply_from,
+            "account_name": account_name,
+            "mailbox_name": mailbox_name,
+            "expected_message_id": expected_message_id,
+            "expected_recipient": expected_recipient,
+        })
+        fail(reason)
+    finish_operation(state_key, operation_id, draft_id, {"mail_id": int(mail_id), "reply_from": reply_from, "attachments": attachment_paths})
+    print(json.dumps({
+        "status": "drafted",
+        "state_key": state_key,
+        "mail_id": int(mail_id),
+        "draft_id": draft_id,
+        "reply_from": reply_from,
+        "account_name": account_name,
+        "mailbox_name": mailbox_name,
+        "operation_id": operation_id,
+        "attachments": reported_attachments,
+    }))
+
+
+def validated_attachment_paths(raw_values: Any) -> list[str]:
+    if not isinstance(raw_values, list):
+        fail("message draft payload attachments must be a list")
+    paths: list[str] = []
+    encoded_total = 0
+    for value in raw_values:
+        try:
+            path = Path(str(value)).expanduser().resolve(strict=True)
+        except (FileNotFoundError, OSError) as exc:
+            fail(f"message draft attachment could not be resolved: {value}: {exc}")
+        if not path.is_file() or not os.access(path, os.R_OK):
+            fail(f"message draft attachment is not a readable regular file: {path}")
+        size = path.stat().st_size
+        if size <= 0:
+            fail(f"message draft attachment is empty: {path}")
+        encoded_total += ((size + 2) // 3) * 4 + 2048
+        paths.append(str(path))
+    if encoded_total > ATTACHMENT_MAX_ENCODED_BYTES:
+        fail("message draft attachments exceed the 20 MB encoded-size limit")
+    if encoded_total > ATTACHMENT_WARN_ENCODED_BYTES:
+        print("warning: message draft attachments exceed 10 MB encoded", file=sys.stderr)
+    return paths
+
+
+def require_reported_attachment_paths(actual_text: str, expected_paths: list[str]) -> list[str]:
+    actual_paths = [str(Path(line).resolve()) for line in actual_text.splitlines() if line.strip()]
+    missing = [path for path in expected_paths if path not in actual_paths]
+    if missing:
+        raise RuntimeError("Apple Mail did not report requested attachments: " + ", ".join(missing))
+    return actual_paths
+
+
+def create_message_draft(args: argparse.Namespace) -> None:
+    payload = load_payload(args.payload)
+    missing = [key for key in ("to", "subject", "body", "sender") if key not in payload]
+    if missing:
+        fail(f"message draft payload missing keys: {', '.join(missing)}")
+
+    raw_recipients = payload["to"]
+    recipients = [raw_recipients] if isinstance(raw_recipients, str) else raw_recipients
+    if not isinstance(recipients, list) or not recipients:
+        fail("message draft payload to must be a non-empty string or list")
+    recipients = [str(value).strip() for value in recipients]
+    sender = str(payload["sender"]).strip()
+    subject = str(payload["subject"]).strip()
+    body = str(payload["body"])
+    attachment_paths = validated_attachment_paths(payload.get("attachments", []))
+    operation_id = str(payload.get("operation_id") or uuid.uuid4())
+    state_key = "standalone:" + operation_id
+
+    addresses = [sender, *recipients]
+    if any((not address or "\n" in address or "\r" in address) for address in addresses):
+        fail("message draft payload contains an invalid sender or recipient address")
+    normalized_recipients = [email.utils.parseaddr(value)[1].casefold() for value in recipients]
+    if any(not value or "@" not in value for value in normalized_recipients):
+        fail("message draft payload contains an invalid recipient address")
+    recipients = normalized_recipients
+    if not subject:
+        fail("message draft payload subject is empty")
+    if not body.strip():
+        fail("message draft payload body is empty")
+    normalized_sender = email.utils.parseaddr(sender)[1].casefold()
+    if normalized_sender not in configured_mail_addresses():
+        fail("message draft sender is not a configured Mail account address")
+    claim = claim_state(state_key, operation_id)
+    if not claim.get("claimed"):
+        fail(f"message draft state is not claimable: {claim.get('status')}:{claim.get('reason')}")
+    transition_to_creating(state_key, operation_id, {"sender": normalized_sender, "to": recipients, "subject": subject})
+
+    try:
+        evidence = run_osascript(
+            MESSAGE_DRAFT_APPLESCRIPT,
+            subject,
+            body,
+            normalized_sender,
+            "\n".join(recipients),
+            "\n".join(attachment_paths),
+        )
+        draft_id, actual_sender, actual_recipient_text, actual_attachment_text = split_mail_evidence(evidence)
+        if email.utils.parseaddr(actual_sender)[1].casefold() != normalized_sender:
+            raise RuntimeError(f"saved standalone sender mismatch: {actual_sender}")
+        expected_recipients = {email.utils.parseaddr(value)[1].casefold() for value in recipients}
+        require_exact_saved_recipients(actual_recipient_text, expected_recipients, "standalone")
+        reported_attachments = require_reported_attachment_paths(actual_attachment_text, attachment_paths)
+    except Exception as exc:
+        reason = f"message-draft-create-failed:{exc}"
+        mark_ambiguous_creation(state_key, operation_id, reason, {"sender": normalized_sender, "to": recipients, "subject": subject})
+        fail(reason)
+    finish_operation(state_key, operation_id, draft_id, {"sender": normalized_sender, "to": recipients, "subject": subject, "attachments": attachment_paths})
+    print(json.dumps({
+        "status": "drafted",
+        "state_key": state_key,
+        "operation_id": operation_id,
+        "draft_id": draft_id,
+        "to": recipients,
+        "sender": normalized_sender,
+        "subject": subject,
+        "attachments": reported_attachments,
+    }))
+
+
+def add_message_draft_attachments(args: argparse.Namespace) -> None:
+    payload = load_payload(args.payload)
+    missing = [key for key in ("draft_id", "sender", "to", "subject", "attachments") if key not in payload]
+    if missing:
+        fail(f"message draft attachment payload missing keys: {', '.join(missing)}")
+    draft_id = int(payload["draft_id"])
+    sender = email.utils.parseaddr(str(payload["sender"]))[1].casefold()
+    raw_recipients = payload["to"]
+    recipients = [raw_recipients] if isinstance(raw_recipients, str) else raw_recipients
+    if not isinstance(recipients, list) or not recipients:
+        fail("message draft attachment payload to must be a non-empty string or list")
+    recipients = [email.utils.parseaddr(str(value))[1].casefold() for value in recipients]
+    if any(not value or "@" not in value for value in [sender, *recipients]):
+        fail("message draft attachment payload contains an invalid address")
+    if sender not in configured_mail_addresses():
+        fail("message draft attachment sender is not a configured Mail account address")
+    subject = str(payload["subject"]).strip()
+    if not subject:
+        fail("message draft attachment payload subject is empty")
+    attachment_paths = validated_attachment_paths(payload["attachments"])
+    try:
+        evidence = run_osascript(
+            ADD_MESSAGE_DRAFT_ATTACHMENTS_APPLESCRIPT,
+            str(draft_id),
+            sender,
+            subject,
+            "\n".join(recipients),
+            "\n".join(attachment_paths),
+        )
+        actual_id, actual_sender, actual_recipient_text, actual_attachment_text = split_mail_evidence(evidence)
+        if int(actual_id) != draft_id:
+            raise RuntimeError("saved draft id mismatch")
+        if email.utils.parseaddr(actual_sender)[1].casefold() != sender:
+            raise RuntimeError("saved draft sender mismatch")
+        require_exact_saved_recipients(actual_recipient_text, set(recipients), "existing-standalone")
+        reported_attachments = require_reported_attachment_paths(actual_attachment_text, attachment_paths)
+    except Exception as exc:
+        fail(f"message-draft-attachment-failed:{exc}")
+    print(json.dumps({
+        "status": "attachments-added",
+        "draft_id": draft_id,
+        "to": recipients,
+        "sender": sender,
+        "subject": subject,
+        "attachments": reported_attachments,
+    }))
+
+
+def mark(args: argparse.Namespace) -> None:
+    record = mark_state(args.message_id, args.status, args.reason or "")
+    print(json.dumps({"status": record.get("status"), "message_id": args.message_id}))
+
+
+def claim(args: argparse.Namespace) -> None:
+    result = claim_state(args.message_id, args.operation_id)
+    print(json.dumps(result, sort_keys=True))
+
+
+def self_test(args: argparse.Namespace) -> None:
+    errors: list[str] = []
+    if (THREAD_MAX_AGE_DAYS, THREAD_MAX_MESSAGES, THREAD_CHAR_LIMIT) != (180, 20, 60_000):
+        errors.append("thread usage gate does not match the approved limits")
+    gate_sample = [
+        {"mail_id": 1, "body": "old" * 20_000, "body_truncated": False},
+        {"mail_id": 2, "body": "latest" * 10_000, "body_truncated": False},
+    ]
+    gated, gate_truncated, gate_omitted = apply_thread_character_gate(gate_sample, 0)
+    if len(json.dumps(gated, ensure_ascii=False)) > THREAD_CHAR_LIMIT:
+        errors.append("thread character gate exceeded its limit")
+    if not gated or gated[-1]["mail_id"] != 2:
+        errors.append("thread character gate did not preserve the latest message")
+    if not gate_truncated or gate_omitted < 1:
+        errors.append("thread character gate did not report omitted context")
+    if not has_outgoing_message_after(
+        [{"sender_address": "ivo@example.com", "message_date": 200}],
+        {"ivo@example.com"},
+        100,
+    ):
+        errors.append("sent-reply gate missed an outgoing message after the inbound message")
+    if has_outgoing_message_after(
+        [{"sender_address": "ivo@example.com", "message_date": 100}],
+        {"ivo@example.com"},
+        200,
+    ):
+        errors.append("sent-reply gate blocked a newer inbound message")
+    if has_outgoing_message_after(
+        [{"sender_address": "person@example.com", "message_date": 200}],
+        {"ivo@example.com"},
+        100,
+    ):
+        errors.append("sent-reply gate treated a newer inbound message as Ivo's reply")
+    for name, script in (("reply", REPLY_APPLESCRIPT), ("message draft", MESSAGE_DRAFT_APPLESCRIPT)):
+        if re.search(r"(?i)\bsend\b", script):
+            errors.append(f"{name} AppleScript contains a send token")
+    for name, script in (("reply", REPLY_APPLESCRIPT), ("message draft", MESSAGE_DRAFT_APPLESCRIPT)):
+        if re.search(r"(?i)\bactivate\b|visible\s*:\s*true", script):
+            errors.append(f"{name} AppleScript can foreground a compose window")
+    if "visible:false" not in MESSAGE_DRAFT_APPLESCRIPT.replace(" ", ""):
+        errors.append("message draft AppleScript is not explicitly hidden")
+    if "setvisibleoftheReplytofalse" not in REPLY_APPLESCRIPT.replace(" ", "").replace("\n", ""):
+        errors.append("reply draft AppleScript is not explicitly hidden")
+    label_sample = "[Codex draft - review before sending]\n\nHello"
+    if strip_internal_draft_labels(label_sample) != "Hello":
+        errors.append("internal draft label stripping failed")
+    try:
+        parsed_evidence = split_mail_evidence("draft\x1fsender\x1frecipient\x1f\n")
+        if parsed_evidence != ("draft", "sender", "recipient", ""):
+            errors.append("AppleScript evidence parser did not preserve an empty attachment field")
+    except Exception as exc:
+        errors.append(f"AppleScript evidence parser failed: {exc}")
+    with tempfile.TemporaryDirectory() as tmp:
+        test_lock = Path(tmp) / "state.lock"
+        first = test_lock.open("a+")
+        second = test_lock.open("a+")
+        try:
+            fcntl.flock(first.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            try:
+                fcntl.flock(second.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                errors.append("flock allowed an overlapping state writer")
+            except BlockingIOError:
+                pass
+        finally:
+            fcntl.flock(first.fileno(), fcntl.LOCK_UN)
+            first.close()
+            second.close()
+        try:
+            attachment = Path(tmp) / "proof.txt"
+            attachment.write_bytes(b"proof bytes")
+            mime = email.message.EmailMessage()
+            mime["From"] = "Alice <alice@example.com>"
+            mime["To"] = "Ivo <ivo@example.com>"
+            mime["Subject"] = "Re: Proof"
+            mime["In-Reply-To"] = "<inbound@example.com>"
+            mime.set_content("Proof body")
+            mime.add_attachment(attachment.read_bytes(), maintype="text", subtype="plain", filename="Proof.txt")
+            raw_mime = mime.as_bytes()
+            emlx = Path(tmp) / "message.emlx"
+            emlx.write_bytes(str(len(raw_mime)).encode("ascii") + b"\n" + raw_mime)
+            resolution_payload = {
+                "state_key": "rfc:<inbound@example.com>",
+                "operation_id": "self-test-operation",
+                "expected_updated_at": 1,
+                "message_rowid": 2,
+                "mailbox_kind": "drafts",
+                "sender": "alice@example.com",
+                "to": ["ivo@example.com"],
+                "subject": "Re: Proof",
+                "attachments": [str(attachment)],
+                "actor": "self-test",
+                "verified_at": "2026-08-04T00:00:00Z",
+            }
+            typed_payload = validate_resolution_payload(resolution_payload)
+            evidence = verify_resolution_evidence(
+                typed_payload,
+                {"rowid": 2, "mailbox": "apple-mail://account/Drafts", "emlx": str(emlx)},
+                {"expected_message_id": "<inbound@example.com>"},
+            )
+            if evidence["attachments"][0]["byte_length"] != len(b"proof bytes"):
+                errors.append("manual-review MIME attachment length verification failed")
+            if evidence["attachments"][0]["sha256"] != hashlib.sha256(b"proof bytes").hexdigest():
+                errors.append("manual-review MIME attachment hash verification failed")
+
+            external_mailbox = Path(tmp) / "External.mbox"
+            external_messages = external_mailbox / "Messages"
+            external_messages.mkdir(parents=True)
+            external_file = external_mailbox / "Attachments" / "8096" / "0" / "Proof.txt"
+            external_file.parent.mkdir(parents=True)
+            external_file.write_bytes(b"proof bytes")
+            external_mime = email.message.EmailMessage()
+            external_mime["From"] = "Alice <alice@example.com>"
+            external_mime["To"] = "Ivo <ivo@example.com>"
+            external_mime["Subject"] = "Re: External"
+            external_mime["In-Reply-To"] = "<inbound@example.com>"
+            external_mime.set_content("External proof body")
+            external_mime.add_attachment(b"", maintype="application", subtype="octet-stream", filename="Proof.txt")
+            external_raw = external_mime.as_bytes()
+            external_emlx = external_messages / "8096.partial.emlx"
+            external_emlx.write_bytes(str(len(external_raw)).encode("ascii") + b"\n" + external_raw)
+            external_payload = {
+                **resolution_payload,
+                "operation_id": "self-test-external-operation",
+                "message_rowid": 8096,
+                "mailbox_kind": "sent",
+                "subject": "Re: External",
+            }
+            external_typed_payload = validate_resolution_payload(external_payload)
+            external_evidence = verify_resolution_evidence(
+                external_typed_payload,
+                {"rowid": 8096, "mailbox": "apple-mail://account/Sent", "emlx": str(external_emlx)},
+                {"expected_message_id": "<inbound@example.com>"},
+            )
+            if external_evidence["attachments"][0]["sha256"] != hashlib.sha256(b"proof bytes").hexdigest():
+                errors.append("externalized MIME attachment verification failed")
+        except Exception as exc:
+            errors.append(f"manual-review MIME evidence verification failed: {exc}")
+    html_sample = "<html><body><p>Hello<br>World</p></body></html>"
+    if "Hello" not in html_to_text(html_sample):
+        errors.append("HTML body extraction failed")
+    synthetic = MessageRecord(
+        mail_id=1,
+        date_received=1,
+        read=False,
+        flags=0,
+        deleted=False,
+        junk=False,
+        mailbox_url="imap://example/INBOX",
+        sender_address="no-reply@example.com",
+        sender_name="Example",
+        subject="Update",
+        message_id_header="<example@example.com>",
+        emlx_path=None,
+        headers={},
+        body="Hello",
+        body_truncated=False,
+        state_key="rfc:<example@example.com>",
+    )
+    if deterministic_skip_reason(synthetic) != "automated-sender:no-reply":
+        errors.append("automated sender prefilter failed")
+    list_header = MessageRecord(
+        mail_id=2,
+        date_received=1,
+        read=False,
+        flags=0,
+        deleted=False,
+        junk=False,
+        mailbox_url="imap://example/INBOX",
+        sender_address="person@example.com",
+        sender_name="Person",
+        subject="Update",
+        message_id_header="<example2@example.com>",
+        emlx_path=None,
+        headers={"list-unsubscribe": "<mailto:unsubscribe@example.com>"},
+        body="Hello",
+        body_truncated=False,
+        state_key="rfc:<example2@example.com>",
+    )
+    if deterministic_skip_reason(list_header) != "bulk-header:list-unsubscribe":
+        errors.append("list-unsubscribe prefilter failed")
+    x_mailer = MessageRecord(
+        mail_id=12,
+        date_received=1,
+        read=False,
+        flags=0,
+        deleted=False,
+        junk=False,
+        mailbox_url="imap://example/INBOX",
+        sender_address="person@example.com",
+        sender_name="Person",
+        subject="Hello",
+        message_id_header="<example12@example.com>",
+        emlx_path=None,
+        headers={"x-mailer": "Apple Mail"},
+        body="Hi Ivo, could you reply?",
+        body_truncated=False,
+        state_key="rfc:<example12@example.com>",
+        reply_from="ivo@example.com",
+    )
+    if deterministic_skip_reason(x_mailer) is not None:
+        errors.append("x-mailer incorrectly classified a personal message as automation")
+    auto_submitted = MessageRecord(
+        mail_id=3,
+        date_received=1,
+        read=False,
+        flags=0,
+        deleted=False,
+        junk=False,
+        mailbox_url="imap://example/INBOX",
+        sender_address="person@example.com",
+        sender_name="Person",
+        subject="Update",
+        message_id_header="<example3@example.com>",
+        emlx_path=None,
+        headers={"auto-submitted": "auto-replied"},
+        body="Hello",
+        body_truncated=False,
+        state_key="rfc:<example3@example.com>",
+    )
+    if deterministic_skip_reason(auto_submitted) != "auto-submitted":
+        errors.append("auto-submitted prefilter failed")
+    precedence = MessageRecord(
+        mail_id=4,
+        date_received=1,
+        read=False,
+        flags=0,
+        deleted=False,
+        junk=False,
+        mailbox_url="imap://example/INBOX",
+        sender_address="person@example.com",
+        sender_name="Person",
+        subject="Update",
+        message_id_header="<example4@example.com>",
+        emlx_path=None,
+        headers={"precedence": "bulk"},
+        body="Hello",
+        body_truncated=False,
+        state_key="rfc:<example4@example.com>",
+    )
+    if deterministic_skip_reason(precedence) != "precedence:bulk":
+        errors.append("precedence prefilter failed")
+    no_body = MessageRecord(
+        mail_id=5,
+        date_received=1,
+        read=False,
+        flags=0,
+        deleted=False,
+        junk=False,
+        mailbox_url="imap://example/INBOX",
+        sender_address="person@example.com",
+        sender_name="Person",
+        subject="Update",
+        message_id_header="<example5@example.com>",
+        emlx_path=None,
+        headers={},
+        body="",
+        body_truncated=False,
+        state_key="rfc:<example5@example.com>",
+    )
+    if deterministic_skip_reason(no_body) != "no-readable-body":
+        errors.append("empty body prefilter failed")
+    object_only = MessageRecord(
+        mail_id=6,
+        date_received=1,
+        read=False,
+        flags=0,
+        deleted=False,
+        junk=True,
+        mailbox_url="apple-mail://iCloud/Junk",
+        sender_address="spam@example.com",
+        sender_name="Spam",
+        subject="Remote content only",
+        message_id_header="<example6@example.com>",
+        emlx_path=None,
+        headers={},
+        body="\ufffc \n\t",
+        body_truncated=False,
+        state_key="rfc:<example6@example.com>",
+    )
+    if junk_delete_reason(object_only) != "junk-no-meaningful-text":
+        errors.append("object-only junk deletion detection failed")
+    text_junk = MessageRecord(
+        mail_id=7,
+        date_received=1,
+        read=False,
+        flags=0,
+        deleted=False,
+        junk=True,
+        mailbox_url="apple-mail://iCloud/Junk",
+        sender_address="person@example.com",
+        sender_name="Person",
+        subject="Real looking message",
+        message_id_header="<example7@example.com>",
+        emlx_path=None,
+        headers={},
+        body="Hi Ivo, this may be a real message.",
+        body_truncated=False,
+        state_key="rfc:<example7@example.com>",
+    )
+    if junk_delete_reason(text_junk) is not None:
+        errors.append("text-bearing junk should require review")
+    ad_junk = MessageRecord(
+        mail_id=10,
+        date_received=1,
+        read=False,
+        flags=0,
+        deleted=False,
+        junk=True,
+        mailbox_url="apple-mail://iCloud/Junk",
+        sender_address="postmaster@example-marketing.com",
+        sender_name="Marketing",
+        subject="Get 50% Off Today",
+        message_id_header="<example10@example.com>",
+        emlx_path=None,
+        headers={},
+        body="This is an advertisement. You are receiving this message because you opted in. Unsubscribe",
+        body_truncated=False,
+        state_key="rfc:<example10@example.com>",
+    )
+    if junk_delete_reason(ad_junk) != "junk-advertisement-unsubscribe":
+        errors.append("junk advertisement deletion detection failed")
+    normalized_junk_script = re.sub(r"\s+", " ", JUNK_READ_DELETE_APPLESCRIPT).lower()
+    read_index = normalized_junk_script.find("set read status of m to true")
+    delete_index = normalized_junk_script.find("delete m")
+    if read_index < 0 or delete_index < 0 or read_index > delete_index:
+        errors.append("junk deletion does not mark messages read first")
+    normalized_move_script = re.sub(r"\s+", " ", JUNK_MOVE_TO_INBOX_APPLESCRIPT).lower()
+    if 'whose name is "inbox"' not in normalized_move_script:
+        errors.append("junk review routing does not target the account Inbox")
+    if "set junk mail status of m to false" not in normalized_move_script:
+        errors.append("junk review routing does not clear junk status")
+    if "message was not found in account inbox after move" not in normalized_move_script:
+        errors.append("junk review routing does not verify the move")
+    mail_junk_only = MessageRecord(
+        mail_id=8,
+        date_received=1,
+        read=False,
+        flags=0,
+        deleted=False,
+        junk=True,
+        mailbox_url="imap://example/INBOX",
+        sender_address="person@example.com",
+        sender_name="Person",
+        subject="Update",
+        message_id_header="<example6@example.com>",
+        emlx_path=None,
+        headers={},
+        body="Hello",
+        body_truncated=False,
+        state_key="rfc:<example6@example.com>",
+    )
+    if obvious_junk_reason(mail_junk_only) is not None:
+        errors.append("Mail junk status alone should not trigger deletion")
+    spam_header = MessageRecord(
+        mail_id=9,
+        date_received=1,
+        read=False,
+        flags=0,
+        deleted=False,
+        junk=False,
+        mailbox_url="imap://example/INBOX",
+        sender_address="person@example.com",
+        sender_name="Person",
+        subject="Update",
+        message_id_header="<example7@example.com>",
+        emlx_path=None,
+        headers={"x-spam-flag": "YES"},
+        body="Hello",
+        body_truncated=False,
+        state_key="rfc:<example7@example.com>",
+    )
+    if obvious_junk_reason(spam_header) != "spam-header:x-spam-flag":
+        errors.append("spam header detection failed")
+    threaded_spam_flagged = MessageRecord(
+        mail_id=11,
+        date_received=1,
+        read=False,
+        flags=0,
+        deleted=False,
+        junk=True,
+        mailbox_url="apple-mail://iCloud/Junk",
+        sender_address="schlichtung@example-ombudsman.de",
+        sender_name="Ombudsman",
+        subject="Automatic reply: case 5696224",
+        message_id_header="<example11@example.com>",
+        emlx_path=None,
+        headers={
+            "x-spam-flag": "yes",
+            "in-reply-to": "<sent-by-you@icloud.example.com>",
+            "references": "<sent-by-you@icloud.example.com>",
+        },
+        body="Vielen Dank fuer Ihre Nachricht.",
+        body_truncated=False,
+        state_key="rfc:<example11@example.com>",
+    )
+    if junk_delete_reason(threaded_spam_flagged) is not None:
+        errors.append("reply to a message Ivo sent must never be deleted from Junk")
+    if junk_protect_reason(threaded_spam_flagged) != "protected-reply-to-sent-mail:in-reply-to":
+        errors.append("threading protection did not report its reason")
+    empty_body_threaded = replace(threaded_spam_flagged, body="￼ \n\t")
+    if junk_delete_reason(empty_body_threaded) is not None:
+        errors.append("threading protection must outrank every junk deletion rule")
+    unthreaded_spam = replace(threaded_spam_flagged, headers={"x-spam-flag": "yes"})
+    if junk_delete_reason(unthreaded_spam) != "spam-header:x-spam-flag":
+        errors.append("unsolicited spam-flagged junk should still be deleted")
+    blank_threading = replace(threaded_spam_flagged, headers={"x-spam-flag": "yes", "in-reply-to": "  "})
+    if junk_delete_reason(blank_threading) != "spam-header:x-spam-flag":
+        errors.append("empty threading header must not protect a message")
+    try:
+        parsed = source_message_from_text("From: Person <person@example.com>\nSubject: Hi\n\nHello")
+        if str(parsed.get("subject")) != "Hi":
+            errors.append("email parser failed")
+    except Exception as exc:
+        errors.append(f"email parser failed: {exc}")
+    if errors:
+        for error in errors:
+            print(error, file=sys.stderr)
+        raise SystemExit(1)
+    print("self-test ok")
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Apple Mail draft-only assistant")
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    scan_parser = sub.add_parser("scan")
+    scan_parser.add_argument("--json", action="store_true", help="output JSON")
+    scan_parser.add_argument("--pretty", action="store_true")
+    scan_parser.add_argument("--limit", type=int, default=20)
+    scan_parser.add_argument("--max-age-days", type=int, default=7)
+    scan_parser.add_argument("--all-current", action="store_true", help="ignore age cutoff for setup run")
+    scan_parser.add_argument("--body-char-limit", type=int, default=BODY_CHAR_LIMIT_DEFAULT)
+    scan_parser.add_argument("--delete-obvious-junk", action="store_true", help="deprecated; accepted for compatibility, no deletion is performed")
+    scan_parser.set_defaults(func=lambda args: (setattr(args, "max_age_days", None) if args.all_current else None, scan(args)))
+
+    junk_parser = sub.add_parser("sort-junk", aliases=["clean-junk"])
+    junk_parser.add_argument("--json", action="store_true", help="output JSON")
+    junk_parser.add_argument("--pretty", action="store_true")
+    junk_parser.add_argument("--limit", type=int, default=50)
+    junk_parser.add_argument("--body-char-limit", type=int, default=BODY_CHAR_LIMIT_DEFAULT)
+    junk_parser.add_argument("--dry-run", action="store_true")
+    junk_parser.set_defaults(func=sort_junk)
+
+    draft_parser = sub.add_parser("create-draft")
+    draft_parser.add_argument("--payload", required=True)
+    draft_parser.set_defaults(func=create_draft)
+
+    message_draft_parser = sub.add_parser("create-message-draft")
+    message_draft_parser.add_argument("--payload", required=True)
+    message_draft_parser.set_defaults(func=create_message_draft)
+
+    add_attachments_parser = sub.add_parser("add-message-draft-attachments")
+    add_attachments_parser.add_argument("--payload", required=True)
+    add_attachments_parser.set_defaults(func=add_message_draft_attachments)
+
+    resolve_parser = sub.add_parser("resolve-manual-review")
+    resolve_parser.add_argument("--payload", required=True)
+    resolve_parser.set_defaults(func=resolve_manual_review)
+
+    mark_parser = sub.add_parser("mark")
+    mark_parser.add_argument("--message-id", required=True)
+    mark_parser.add_argument("--status", required=True, choices=["skipped", "failed"])
+    mark_parser.add_argument("--reason", default="")
+    mark_parser.set_defaults(func=mark)
+
+    claim_parser = sub.add_parser("claim")
+    claim_parser.add_argument("--message-id", required=True)
+    claim_parser.add_argument("--operation-id", required=True)
+    claim_parser.set_defaults(func=claim)
+
+    self_parser = sub.add_parser("self-test")
+    self_parser.set_defaults(func=self_test)
+
+    args = parser.parse_args()
+    result = args.func(args)
+    if isinstance(result, tuple):
+        return
+
+
+if __name__ == "__main__":
+    main()

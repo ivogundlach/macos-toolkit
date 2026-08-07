@@ -1,0 +1,84 @@
+#!/usr/bin/env bash
+# memory-transcript-distill — distill Claude/Codex session transcripts into
+# durable memory captures (~/.memory/raw/chat/distilled/). Scheduled daily at
+# 16:20 by com.ivogundlach.transcript-distill so the 17:00 semantic index build
+# picks new captures up the same day. Safe to run manually.
+#
+#   usage: memory-transcript-distill [--dry-run | --status | --selftest]
+#
+# Readiness: offline or agy-not-ready runs defer silently (rc 75) — the daily
+# schedule self-heals. Never opens a browser. Single-instance lock.
+set -uo pipefail
+export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
+
+STATE="$HOME/.local/state/transcript-distill"
+LOCK="$STATE/.lock"
+LOG_DIR="$STATE/logs"
+TOOL="$HOME/.memory/tools/transcript_distill.py"
+DEFER_RC=75
+
+mkdir -p "$STATE" "$LOG_DIR"
+log() { printf '%s memory-transcript-distill: %s\n' "$(date +%Y-%m-%dT%H:%M:%S%z)" "$*"; }
+
+# passthrough modes that need no lock or network
+case "${1:-}" in
+  --status|--selftest) exec python3 "$TOOL" "$1" ;;
+  # A probe must never fall through to the real pipeline below: an unrecognised
+  # flag acquires the lock, hits the network and calls agy, and transcript_distill
+  # treats anything that is not --dry-run as a REAL run. The registry health check
+  # runs `--version`, which therefore started a real distill and was SIGKILLed at
+  # 5s (rc=124) on every scan, churning the lock. Answer probes here, cheaply.
+  --version|-V) echo "memory-transcript-distill (Claude/Codex transcripts -> memory captures)"; exit 0 ;;
+  --help|-h)    sed -n '2,9p' "$0" | sed 's/^#\{1,\} \{0,1\}//'; exit 0 ;;
+esac
+
+[ -f "$TOOL" ] || { log "ERROR: $TOOL missing"; exit 1; }
+command -v agy >/dev/null || { log "ERROR: agy CLI not found"; exit 127; }
+
+# Self-healing lock: a SIGKILLed run can never fire its EXIT trap, so a bare
+# mkdir lock would deadlock the schedule forever. Stamp the owner PID inside;
+# reclaim when the owner is gone.
+acquire_lock() {
+  if mkdir "$LOCK" 2>/dev/null; then
+    echo $$ > "$LOCK/pid"
+    return 0
+  fi
+  owner="$(cat "$LOCK/pid" 2>/dev/null || true)"
+  if [ -n "$owner" ] && kill -0 "$owner" 2>/dev/null; then
+    return 1                                  # genuinely running
+  fi
+  log "reclaiming stale lock (owner ${owner:-unknown} not running)"
+  rm -rf "$LOCK"
+  mkdir "$LOCK" 2>/dev/null && echo $$ > "$LOCK/pid"
+}
+if ! acquire_lock; then
+  log "another run holds the lock; exiting"; exit 0
+fi
+trap 'rm -rf "$LOCK" 2>/dev/null || true' EXIT INT TERM
+
+# bound log growth
+for lf in "$LOG_DIR/launchd.log" "$LOG_DIR/launchd.err"; do
+  [ -f "$lf" ] && [ "$(stat -f%z "$lf" 2>/dev/null || echo 0)" -gt 2000000 ] && : > "$lf"
+done
+
+# readiness: offline or agy dead -> defer quietly (daily schedule retries)
+if ! curl -fsS -m 6 -o /dev/null https://www.gstatic.com/generate_204 2>/dev/null; then
+  log "OFFLINE: deferring"; exit "$DEFER_RC"
+fi
+probe="$(mktemp)"
+( BROWSER=/usr/bin/false agy models </dev/null >"$probe" 2>&1 ) & p=$!
+( sleep 40; kill -KILL "$p" 2>/dev/null ) >/dev/null 2>&1 & w=$!
+wait "$p" 2>/dev/null; rc=$?
+kill "$w" 2>/dev/null; wait "$w" 2>/dev/null
+if [ "$rc" -ne 0 ] || ! grep -qiE 'Gemini|Claude|GPT' "$probe" 2>/dev/null; then
+  rm -f "$probe"
+  log "agy not ready (rc=$rc): deferring; if persistent run semantic-agy-reauth"
+  exit "$DEFER_RC"
+fi
+rm -f "$probe"
+
+log "starting distill run"
+BROWSER=/usr/bin/false python3 "$TOOL" "$@"
+rc=$?
+log "done rc=$rc"
+exit "$rc"

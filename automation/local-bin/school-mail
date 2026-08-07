@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# school-mail — list recent UAH / Canvas (instructure) email via the gws CLI.
+#
+# Wraps the recurring Gmail query for school mail so the JSON params never get
+# retyped. Ties into the UAH school sync workflow.
+#
+# Usage:
+#   school-mail              # last 180 days, up to 15 messages
+#   school-mail 30           # last 30 days
+#   school-mail 30 50        # last 30 days, up to 50 messages
+#   SCHOOL_MAIL_Q='from:uah.edu' school-mail 30   # override the query body
+#
+# Requires: gws (Google Workspace CLI), authenticated.
+set -euo pipefail
+
+command -v gws >/dev/null || { echo "school-mail: gws CLI not found on PATH" >&2; exit 1; }
+
+DAYS="${1:-180}"
+MAX="${2:-15}"
+Q="${SCHOOL_MAIL_Q:-from:instructure.com OR uah.edu}"
+QUERY="$Q newer_than:${DAYS}d"
+
+gws gmail users messages list \
+  --params "{\"userId\":\"me\",\"maxResults\":${MAX},\"q\":\"${QUERY}\"}"

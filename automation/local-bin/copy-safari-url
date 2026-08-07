@@ -1,0 +1,9 @@
+#!/bin/bash
+# copy-safari-url — copy the front Safari tab's URL to the clipboard.
+# Bound to ⇧⌘C (Safari-only) via skhd: ~/.config/skhd/skhdrc
+# Idempotent, no args. The clipboard 'set' must sit OUTSIDE the Safari
+# tell-block or osascript routes it to Safari and silently no-ops.
+/usr/bin/osascript <<'OSA'
+tell application "Safari" to set theURL to URL of current tab of front window
+set the clipboard to theURL
+OSA

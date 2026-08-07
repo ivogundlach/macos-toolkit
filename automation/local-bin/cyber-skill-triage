@@ -1,0 +1,283 @@
+#!/usr/bin/env ruby
+# Usage:
+#   cyber-skill-triage summary
+#   cyber-skill-triage list "retire: OT/ICS"
+#   cyber-skill-triage personal-summary
+#   cyber-skill-triage personal-list "retire: outside stated scope"
+#   cyber-skill-triage minimal-summary
+#   cyber-skill-triage minimal-list "retire: not Mac/Docker personal security"
+#   cyber-skill-triage retire "retire: OT/ICS" --yes
+#   cyber-skill-triage personal-retire "retire: outside stated scope" --yes
+#   cyber-skill-triage minimal-retire "retire: not Mac/Docker personal security" --yes
+#
+# Classifies local cybersecurity skills and optionally moves a selected bucket
+# into a dated retired-skills archive. Defaults are read-only.
+
+require "fileutils"
+require "yaml"
+
+ROOT = "/Users/YOUR_USERNAME/.codex/skills/cybersecurity-skills"
+ARCHIVE_ROOT = "/Users/YOUR_USERNAME/.codex/retired-skills/cybersecurity-skills"
+
+PERSONAL_COMPUTER_SECURITY_SKILLS = %w[
+  analyzing-email-headers-for-phishing-investigation
+  analyzing-malicious-url-with-urlscan
+  configuring-host-based-intrusion-detection
+  configuring-pfsense-firewall-rules
+  configuring-tls-1-3-for-secure-communications
+  configuring-windows-defender-advanced-settings
+  configuring-windows-event-logging-for-detection
+  deploying-osquery-for-endpoint-monitoring
+  detecting-malicious-scheduled-tasks-with-sysmon
+  detecting-port-scanning-with-fail2ban
+  hardening-docker-daemon-configuration
+  hardening-linux-endpoint-with-cis-benchmark
+  hardening-windows-endpoint-with-cis-benchmark
+  implementing-application-whitelisting-with-applocker
+  implementing-endpoint-detection-with-wazuh
+  performing-endpoint-vulnerability-remediation
+  performing-ssl-certificate-lifecycle-management
+  performing-ssl-tls-security-assessment
+  scanning-network-with-nmap-advanced
+  testing-ransomware-recovery-procedures
+  validating-backup-integrity-for-recovery
+].freeze
+
+MINIMAL_PERSONAL_SECURITY_SKILLS = %w[
+  analyzing-email-headers-for-phishing-investigation
+  analyzing-malicious-url-with-urlscan
+  configuring-host-based-intrusion-detection
+  deploying-osquery-for-endpoint-monitoring
+  detecting-malicious-npm-packages
+  detecting-port-scanning-with-fail2ban
+  eradicating-malware-from-infected-systems
+  hardening-docker-daemon-configuration
+  performing-container-security-scanning-with-trivy
+  performing-endpoint-vulnerability-remediation
+  performing-malware-hash-enrichment-with-virustotal
+  performing-ssl-tls-security-assessment
+  recovering-from-ransomware-attack
+  scanning-container-images-with-grype
+  scanning-docker-images-with-trivy
+  scanning-network-with-nmap-advanced
+  testing-ransomware-recovery-procedures
+  validating-backup-integrity-for-recovery
+].freeze
+
+def front_matter(path)
+  text = File.read(path)
+  match = text.match(/\A---\n(.*?)\n---/m)
+  match ? YAML.load(match[1]) : {}
+rescue StandardError
+  {}
+end
+
+def classify(name, subdomain, tags)
+  hay = [name, subdomain, tags.join(" ")].join(" ")
+
+  case
+  when name.match?(/\bmcp\b/)
+    "retire: MCP"
+  when subdomain.match?(/ai-security/) || hay.match?(/\b(llm|prompt|rag|agentic|embedding|guardrails|garak|promptfoo)\b/)
+    "keep: AI security"
+  when subdomain.match?(/\A(?:ot-ics-security|ot-security)\z/) || hay.match?(/\b(ot|ics|scada|plc|s7comm|claroty|oil-gas|power-grid|historian)\b/)
+    "retire: OT/ICS"
+  when subdomain.match?(/blockchain/) || hay.match?(/\b(ethereum|smart-contract|foundry)\b/)
+    "retire: blockchain/web3"
+  when name.match?(/\A(?:abusing|attacking|coercing|relaying|post-exploiting)-/) ||
+       name.match?(/\A(?:building|operating)-.*\bc2\b/) ||
+       name.match?(/\Aexploiting-(?:active-directory|adcs|constrained-delegation|kerberoasting|ms17|nopac|smb|zerologon|vulnerabilities-with-metasploit)/) ||
+       name.match?(/\Aperforming-(?:cloud-penetration-testing-with-pacu|credential-access|initial-access|kerberoasting-attack|lateral-movement-with|packet-injection-attack|red-team-phishing|red-team-with|ssl-stripping-attack|vlan-hopping-attack|wifi-password-cracking)/) ||
+       name.match?(/\Aconducting-(?:domain-persistence|pass-the-ticket|social-engineering|spearphishing|full-scope-red-team)/) ||
+       name.match?(/\A(?:operating-sliver-c2|operating-havoc-c2)\z/) ||
+       name.match?(/\b(?:evilginx|coercer|petitpotam|wmiexec|eternalblue|zerologon|nopac|pacu|lazagne)\b/)
+    "retire: offensive ops"
+  when name.match?(/\Aexploiting-/)
+    "review: exploit-specific app/network"
+  when subdomain.match?(/red-team|offensive-security/) || name.match?(/\b(red-team|attack-simulation|adversary-simulation)\b/)
+    "review: red-team/adversary emulation"
+  when subdomain.match?(/wireless/) || hay.match?(/\b(wireless|wifi|kismet)\b/)
+    "retire: wireless"
+  when subdomain.match?(/hardware|firmware/) || hay.match?(/\b(uefi|firmware|hsm|tpm|chipsec|binwalk|hardware)\b/)
+    "review: hardware/firmware/HSM"
+  when hay.match?(/\b(malware|ransomware-encryption|rootkit|bootkit|dnspy|ghidra|jadx|frida|apktool|objection|pe-studio|upx|cuckoo|any-run|yara)\b/) && !subdomain.match?(/ransomware-defense/)
+    "review: malware/reversing"
+  when hay.match?(/\b(splunk|qradar|sentinel|crowdstrike|sailpoint|zscaler|defectdojo|nessus|misp|opencti|timesketch|plaso|cellebrite|autopsy|kape|eric-zimmerman|hindsight|autoruns|volatility|volatility3|wireshark|tshark|zeek|snort|suricata|pfSense|duo|cloudflare-access)\b/i)
+    "review: vendor/tool-specific enterprise"
+  when subdomain.match?(/compliance|governance|privacy/) || hay.match?(/\b(cmmc|soc2|nist-csf|privacy-impact|risk-assessment|cis-benchmark)\b/)
+    "review: compliance/governance"
+  when subdomain.match?(/mobile-security/) || hay.match?(/\b(android|ios|mobile)\b/)
+    "review: mobile security"
+  when subdomain.match?(/api|web-application|application-security/) || hay.match?(/\b(api|graphql|oauth|jwt|xss|sql-injection|ssrf|cors|xxe|headers|websocket|owasp)\b/)
+    "keep: app/api/web security"
+  when subdomain.match?(/cloud|container|devsecops|supply-chain|zero-trust/) || hay.match?(/\b(aws|azure|gcp|kubernetes|docker|container|terraform|github-actions|slsa|sigstore|trivy|grype|kubesec|serverless|lambda|s3|iam|iac)\b/)
+    "keep: cloud/container/devsecops"
+  when subdomain.match?(/identity|access-management|zero-trust/) || hay.match?(/\b(oauth|saml|iam|entra|ldap|mfa|service-account|privileged-account)\b/)
+    "keep: identity/access"
+  when subdomain.match?(/vulnerability-management/) || hay.match?(/\b(vulnerability|cvss|ssvc|sbom|sca|remediation)\b/)
+    "keep: vuln management"
+  when subdomain.match?(/incident-response|digital-forensics|soc|threat|endpoint|network|phishing|ransomware|deception|security-operations|threat-detection/)
+    "review: defensive operations"
+  else
+    "review: uncategorized"
+  end
+end
+
+def rows
+  Dir.glob("#{ROOT}/*/SKILL.md").sort.map do |path|
+    meta = front_matter(path)
+    name = File.basename(File.dirname(path))
+    md = meta.fetch("metadata", {})
+    subdomain = md.fetch("subdomain", "").to_s
+    tags = Array(md.fetch("tags", []))
+    {
+      bucket: classify(name, subdomain, tags),
+      name: name,
+      path: File.dirname(path),
+      subdomain: subdomain,
+      tags: tags
+    }
+  end
+end
+
+def personal_bucket(row)
+  name = row[:name]
+  subdomain = row[:subdomain]
+  tags = row[:tags].join(" ")
+  hay = [name, subdomain, tags].join(" ")
+
+  return "retire: MCP" if name.match?(/\bmcp\b/)
+
+  if subdomain.match?(/ai-security/) || hay.match?(/\b(llm|prompt|rag|agentic|embedding|guardrails|garak|promptfoo)\b/)
+    return "keep: personal AI security"
+  end
+
+  if PERSONAL_COMPUTER_SECURITY_SKILLS.include?(name)
+    return "keep: personal computer/network security"
+  end
+
+  if subdomain.match?(/phishing-defense|ransomware-defense|endpoint-security|digital-forensics|network-security/) ||
+     hay.match?(/\b(malware|ransomware|forensics|packet|wireshark|tshark|zeek|open-port|vulnerability-scanning)\b/)
+    return "review: possible personal utility"
+  end
+
+  "retire: outside stated scope"
+end
+
+def minimal_bucket(row)
+  name = row[:name]
+  subdomain = row[:subdomain]
+  tags = row[:tags].join(" ")
+  hay = [name, subdomain, tags].join(" ")
+
+  if subdomain.match?(/ai-security/) || hay.match?(/\b(llm|prompt|rag|agentic|embedding|guardrails|garak|promptfoo)\b/)
+    return "keep: AI security"
+  end
+
+  return "keep: Mac/Docker personal security" if MINIMAL_PERSONAL_SECURITY_SKILLS.include?(name)
+
+  "retire: not Mac/Docker personal security"
+end
+
+def usage
+  warn "Usage: cyber-skill-triage summary | list BUCKET | retire BUCKET --yes | personal-summary | personal-list BUCKET | personal-retire BUCKET --yes | minimal-summary | minimal-list BUCKET | minimal-retire BUCKET --yes"
+  exit 2
+end
+
+command = ARGV.shift || "summary"
+all = rows
+
+case command
+when "summary"
+  all.group_by { |row| row[:bucket] }
+     .sort_by { |bucket, grouped| [bucket.start_with?("keep") ? 0 : bucket.start_with?("review") ? 1 : 2, bucket] }
+     .each { |bucket, grouped| puts "#{grouped.size}\t#{bucket}" }
+when "personal-summary"
+  all.group_by { |row| personal_bucket(row) }
+     .sort_by { |bucket, grouped| [bucket.start_with?("keep") ? 0 : bucket.start_with?("review") ? 1 : 2, bucket] }
+     .each { |bucket, grouped| puts "#{grouped.size}\t#{bucket}" }
+when "minimal-summary"
+  all.group_by { |row| minimal_bucket(row) }
+     .sort_by { |bucket, grouped| [bucket.start_with?("keep") ? 0 : bucket.start_with?("review") ? 1 : 2, bucket] }
+     .each { |bucket, grouped| puts "#{grouped.size}\t#{bucket}" }
+when "list"
+  bucket = ARGV.join(" ")
+  usage if bucket.empty?
+  selected = all.select { |row| row[:bucket] == bucket }
+  abort "No skills match bucket: #{bucket}" if selected.empty?
+  selected.each { |row| puts "#{row[:name]}\t#{row[:subdomain]}" }
+when "personal-list"
+  bucket = ARGV.join(" ")
+  usage if bucket.empty?
+  selected = all.select { |row| personal_bucket(row) == bucket }
+  abort "No skills match bucket: #{bucket}" if selected.empty?
+  selected.each { |row| puts "#{row[:name]}\t#{row[:subdomain]}" }
+when "minimal-list"
+  bucket = ARGV.join(" ")
+  usage if bucket.empty?
+  selected = all.select { |row| minimal_bucket(row) == bucket }
+  abort "No skills match bucket: #{bucket}" if selected.empty?
+  selected.each { |row| puts "#{row[:name]}\t#{row[:subdomain]}" }
+when "retire"
+  bucket_parts = ARGV.dup
+  confirmed = bucket_parts.delete("--yes")
+  usage unless confirmed
+  bucket = bucket_parts.join(" ")
+  usage if bucket.empty?
+  selected = all.select { |row| row[:bucket] == bucket }
+  abort "No skills match bucket: #{bucket}" if selected.empty?
+  stamp = Time.now.strftime("%Y-%m-%d")
+  dest_root = File.join(ARCHIVE_ROOT, stamp, bucket.gsub(%r{[^A-Za-z0-9._-]+}, "-").gsub(/^-|-$/, ""))
+  FileUtils.mkdir_p(dest_root)
+  selected.each do |row|
+    dest = File.join(dest_root, row[:name])
+    if File.exist?(dest)
+      warn "Already archived, skipping: #{row[:name]}"
+      next
+    end
+    FileUtils.mv(row[:path], dest)
+    puts "retired\t#{row[:name]}\t#{dest}"
+  end
+when "personal-retire"
+  bucket_parts = ARGV.dup
+  confirmed = bucket_parts.delete("--yes")
+  usage unless confirmed
+  bucket = bucket_parts.join(" ")
+  usage if bucket.empty?
+  selected = all.select { |row| personal_bucket(row) == bucket }
+  abort "No skills match bucket: #{bucket}" if selected.empty?
+  stamp = Time.now.strftime("%Y-%m-%d")
+  dest_root = File.join(ARCHIVE_ROOT, stamp, bucket.gsub(%r{[^A-Za-z0-9._-]+}, "-").gsub(/^-|-$/, ""))
+  FileUtils.mkdir_p(dest_root)
+  selected.each do |row|
+    dest = File.join(dest_root, row[:name])
+    if File.exist?(dest)
+      warn "Already archived, skipping: #{row[:name]}"
+      next
+    end
+    FileUtils.mv(row[:path], dest)
+    puts "retired\t#{row[:name]}\t#{dest}"
+  end
+when "minimal-retire"
+  bucket_parts = ARGV.dup
+  confirmed = bucket_parts.delete("--yes")
+  usage unless confirmed
+  bucket = bucket_parts.join(" ")
+  usage if bucket.empty?
+  selected = all.select { |row| minimal_bucket(row) == bucket }
+  abort "No skills match bucket: #{bucket}" if selected.empty?
+  stamp = Time.now.strftime("%Y-%m-%d")
+  dest_root = File.join(ARCHIVE_ROOT, stamp, bucket.gsub(%r{[^A-Za-z0-9._-]+}, "-").gsub(/^-|-$/, ""))
+  FileUtils.mkdir_p(dest_root)
+  selected.each do |row|
+    dest = File.join(dest_root, row[:name])
+    if File.exist?(dest)
+      warn "Already archived, skipping: #{row[:name]}"
+      next
+    end
+    FileUtils.mv(row[:path], dest)
+    puts "retired\t#{row[:name]}\t#{dest}"
+  end
+else
+  usage
+end

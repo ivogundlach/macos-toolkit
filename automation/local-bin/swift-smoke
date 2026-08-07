@@ -1,0 +1,76 @@
+#!/usr/bin/env bash
+# swift-smoke — compile-probe SwiftUI/Swift against the active SDK.
+#
+# Type-checks a minimal SwiftUI @main app (or a .swift file you pass) with the
+# command-line `swiftc` against the current SDK + target. Use it to confirm the
+# toolchain/SDK is sane before a larger build, or to reproduce a "does this still
+# compile" check. Defaults to -typecheck so it never trips the CLT swift-package
+# rpath/link defect. Prints PASS/FAIL and exits 0/1.
+#
+# Usage:
+#   swift-smoke                       # type-check the built-in SwiftUI probe
+#   swift-smoke path/to/File.swift    # type-check your own file instead
+#   swift-smoke --emit                # actually compile to a binary (link too)
+#
+# Env:
+#   SWIFT_SMOKE_TARGET   target triple (default: arm64-apple-macosx14.0)
+#   SWIFT_SMOKE_SDK      sdk path      (default: `xcrun --show-sdk-path`)
+set -euo pipefail
+
+TARGET="${SWIFT_SMOKE_TARGET:-arm64-apple-macosx14.0}"
+SDK="${SWIFT_SMOKE_SDK:-$(xcrun --show-sdk-path 2>/dev/null || true)}"
+
+MODE="typecheck"
+SRC=""
+for arg in "$@"; do
+  case "$arg" in
+    --emit) MODE="emit" ;;
+    -h|--help) sed -n '2,20p' "$0"; exit 0 ;;
+    *) SRC="$arg" ;;
+  esac
+done
+
+if [[ -z "$SDK" || ! -d "$SDK" ]]; then
+  echo "swift-smoke: FAIL — no usable SDK (got '$SDK')" >&2
+  exit 1
+fi
+
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/swift-smoke.XXXXXX")"
+trap 'rm -rf "$WORK"' EXIT
+
+if [[ -n "$SRC" ]]; then
+  [[ -f "$SRC" ]] || { echo "swift-smoke: FAIL — no such file: $SRC" >&2; exit 1; }
+else
+  SRC="$WORK/Probe.swift"
+  cat > "$SRC" <<'SWIFT'
+import SwiftUI
+
+@main
+struct SmokeApp: App {
+    var body: some Scene {
+        WindowGroup {
+            Text("smoke")
+        }
+    }
+}
+SWIFT
+fi
+
+echo "swift-smoke: mode=$MODE target=$TARGET"
+echo "swift-smoke: sdk=$SDK"
+echo "swift-smoke: source=$SRC"
+
+if [[ "$MODE" == "emit" ]]; then
+  build=(swiftc -parse-as-library -sdk "$SDK" -target "$TARGET" -o "$WORK/smoke.bin" "$SRC")
+else
+  build=(swiftc -parse-as-library -typecheck -sdk "$SDK" -target "$TARGET" "$SRC")
+fi
+
+if "${build[@]}" 2> "$WORK/err.log"; then
+  echo "swift-smoke: PASS — compiled clean"
+  exit 0
+else
+  echo "swift-smoke: FAIL — compiler output:" >&2
+  cat "$WORK/err.log" >&2
+  exit 1
+fi

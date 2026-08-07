@@ -1,0 +1,55 @@
+#!/usr/bin/env python3
+"""DEPRECATED shim. semantic-corpus used local Ollama embeddings; Ivo retired that
+path ("no llama"). Semantic search uses `agy` (Gemini
+Flash Low) writes a semantic record per file at build time into a global FTS5 index;
+queries are pure local BM25 (no model, offline).
+
+  semantic-corpus query --text "..." [--top N]   -> forwarded to memory-semantic-query
+  semantic-corpus index ...                       -> built by the daily semantic-index run
+                                                     (force now: memory-semantic-build)
+  semantic-corpus check                           -> obsolete (no embedding server)
+
+New tools:
+  query  : ~/.memory/tools/memory-semantic-query "<question>" [--root TAG] [--top N]
+  build  : ~/.memory/tools/memory-semantic-build           (daily 17:00 + retry)
+"""
+import os
+import sys
+
+NEW_QUERY = os.path.expanduser("~/.memory/tools/memory-semantic-query")
+
+
+def main(argv):
+    cmd = argv[0] if argv else ""
+    if cmd == "query":
+        text, top, root = None, None, None
+        i = 1
+        while i < len(argv):
+            if argv[i] == "--text" and i + 1 < len(argv):
+                text = argv[i + 1]; i += 2; continue
+            if argv[i] in ("--top", "-n") and i + 1 < len(argv):
+                top = argv[i + 1]; i += 2; continue
+            if argv[i] == "--root" and i + 1 < len(argv):
+                root = argv[i + 1]; i += 2; continue
+            i += 1
+        if not text:
+            sys.stderr.write("semantic-corpus (deprecated): pass --text \"...\"; "
+                             "prefer memory-semantic-query directly.\n")
+            return 2
+        sys.stderr.write("semantic-corpus is deprecated -> forwarding to "
+                         "memory-semantic-query\n")
+        fwd = [NEW_QUERY, text]
+        if root:
+            fwd += ["--root", root]
+        if top:
+            fwd += ["--top", top]
+        os.execv(NEW_QUERY, fwd)  # replace process
+    if cmd in ("index", "check", ""):
+        sys.stderr.write(__doc__)
+        return 0 if cmd == "" else 1
+    sys.stderr.write(f"semantic-corpus (deprecated): unknown command '{cmd}'.\n{__doc__}")
+    return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))

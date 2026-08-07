@@ -1,0 +1,126 @@
+#!/bin/bash
+
+SMART_WAKE_HOME="${HOME}/.config/smart-wake"
+# shellcheck disable=SC1091
+source "${SMART_WAKE_HOME}/lib.sh"
+
+usage() {
+    cat <<'EOF'
+Usage:
+  smart-wake status
+  smart-wake on 2h
+  smart-wake on 50min
+  smart-wake off
+EOF
+}
+
+status() {
+    load_config
+    local now ssid battery ac trusted override_until cooldown_until pid mode keep reason
+    now=$(now_epoch)
+    ssid=$(current_ssid)
+    battery=$(battery_percent)
+    ac="no"
+    trusted="no"
+    keep="no"
+    reason="not allowed"
+    mode="none"
+
+    if on_ac_power; then
+        ac="yes"
+        keep="yes"
+        reason="AC power"
+        mode="ac"
+    fi
+
+    if is_trusted_wifi "$ssid"; then
+        trusted="yes"
+        keep="yes"
+        reason="trusted Wi-Fi: ${ssid}"
+        [ "$mode" = "none" ] && mode="battery"
+    fi
+
+    override_until=$(read_epoch_file "$OVERRIDE_UNTIL_FILE")
+    if [ -n "$override_until" ] && [ "$override_until" -gt "$now" ] 2>/dev/null; then
+        if [ "$ac" = "yes" ] || [ "$trusted" = "yes" ]; then
+            rm -f "$OVERRIDE_UNTIL_FILE" "$OVERRIDE_NOTIFIED_FILE"
+            override_until=""
+            log_msg "Manual override cleared by status because an always-on condition is active: ${reason}"
+        else
+            keep="yes"
+            reason="manual override until $(format_epoch "$override_until")"
+            [ "$mode" = "none" ] && mode="battery"
+        fi
+    fi
+
+    cooldown_until=$(read_epoch_file "$COOLDOWN_UNTIL_FILE")
+    if [ "$keep" = "no" ] && [ -n "$cooldown_until" ] && [ "$cooldown_until" -gt "$now" ] 2>/dev/null; then
+        keep="yes"
+        reason="cooldown until $(format_epoch "$cooldown_until")"
+        mode="battery"
+    fi
+
+    printf 'Smart Wake status\n'
+    printf '  Keep awake: %s\n' "$keep"
+    printf '  Reason: %s\n' "$reason"
+    printf '  AC power: %s\n' "$ac"
+    printf '  Wi-Fi: %s\n' "${ssid:-not connected}"
+    printf '  Trusted Wi-Fi: %s\n' "$trusted"
+    printf '  Battery: %s%%\n' "${battery:-unknown}"
+
+    if [ -n "$override_until" ] && [ "$override_until" -gt "$now" ] 2>/dev/null; then
+        printf '  Override: active, %s remaining, until %s\n' "$(format_remaining "$((override_until - now))")" "$(format_epoch "$override_until")"
+    else
+        printf '  Override: inactive\n'
+    fi
+
+    if [ -n "$cooldown_until" ] && [ "$cooldown_until" -gt "$now" ] 2>/dev/null; then
+        printf '  Cooldown: active, %s remaining, until %s\n' "$(format_remaining "$((cooldown_until - now))")" "$(format_epoch "$cooldown_until")"
+    else
+        printf '  Cooldown: inactive\n'
+    fi
+
+    if caffeinate_running; then
+        pid=$(cat "$PID_FILE")
+        [ -f "$MODE_FILE" ] && mode=$(cat "$MODE_FILE")
+        printf '  Caffeinate: running, pid %s, mode %s\n' "$pid" "$mode"
+    else
+        printf '  Caffeinate: not running\n'
+    fi
+}
+
+cmd="${1:-}"
+shift || true
+
+case "$cmd" in
+    status|"")
+        status
+        ;;
+    on|wake|extend)
+        load_config
+        duration="${*:-}"
+        if ! seconds=$(parse_duration_seconds "$duration"); then
+            printf 'Invalid duration: %s\n' "$duration" >&2
+            printf 'Use examples like: 2h, 50min\n' >&2
+            exit 2
+        fi
+        until_epoch=$(($(now_epoch) + seconds))
+        echo "$until_epoch" > "$OVERRIDE_UNTIL_FILE"
+        rm -f "$OVERRIDE_NOTIFIED_FILE" "$COOLDOWN_UNTIL_FILE" "$COOLDOWN_NOTIFIED_FILE"
+        log_msg "Manual override set for $(format_remaining "$seconds"), until $(format_epoch "$until_epoch")"
+        printf 'Manual override active for %s, until %s\n' "$(format_remaining "$seconds")" "$(format_epoch "$until_epoch")"
+        ;;
+    off|sleep|stop)
+        load_config
+        rm -f "$OVERRIDE_UNTIL_FILE" "$OVERRIDE_NOTIFIED_FILE" "$COOLDOWN_UNTIL_FILE" "$COOLDOWN_NOTIFIED_FILE" "$LAST_ALLOWED_FILE"
+        if ! on_ac_power && ! is_trusted_wifi "$(current_ssid)"; then
+            stop_caffeinate
+        fi
+        log_msg "Manual override and cooldown cleared"
+        printf 'Manual override and cooldown cleared.\n'
+        ;;
+    *)
+        usage >&2
+        exit 2
+        ;;
+esac

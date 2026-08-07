@@ -1,0 +1,6 @@
+{
+  "default_browser": "chrome",
+  "default_port": 8765,
+  "local_host": "127.0.0.1",
+  "prefer_refs_from_snapshot": true
+}

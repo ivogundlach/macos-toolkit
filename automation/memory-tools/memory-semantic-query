@@ -1,0 +1,685 @@
+#!/usr/bin/env python3
+"""memory-semantic-query — meaning-based search over the agy-enriched corpus index.
+
+The index (~/.memory/semantic-index.sqlite) is built by agy
+(Gemini Flash Low) reads each file once at build time and writes a semantic record
+(summary / topics / entities / questions). Retrieval here is pure local BM25 over
+that enriched text — no model, no network, offline. The LLM bridged the vocabulary
+gap at index time, so plain lexical matching now returns by MEANING.
+
+Use this for "find the file/skill/note that is ABOUT X" content search. Use
+memory-search for exact-string lookup.
+
+  memory-semantic-query "how do I download a youtube playlist"
+  memory-semantic-query --root .codex "skill for external writing"
+  memory-semantic-query --top 5 --root Files "tax documents"
+"""
+import sys, os, re, json, sqlite3, datetime, time
+
+_T0 = time.time()
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+DB = os.environ.get("SEMANTIC_DB", os.path.expanduser("~/.memory/semantic-index.sqlite"))
+TOP = 8
+ROOT = None
+VENV_PY = os.path.expanduser(
+    os.environ.get("MEMORY_VENV_PY", "~/.local/share/memory-venv/bin/python"))
+
+def _in_venv():
+    """True when running INSIDE the memory venv.
+
+    Not `realpath(sys.executable) == realpath(VENV_PY)`: a venv's python is a
+    symlink to the base interpreter, so that comparison is true whenever the base
+    interpreter is simply the one on PATH. sys.prefix is the real marker.
+    """
+    root = os.path.dirname(os.path.dirname(VENV_PY))
+    return os.path.realpath(sys.prefix) == os.path.realpath(root)
+
+
+STOP = {"the", "a", "an", "of", "to", "in", "on", "for", "and", "or", "is", "are",
+        "how", "do", "i", "what", "where", "which", "with", "my", "me", "can",
+        "does", "this", "that", "find", "about", "get", "use", "using"}
+
+# ---- arg parsing (lightweight; positional words form the query) -------------
+args = sys.argv[1:]
+words = []
+it = iter(range(len(args)))
+i = 0
+while i < len(args):
+    a = args[i]
+    if a in ("--top", "-n") and i + 1 < len(args):
+        TOP = int(args[i + 1]); i += 2; continue
+    if a == "--root" and i + 1 < len(args):
+        ROOT = args[i + 1]; i += 2; continue
+    if a == "--db" and i + 1 < len(args):
+        DB = os.path.expanduser(args[i + 1]); i += 2; continue
+    if a in ("-h", "--help"):
+        print(__doc__); raise SystemExit(0)
+    if a in ("--version", "-V"):
+        # A real self-test, not a banner. The Tool Status Dashboard probes this
+        # tool with --version, and without this branch "--version" was parsed as
+        # a SEARCH QUERY: it returned results and exited 0, so the health check
+        # for the most important tool in the memory system could never fail.
+        # A liveness probe that cannot report failure is decoration.
+        print("memory-semantic-query (offline BM25 over the agy-enriched index)")
+        try:
+            _db = sqlite3.connect(DB)
+            _n = _db.execute("SELECT count(*) FROM docs").fetchone()[0]
+            _cols = [r[1] for r in _db.execute("PRAGMA table_info(docs)")]
+            if "path" not in _cols:
+                print("  FAIL: index schema is missing the path column (stale schema)",
+                      file=sys.stderr)
+                raise SystemExit(1)
+            # Exercise the real query path, which is where the FTS5 empty-group
+            # crash lived — a schema check alone would have missed it entirely.
+            _db.execute("SELECT rowid FROM docs WHERE docs MATCH ? LIMIT 1",
+                        ('("memory" OR "memories")',)).fetchall()
+            print(f"  ok: {_n} records, schema v3, query path exercised")
+        except SystemExit:
+            raise
+        except Exception as _e:
+            print(f"  FAIL: {_e}", file=sys.stderr)
+            raise SystemExit(1)
+        raise SystemExit(0)
+    words.append(a); i += 1
+
+question = " ".join(words).strip()
+if not question:
+    print("usage: memory-semantic-query \"natural language question\" [--root TAG] [--top N]",
+          file=sys.stderr)
+    raise SystemExit(2)
+
+if not os.path.isfile(DB):
+    print(f"memory-semantic-query: semantic index not built yet ({DB}).\n"
+          f"  It builds with the daily 17:00 run, or now via:  memory-semantic-build\n"
+          f"  Fall back to exact search meanwhile:  memory-search QUERY",
+          file=sys.stderr)
+    raise SystemExit(66)
+
+# ---- vector arm, launched as early as possible ------------------------------
+# Fired HERE rather than next to the rest of the hybrid setup, because this is the
+# first line at which everything the daemon needs is known: `question` is never
+# reassigned after it is parsed and `ROOT` comes from the same argument loop.
+# Everything below — the FTS expression, the sqlite connection, the chunk_store
+# import, the compatibility query, BM25, reranking — is independent of the
+# daemon's answer, so all of it now overlaps the socket round trip instead of
+# running before it.
+#
+# Measured honestly, this bought 1ms, not the 13ms it looks like it should. The
+# vector arm's residual cost is NOT the launch site: the daemon takes ~23ms and
+# all the local work it can overlap takes ~20ms, so a few ms of waiting is
+# structural and moving the start earlier cannot remove it. Kept because it is
+# strictly not worse and makes the dependency explicit. If this ever needs to be
+# genuinely faster, the target is the ~65ms of interpreter startup and imports
+# every query pays before any searching happens — not this.
+#
+# Gated on the env flag alone, not on VEC_STATE, because computing VEC_STATE is
+# itself part of the work we are trying to hide. That is safe because the answer
+# is checked three ways before it is used: the daemon re-validates the fingerprint
+# against its own index on every request, daemon_client refuses any reply that
+# does not name THIS database, and the consumer below still requires that this
+# process independently agrees the index is ok. The middle check is not
+# redundant — the first two answer different questions ("does this daemon agree
+# with its index" vs "is that index ours"), and only the second one catches a
+# daemon started on a different SEMANTIC_DB holding the default socket.
+DAEMON_ROWS = None
+_daemon_thread = None
+if os.environ.get("MEMORY_HYBRID", "1") != "0":
+    try:
+        import threading as _threading
+        import daemon_client
+
+        def _ask_daemon():
+            global DAEMON_ROWS
+            try:
+                DAEMON_ROWS = daemon_client.vector_knn(question, ROOT)
+            except Exception:
+                DAEMON_ROWS = None
+
+        _daemon_thread = _threading.Thread(target=_ask_daemon, daemon=True)
+        _daemon_thread.start()
+    except Exception:
+        _daemon_thread = None
+
+# ---- build a safe FTS5 MATCH expression -------------------------------------
+terms = []
+for tok in re.findall(r"[A-Za-z0-9_]+", question.lower()):
+    if len(tok) < 2 or tok in STOP:
+        continue
+    if tok not in terms:
+        terms.append(tok)
+terms = terms[:12]
+if not terms:
+    terms = [t for t in re.findall(r"[A-Za-z0-9_]+", question.lower()) if len(t) >= 2][:12]
+if not terms:
+    print("memory-semantic-query: no searchable terms in query", file=sys.stderr)
+    raise SystemExit(1)
+
+# ---- inflection expansion ----------------------------------------------------
+# The index is tokenized with unicode61 (no stemmer) ON PURPOSE: porter stemming
+# was measured and made recall WORSE (recall@1 50% -> 38%), because collapsing
+# index/indexing/indexes into one stem flattens the IDF that distinguishes a
+# document ABOUT a term from one that merely mentions it.
+# Questions inflect, though ("how do PATHS work" vs a note that says "path"), so
+# expand each query term into a small OR group of its own surface forms. The
+# document vocabulary stays sharp; only the query gets more ways in.
+# Only strip -es after a sibilant (boxes, batches, passes). Blind -es stripping
+# turns "notes" into "not" and "files" into "fil" — high-frequency garbage terms
+# that match everywhere and drown the real signal. One suffix rule at most per
+# term, and no pluralisation of a term that was just de-inflected.
+_SIBILANT = ("ses", "xes", "zes", "ches", "shes")
+
+
+def _forms(t):
+    out = [t]
+    stripped = False
+    if len(t) > 3:
+        if t.endswith("ies") and len(t) > 4:
+            out.append(t[:-3] + "y"); stripped = True
+        elif t.endswith(_SIBILANT):
+            out.append(t[:-2]); stripped = True
+        elif t.endswith("s") and not t.endswith("ss"):
+            out.append(t[:-1]); stripped = True
+        elif t.endswith("ing") and len(t) > 5:
+            out.append(t[:-3]); stripped = True
+        elif t.endswith("ed") and len(t) > 4:
+            out.append(t[:-2]); stripped = True
+    if not stripped and len(t) >= 3:
+        # Plural of the singular form. Skip words that already end in a sibilant
+        # ("pass" -> "passs") and use -ies after a consonant ("memory" -> "memories"),
+        # so the extra form is a word the corpus could actually contain.
+        if t.endswith(("s", "x", "z", "ch", "sh")):
+            pass
+        elif t.endswith("y") and len(t) > 3 and t[-2] not in "aeiou":
+            out.append(t[:-1] + "ies")
+        else:
+            out.append(t + "s")
+    seen, uniq = set(), []
+    for i, f in enumerate(out):
+        # The original term is ALWAYS kept. The length floor exists to drop
+        # derived stubs, and applying it to the input itself was a real bug: a
+        # two-letter query word ("os", "do") produced an empty OR-group — "()" —
+        # which is an FTS5 syntax error that killed the ENTIRE query, not just
+        # that term. Every question containing a short word returned nothing.
+        if f not in seen and (i == 0 or len(f) >= 3):
+            seen.add(f); uniq.append(f)
+    return uniq[:2]
+
+if os.environ.get("MEMORY_QUERY_EXPAND", "1") != "0":
+    groups = ["(" + " OR ".join('"%s"' % f for f in _forms(t)) + ")"
+              for t in terms if _forms(t)]
+else:
+    groups = ['"%s"' % t for t in terms]
+# Belt to the braces above: an empty group is a syntax error that takes the whole
+# query down, so never emit one even if _forms grows a new path that returns [].
+groups = [g for g in groups if g not in ("()", '""')]
+match = " OR ".join(groups)
+
+db = sqlite3.connect(DB)
+
+# ---- hybrid arms: daemon first, in-process second, keyword-only last ---------
+# Three ways to get the vector arm, tried in order of cost. When it is off, none
+# of this runs and the tool behaves exactly as it did before hybrid retrieval
+# existed — byte for byte.
+HYBRID = os.environ.get("MEMORY_HYBRID", "1") != "0"
+# Candidate pool carried as far as the reranker, independent of how many results
+# the caller asked to SEE. Retrieval and presentation are different depths: a
+# reranker fed only the rows that were already going to be shown cannot promote
+# anything, which is the difference between the measured gain and none at all.
+try:
+    import fusion as _f
+    POOL = _f.RERANK_DEPTH if _f.RERANK else 0
+except Exception:
+    POOL = 0
+VEC_STATE, VEC_DETAIL = "off", "disabled by MEMORY_HYBRID=0"
+if HYBRID:
+    try:
+        import chunk_store as _cstore
+        VEC_STATE, VEC_DETAIL = _cstore.compatibility(db)
+    except Exception as _e:
+        VEC_STATE, VEC_DETAIL = "absent", f"chunk store unavailable: {_e}"
+
+# Ask the warm daemon first. It already holds the model and the vector index, so
+# it answers in ~15ms; doing the same work here costs ~95ms of imports and session
+# setup before any actual searching happens. If it does not answer we simply carry
+# on to the slow path below — and the client has quietly started one for next time.
+#
+# None means "no answer from the daemon". An empty list is a real answer (no
+# neighbours) and is used as one. Keeping those two apart is deliberate: merging
+# them is precisely how a dead vector arm once passed for a working one.
+# Fired in a BACKGROUND THREAD, because the daemon's work and this process's own
+# BM25 + reranking are completely independent and each takes tens of ms. Running
+# them one after the other made the vector arm cost ~30ms of wall clock on top of
+# a ~80ms search; overlapped, it mostly disappears into time already being spent.
+# (the request itself was launched much earlier, right after the question was
+# parsed, so that everything above this point overlaps it)
+
+
+def _join_daemon():
+    """Collect the vector arm. Safe to call more than once; never raises.
+
+    The deadline is the client's, not the daemon's: a daemon that has become slow
+    must not be able to make search slower than not having one at all.
+    """
+    global _daemon_thread
+    if _daemon_thread is not None:
+        _daemon_thread.join(timeout=daemon_client.DEADLINE)
+        _daemon_thread = None
+    return DAEMON_ROWS
+
+
+# Fall back to doing it in-process. The chunk and vector arms need numpy,
+# onnxruntime and sqlite-vec, which live in a dedicated venv — NOT in the system
+# python3 this script normally runs under. If the vector arm were simply imported
+# it would fail on every invocation and silently degrade to keyword-only forever,
+# which is exactly the kind of quiet rot this system is supposed to be immune to.
+# So: decide with the stdlib first (chunk_store and embedder.fingerprint are
+# stdlib-only by construction), and re-exec into the venv ONLY when the vector arm
+# is live AND the daemon did not already answer.
+# ---- stale-index warning (don't block) --------------------------------------
+try:
+    newest = db.execute("SELECT MAX(CAST(indexed_at AS INTEGER)) FROM docs").fetchone()[0]
+    if newest:
+        age = (datetime.datetime.now() - datetime.datetime.fromtimestamp(int(newest))).days
+        if age > 3:
+            print(f"memory-semantic-query: WARNING — index is {age} days old "
+                  f"(daily cadence; run memory-semantic-build)", file=sys.stderr)
+    import json as _json
+    _st = _json.loads(open(os.path.expanduser("~/.memory/semantic-index-status.json")).read())
+    if str(_st.get("overall_rc")) not in ("0", "None"):
+        print("memory-semantic-query: WARNING — last index build failed "
+              "(results may miss recent files; run memory-semantic-build)", file=sys.stderr)
+except Exception:
+    pass
+
+# Weighted bm25: favor the agy-written summary/questions/topics over raw body.
+# Weights map to indexed columns in declaration order. Schema v2 inserts `path`
+# before `raw`; on a v1 index (not yet rebuilt) fall back to the 5-column form so
+# a stale database degrades to the old behaviour instead of erroring.
+try:
+    _cols = [r[1] for r in db.execute("PRAGMA table_info(docs)")]
+except Exception:
+    _cols = []
+HAS_PATH = "path" in _cols
+if HAS_PATH:
+    # Column weights are env-tunable so a change can be A/B'd against the gold set
+    # (memory-retrieval-eval) rather than argued about. Order:
+    #   summary, topics, entities, questions, path, raw
+    #
+    # Measured on the 52-case gold set, 2026-07-25. questions was 9.0 — nearly
+    # level with summary — which over-rewarded any document whose GENERATED
+    # questions happened to share vocabulary with the real one; at 4.0 it sits
+    # with entities, where it belongs. path was 1.5, over-rewarding filename
+    # matches. Together: r1 57.7%->61.5%, r5 78.8%->84.6%. Their neighbours
+    # (0.75/6.0, 1.0/4.0, 1.5/4.0) all land BETWEEN baseline and this, so it is
+    # a plateau rather than one lucky point — the difference between a real
+    # effect and overfitting 52 cases, where a single case is worth 1.9%.
+    _W = os.environ.get("MEMORY_QUERY_WEIGHTS", "10.0,6.0,4.0,4.0,2.0,0.75")
+    RANK = "bm25(docs, %s)" % _W
+    SNIPCOL = 5
+else:
+    RANK = "bm25(docs, 10.0, 6.0, 4.0, 9.0, 1.5)"
+    SNIPCOL = 4
+
+sql = (f"SELECT root_tag, rel_path, summary, {RANK} AS score, "
+       f"snippet(docs, {SNIPCOL}, '[', ']', ' … ', 12) AS snip, raw, "
+       "summary || ' ' || topics || ' ' || entities || ' ' || questions AS enr "
+       "FROM docs WHERE docs MATCH ?")
+params = [match]
+if ROOT:
+    sql += " AND root_tag = ?"
+    params.append(ROOT)
+# Candidate pool is deliberately much wider than TOP: reranking below can only
+# reorder what the pool contains, so a right answer that bm25 ranked 40th is
+# unreachable if the pool stops at 24.
+sql += " ORDER BY score LIMIT ?"
+params.append(max(TOP * 15, 150))
+
+try:
+    rows = db.execute(sql, params).fetchall()
+except sqlite3.OperationalError as e:
+    print(f"memory-semantic-query: query error ({e})", file=sys.stderr)
+    raise SystemExit(1)
+
+if not rows:
+    print(f"(no matches for: {question})")
+    raise SystemExit(0)
+
+# ---- recency decay — chat captures only ---------------------------------------
+# Scope: only rows under a raw/ chat-capture path (dated observations that can
+# expire). Wiki/curated/code/project docs get ZERO decay so timeless facts never
+# sink. Timestamp: created_at from the capture's own frontmatter (stable across
+# index rebuilds); rows without one get no decay. FTS5 bm25 is negative-better,
+# so decay MULTIPLIES the score toward 0 — scale-invariant per row: 0% below
+# 90 days, growing linearly to 15% at >=2 years. A tie-breaker, never a filter.
+_CREATED_RE = re.compile(r"^created_at:\s*(\d{4})-(\d{2})-(\d{2})", re.MULTILINE)
+def _decayed(score, rel_path, raw_text):
+    if score is None or score >= 0:
+        return score
+    if not (rel_path.startswith("raw/") or "/raw/chat/" in rel_path):
+        return score
+    m = _CREATED_RE.search((raw_text or "")[:400])
+    if not m:
+        return score
+    try:
+        age_d = (datetime.datetime.now()
+                 - datetime.datetime(int(m.group(1)), int(m.group(2)),
+                                     int(m.group(3)))).days
+    except ValueError:
+        return score
+    if age_d <= 90:
+        return score
+    frac = min((age_d - 90) / (730 - 90), 1.0) * 0.15
+    return score * (1.0 - frac)
+
+# ---- term-coverage rerank ----------------------------------------------------
+# The MATCH expression is an OR over query terms, so one common word is enough to
+# enter the pool. bm25 rewards rare terms but not BREADTH, which is what actually
+# separates "this document is about your question" from "this document mentions
+# one of your words a lot" — the observed failure mode: a note that says "skills"
+# many times beating the note that answers where skills are installed.
+# Coverage multiplies the (negative-better) bm25 score, so it re-ranks within the
+# pool without ever promoting a document that matched nothing.
+#
+# This knob was nearly DELETED for measuring neutral-to-harmful. That measurement
+# was taken against a porter-stemmed index and a query tool that was silently
+# crashing on short terms — both since fixed. Re-measured on 52 cases: beta=0
+# gives r1 50.0%, beta=1.6 gives 57.7%, and 2.4 adds nothing, so 1.6 is the knee.
+# The lesson is about the measurement, not the feature: a knob evaluated on a
+# broken harness gets a verdict about the harness.
+COV_BETA = float(os.environ.get("MEMORY_QUERY_COV_BETA", "1.6"))
+_STEM_MIN = 4
+
+
+def _covered(text_lc, term):
+    """Term appears, tolerating simple inflection.
+
+    The index tokenizer is unicode61, NOT porter: stemming measurably hurt recall
+    here (50%->38% at r1) because collapsing index/indexing/indexes flattens the
+    IDF that separates a document ABOUT a term from one that merely mentions it.
+    Inflection is handled here and in _forms instead, where it costs no IDF.
+    """
+    if term in text_lc:
+        return True
+    if len(term) > _STEM_MIN:
+        for suf in ("ies", "es", "s", "ing", "ed"):
+            if term.endswith(suf) and term[: -len(suf)] in text_lc:
+                return True
+    return False
+
+
+def _coverage(enr, rel_path, root_tag, raw_text):
+    """Fraction of distinct query terms present. Enriched fields + path carry the
+    signal; raw body is included so a term only in the prose still counts."""
+    if not terms:
+        return 1.0
+    blob = " ".join(((enr or ""), root_tag, rel_path.replace("/", " "),
+                     (raw_text or "")[:6000])).lower()
+    return sum(1 for t in terms if _covered(blob, t)) / len(terms)
+
+
+scored = []
+for rt, rp, s, sc, sn, raw, enr in rows:
+    sc = _decayed(sc, rp, raw)
+    if sc is not None and sc < 0:
+        sc = sc * (1.0 + COV_BETA * _coverage(enr, rp, rt, raw))
+    scored.append((rt, rp, s, sc, sn))
+rows = scored
+rows.sort(key=lambda r: (r[3] if r[3] is not None else 0.0))
+
+# Collect the vector arm here, at the last possible moment, so everything above —
+# the BM25 query and the full rerank — ran in parallel with the daemon instead of
+# after it. That overlap is the difference between the vector arm costing ~30ms of
+# wall clock and costing almost nothing.
+#
+# If the daemon did not answer, the in-process path means re-execing into the venv
+# and redoing all of the above. Measured, that costs 407ms against a 102ms
+# keyword-only baseline — FOUR TIMES SLOWER than not having vectors at all.
+#
+# So it is off by default. A cold query answers on the keyword arms at baseline
+# speed and baseline quality, and the client has already started a daemon in the
+# background, so the next query is the full 113ms hybrid. Trading one query's
+# extra recall for never being slower than the system this replaced is the right
+# side of that deal; `MEMORY_VECTOR_INPROCESS=1` takes the other side.
+#
+# The risk this creates is that a daemon which can NEVER start would silently
+# leave search one-armed forever. That is why every query records how its vector
+# arm was served, and `memory-query-daemon --version` fails on a run of queries
+# that the daemon did not serve.
+if (VEC_STATE == "ok" and _join_daemon() is None
+        and os.environ.get("MEMORY_VECTOR_INPROCESS") == "1"
+        and os.environ.get("MEMORY_QUERY_REEXEC") != "1"
+        and os.path.exists(VENV_PY) and not _in_venv()):
+    os.environ["MEMORY_QUERY_REEXEC"] = "1"
+    try:
+        db.close()
+        os.execv(VENV_PY, [VENV_PY, os.path.abspath(__file__)] + sys.argv[1:])
+    except OSError:
+        db = sqlite3.connect(DB)          # exec failed: carry on keyword-only
+        VEC_STATE, VEC_DETAIL = "absent", "venv interpreter could not be executed"
+
+# ---- fusion with the chunk and vector arms -----------------------------------
+# Arm A above is fed to the fusion in its FULLY RERANKED order (decay + coverage
+# applied), so everything already measured to help is preserved rather than
+# competing with the new arms. Every step below is wrapped: any failure leaves
+# `rows` exactly as arm A produced it, which is the pre-hybrid behaviour.
+FUSED = False
+VEC_VIA = "off" if not HYBRID else ("unavailable" if VEC_STATE != "ok" else "none")
+if HYBRID and VEC_STATE in ("ok", "absent"):
+    try:
+        import fusion
+        # Skip the arm entirely at zero weight — running a query whose result is
+        # multiplied by nothing is pure latency.
+        chunk_rows = fusion.chunk_bm25(db, match, ROOT) if fusion.W_CHUNKS > 0 else []
+        vec_rows = []
+        qvec_rows = []
+        # A socket held by a daemon serving a DIFFERENT index reads identically to
+        # no daemon at all — but the repairs are opposite (kill the squatter vs.
+        # start one), so the log has to tell them apart. Recorded as a refinement
+        # of "none" BEFORE the branches below rather than as one of them: a
+        # rejected daemon must still fall through to the in-process path, which
+        # overwrites this. Naming the failure is not allowed to cause one.
+        # Looked up through globals() because the daemon_client import above is
+        # itself optional — a bare name here would turn a missing client into a
+        # NameError that the outer handler reports as "fusion unavailable",
+        # disabling BOTH keyword arms' fusion over a telemetry label.
+        if getattr(globals().get("daemon_client"), "last_reject", None) == "foreign":
+            VEC_VIA = "foreign"
+        if VEC_STATE == "ok" and DAEMON_ROWS is not None:
+            vec_rows = DAEMON_ROWS
+            VEC_VIA = "daemon"
+            # Arm D came back in the same reply. None means this daemon predates
+            # the arm, so the query ranks as it did before D existed.
+            if fusion.W_QVEC > 0:
+                qvec_rows = getattr(daemon_client, "last_qrows", None) or []
+        # Only attempt the in-process embed under an interpreter that can actually
+        # do it. The system python has no numpy or onnxruntime, so without this
+        # guard every cold query would import its way into a guaranteed failure
+        # and print a warning about it.
+        elif VEC_STATE == "ok" and _in_venv():
+            VEC_VIA = "in-process"
+            try:
+                from embedder import Embedder
+                # The vec0 virtual table is only visible once the extension is
+                # loaded onto THIS connection. Without this the KNN raises
+                # "no such module: vec0" — which is how the vector arm silently
+                # returned nothing for a whole measurement run.
+                if not _cstore.load_vec(db):
+                    raise RuntimeError("sqlite-vec extension failed to load")
+                qv = Embedder().embed_query(question)
+                # Same engine as the daemon uses. Opening the matrix is an mmap
+                # and a few meta reads, so the cold path gets the speedup too --
+                # but the real reason is that the two paths must not be able to
+                # rank differently: a bug that only appears when the daemon is
+                # down is a bug that only appears when nobody is watching. None
+                # here (absent, stale, foreign) simply means the vec0 path.
+                try:
+                    import vector_matrix
+                    _mx = vector_matrix.load(db, DB, _cstore.get_meta)
+                except Exception:
+                    _mx = None
+                vec_rows = fusion.vector_knn(db, qv, ROOT, matrix=_mx)
+                if fusion.W_QVEC > 0:
+                    # The in-process path must rank the SAME way the daemon does.
+                    # A difference here would only ever appear while the daemon is
+                    # down, i.e. when nobody is looking at it.
+                    try:
+                        import question_index
+                        _qmx = question_index.load(db, DB, _cstore.get_meta)
+                    except Exception:
+                        _qmx = None
+                    qvec_rows = fusion.question_knn(db, qv, ROOT, matrix=_qmx)
+            except Exception as _e:
+                # Embedding unavailable at query time is a degradation, not an
+                # error: the keyword arms still answer. Surfaced on stderr so a
+                # silently one-armed search is visible rather than just worse.
+                print(f"memory-semantic-query: vector arm unavailable ({_e}); "
+                      "using keyword arms", file=sys.stderr)
+        if os.environ.get("MEMORY_HYBRID_DEBUG") == "1":
+            print(f"arms: docs={len(rows)} chunks={len(chunk_rows)} "
+                  f"vec={len(vec_rows)} via={'daemon' if DAEMON_ROWS is not None else 'in-process'} "
+                  f"qvec={len(qvec_rows)} "
+                  f"state={VEC_STATE} k={fusion.RRF_K} "
+                  f"w=({fusion.W_DOCS},{fusion.W_CHUNKS},{fusion.W_VEC},{fusion.W_QVEC})",
+                  file=sys.stderr)
+        if chunk_rows or vec_rows or qvec_rows:
+            # Fuse DEEPER than we will display when a reranker is going to run.
+            # Truncating to TOP first would mean that at `--top 5` the reranker
+            # only ever sees five candidates and nothing at rank 6-20 could be
+            # promoted — the wins measured at depth 10 would silently not exist
+            # for the default query. Cut back to TOP after reranking.
+            fused = fusion.fuse(rows, chunk_rows, vec_rows, max(TOP, POOL),
+                                qvec_rows=qvec_rows)
+            # Display the FUSION score, negated to match the existing convention
+            # (the printer negates, because bm25 is negative-better). Showing arm
+            # A's bm25 here would be a lie for any file only the vector arm found.
+            rows = [(d[0], d[1], d[2], (-fs if fs is not None else d[3]),
+                     (d[4] or snip or "")) for d, snip, fs in fused]
+            FUSED = True
+    except Exception as _e:
+        print(f"memory-semantic-query: fusion unavailable ({_e}); "
+              "using enriched arm only", file=sys.stderr)
+
+if not FUSED:
+    rows = rows[:max(TOP, POOL)]
+
+# ---- cross-encoder rerank ----------------------------------------------------
+# Reorders the head of the result list; never changes its membership, so this can
+# only fix a near-miss, never lose an answer. Entirely daemon-served and entirely
+# optional: no daemon, no model, a timeout, a malformed reply or a raise all leave
+# `rows` exactly as fusion produced it. Same rule as the vector arm — an accuracy
+# refinement is not allowed to become a dependency.
+RERANK_VIA = "off"
+try:
+    import fusion as _fusion
+    if _fusion.RERANK and len(rows) > 1:
+        RERANK_VIA = "none"
+        import daemon_client as _dc
+        _by_key = {r[0:2]: r for r in rows}
+        _base = [(r[0], r[1]) for r in rows]
+        # Each reranker votes ONCE, and every vote is fused against the
+        # RETRIEVER's order -- never against another reranker's output. Chaining
+        # them instead (stage 2 reranking stage 1's list) double-counts the first
+        # model and measured WORSE than that model alone.
+        #
+        # The cascade lives in which candidates each model is shown, not in what
+        # its vote is counted against: a descending RERANK_DEPTHS lets a cheap
+        # model order the whole pool while an expensive one judges only the head
+        # the cheap pass floated up. `_sel` is that selection order and is used
+        # for nothing else.
+        # Arm D already found, per document, the generated question closest to
+        # this query. RERANK_TEXT="focused" shows the cross-encoder that one
+        # question instead of all five; empty when the arm did not run, which
+        # falls back to the enriched passage.
+        _bestq = {(r[0], r[1]): r[2] for r in (qvec_rows or [])}
+        _maps, _wts, _sel = [], [], _base
+        for _i, _m in enumerate(_fusion.RERANK_MODELS):
+            _d = (_fusion.RERANK_DEPTHS[_i] if _i < len(_fusion.RERANK_DEPTHS)
+                  else _fusion.RERANK_DEPTH)
+            _kept, _passages = _fusion.rerank_passages(db, _sel[:_d],
+                                                       best_q=_bestq)
+            if len(_kept) < 2:
+                continue
+            _s = _dc.rerank(question, _passages, model=_m,
+                            timeout=_fusion.RERANK_DEADLINE)
+            if _s is None:
+                continue        # unavailable model costs its vote, nothing else
+            _maps.append(dict(zip(_kept, _s)))
+            _wts.append(_fusion.RERANK_WEIGHTS[_i]
+                        if _i < len(_fusion.RERANK_WEIGHTS)
+                        else _fusion.RERANK_WEIGHTS[-1])
+            _sel = _fusion.rerank_fuse(_base, _maps, weights=_wts)
+        if _maps and os.environ.get("MEMORY_HYBRID_DEBUG") == "1":
+            # The cross-encoder's SCORES, not just the order it implies. RRF
+            # keeps only the order, so a model that rates every candidate as
+            # irrelevant still casts a full-strength vote; this is the only
+            # place that distinction is observable from outside.
+            print("ce: " + json.dumps(
+                [[k[1], round(_maps[0].get(k, float("nan")), 3)] for k in _base
+                 if k in _maps[0]]), file=sys.stderr)
+        if _maps:
+            _order = _fusion.rerank_fuse(_base, _maps, weights=_wts)
+            _new = [_by_key[k] for k in _order]
+            # Reordering that changed the result SET is a bug, not a rerank.
+            # Cheap to check and it makes the "can only move things" claim
+            # enforced rather than asserted in a comment.
+            if len(_new) == len(rows):
+                rows = _new
+                RERANK_VIA = "daemon"
+except Exception as _e:
+    print(f"memory-semantic-query: rerank unavailable ({_e}); "
+          "using fusion order", file=sys.stderr)
+
+# The pool existed only to give the reranker something to promote FROM.
+rows = rows[:TOP]
+
+# ---- query telemetry --------------------------------------------------------
+# Ground truth for the retrieval eval: which queries actually get asked, and what
+# came back. Lives in ~/.local/state (hidden run state), NEVER in ~/.memory — the
+# corpus is pushed to a git remote and a query log is not corpus. Best-effort by
+# construction: any logging failure must never break or slow a search.
+def _log_query(rows_out):
+    try:
+        d = os.path.expanduser("~/.local/state/memory-query-log")
+        os.makedirs(d, exist_ok=True)
+        p = os.path.join(d, "queries.jsonl")
+        # rotate at ~5MB so this can never grow unbounded
+        try:
+            if os.path.getsize(p) > 5_000_000:
+                os.replace(p, p + ".1")
+        except OSError:
+            pass
+        import json as _j
+        rec = {"ts": datetime.datetime.now().astimezone().isoformat(timespec="seconds"),
+               "query": question,
+               "root": ROOT,
+               "top": TOP,
+               "ms": int((time.time() - _T0) * 1000),
+               # How the vector arm was served, so a permanently one-armed search
+               # is DETECTABLE. Without this, a daemon that can never start would
+               # quietly return baseline-quality results forever: the weekly recall
+               # eval still passes on keyword arms alone (85% vs 90% at r5, both
+               # over the 80% bar), so nothing else in the system would notice.
+               "vec": VEC_VIA,
+               # Same reasoning as `vec`: a rerank that silently stopped
+               # happening would cost ~8 points at recall@1 and nothing would
+               # raise. Recorded per query so it is detectable after the fact.
+               "rerank": RERANK_VIA,
+               "hits": [{"path": f"{rt}/{rp}", "score": round(sc, 2) if sc is not None else None}
+                        for rt, rp, _s, sc, _sn in rows_out[:5]]}
+        with open(p, "a") as fh:
+            fh.write(_j.dumps(rec, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+
+if os.environ.get("MEMORY_QUERY_LOG", "1") != "0":
+    _log_query(rows)
+
+for root_tag, rel_path, summary, score, snip in rows:
+    rel = (score if score is not None else 0.0)
+    summary = (summary or "").strip()
+    print(f"{-rel:7.2f}  {root_tag}/{rel_path}")
+    if summary:
+        print(f"         {summary[:200]}")
+    snip = " ".join((snip or "").split())
+    if snip:
+        print(f"         … {snip[:200]}")

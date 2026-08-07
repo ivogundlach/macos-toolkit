@@ -1,0 +1,16 @@
+{
+  "mail_search_command": "/Users/YOUR_USERNAME/.local/share/codex-connectors/codex-read mail-search",
+  "rowid_body_command": "/Users/YOUR_USERNAME/.local/bin/apple-mail-rowid-body",
+  "draft_assistant_command": "/Users/YOUR_USERNAME/.local/bin/apple-mail-draft-assistant",
+  "default_search_days": 90,
+  "default_search_limit": 10,
+  "default_scan_limit": 20,
+  "default_scan_max_age_days": 14,
+  "draft_only": true,
+  "background_drafts": true,
+  "manual_signature_name": false,
+  "background_model": "gpt-5.6-terra",
+  "background_reasoning_effort": "medium",
+  "canonical_correspondence_rules": "/Users/YOUR_USERNAME/.codex/skills/workflow skills/ivo-writer/references/correspondence.md",
+  "junk_mark_read_before_delete": true
+}

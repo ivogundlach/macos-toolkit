@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+# Exact-string search over hidden memory. Caps output so a common term can't dump
+# thousands of lines into an agent's context — past the cap it shows the first N and
+# points at memory-semantic-query for ranked meaning-based search.
+set -uo pipefail   # not -e: a no-match rg (rc=1) is captured, not fatal
+
+ROOT="${MEMORY_ROOT:-$HOME/.memory}"
+CAP="${MEMORY_SEARCH_MAX_LINES:-120}"
+
+if [ "$#" -eq 0 ]; then
+  echo "Usage: memory-search [--all] QUERY" >&2
+  exit 2
+fi
+
+# A real self-test, not a banner. Without this branch `--version` fell through to
+# rg/grep, which answered with THEIR version and exit 0 — so a health check on
+# this tool would have reported the underlying grep as proof that memory search
+# works. A liveness probe that cannot report failure is decoration.
+if [ "${1:-}" = "--version" ] || [ "${1:-}" = "-V" ]; then
+  echo "memory-search (exact-string search over hidden memory)"
+  if [ ! -d "$ROOT" ]; then
+    echo "  FAIL: memory root $ROOT does not exist" >&2; exit 1
+  fi
+  if [ ! -r "$ROOT/index.md" ]; then
+    echo "  FAIL: $ROOT/index.md is missing or unreadable" >&2; exit 1
+  fi
+  if command -v rg >/dev/null; then
+    hits="$(rg --hidden -c "" "$ROOT/index.md" 2>/dev/null)"
+  elif command -v grep >/dev/null; then
+    hits="$(grep -c "" "$ROOT/index.md" 2>/dev/null)"
+  else
+    echo "  FAIL: neither rg nor grep is available" >&2; exit 1
+  fi
+  if [ -z "$hits" ] || [ "$hits" -eq 0 ]; then
+    echo "  FAIL: search returned nothing over a non-empty index.md" >&2; exit 1
+  fi
+  echo "  ok: search path exercised over $ROOT ($hits lines in index.md)"
+  exit 0
+fi
+
+scope=("$ROOT/index.md" "$ROOT/current.md" "$ROOT/wiki" "$ROOT/ledger.ndjson")
+if [ "${1:-}" = "--all" ]; then
+  shift
+  scope=("$ROOT")
+fi
+
+if command -v rg >/dev/null; then
+  out="$(rg --hidden -n "$@" "${scope[@]}" 2>/dev/null)"
+else
+  out="$(grep -RIn "$@" "${scope[@]}" 2>/dev/null)"
+fi
+
+[ -n "$out" ] || exit 0
+n="$(printf '%s\n' "$out" | wc -l | tr -d ' ')"
+if [ "$n" -gt "$CAP" ]; then
+  printf '%s\n' "$out" | head -n "$CAP"
+  printf '\n... [%s matches; showing first %s. Narrow the query, or use memory-semantic-query for ranked meaning-based search.]\n' "$n" "$CAP"
+else
+  printf '%s\n' "$out"
+fi

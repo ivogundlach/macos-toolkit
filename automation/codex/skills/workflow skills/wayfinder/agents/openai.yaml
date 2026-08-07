@@ -1,0 +1,4 @@
+interface:
+  display_name: "Wayfinder"
+  short_description: "Map dependent decisions before implementation"
+  default_prompt: "Use $wayfinder to map unresolved decisions, blockers, and exit criteria before implementation."

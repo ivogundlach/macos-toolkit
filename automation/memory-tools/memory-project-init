@@ -1,0 +1,202 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT=""
+NAME=""
+
+usage() {
+  cat <<'USAGE'
+Usage:
+  memory-project-init --project /path/to/project [--name "Project Name"]
+
+Creates a hidden project memory root at:
+  /path/to/project/.memory/
+
+Existing files are left untouched.
+USAGE
+}
+
+slugify() {
+  printf '%s' "$1" \
+    | tr '[:upper:]' '[:lower:]' \
+    | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//' \
+    | cut -c1-64
+}
+
+write_if_missing() {
+  local file="$1"
+  if [ -f "$file" ]; then
+    return 0
+  fi
+  mkdir -p "$(dirname "$file")"
+  cat > "$file"
+}
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --project) ROOT="${2:?missing --project value}"; shift 2 ;;
+    --name) NAME="${2:?missing --name value}"; shift 2 ;;
+    -h|--help) usage; exit 0 ;;
+    *) echo "Unknown argument: $1" >&2; usage >&2; exit 2 ;;
+  esac
+done
+
+[ -n "$ROOT" ] || { usage >&2; exit 2; }
+[ -d "$ROOT" ] || { echo "Project folder does not exist: $ROOT" >&2; exit 2; }
+command -v jq >/dev/null || { echo "jq is required" >&2; exit 2; }
+
+if [ -z "$NAME" ]; then
+  NAME="$(basename "$ROOT")"
+fi
+
+MEM="$ROOT/.memory"
+today="$(date +%Y-%m-%d)"
+ymd="$(date +%Y%m%d)"
+slug="$(slugify "$NAME")"
+[ -n "$slug" ] || slug="project"
+init_id="mem_${ymd}_project_init_${slug}"
+
+mkdir -p "$MEM/raw/chat" "$MEM/raw/files" "$MEM/raw/links" "$MEM/wiki" "$MEM/audits" "$MEM/tools"
+
+write_if_missing "$MEM/README.md" <<EOF
+# ${NAME} Memory
+
+Hidden project memory root for ${NAME}.
+
+Agents should read \`index.md\` and \`current.md\`, then search targeted files in \`wiki/\`. Do not load this whole folder.
+
+Use global helper tools:
+
+\`\`\`bash
+MEMORY_ROOT="$MEM" /Users/YOUR_USERNAME/.memory/tools/memory-search "query"
+MEMORY_ROOT="$MEM" /Users/YOUR_USERNAME/.memory/tools/memory-lint
+\`\`\`
+
+Never use MCP servers.
+EOF
+
+write_if_missing "$MEM/index.md" <<EOF
+# ${NAME} Memory Index
+
+Memory root: \`$MEM\`
+
+Read order:
+
+1. \`current.md\`
+2. Relevant files in \`wiki/\`
+3. Raw files only when provenance is needed
+
+Use:
+
+\`\`\`bash
+MEMORY_ROOT="$MEM" /Users/YOUR_USERNAME/.memory/tools/memory-search "query"
+\`\`\`
+
+The semantic index is derived lookup data. Rebuilds run automatically through the global launch agent.
+
+## Wiki
+
+| Page | Purpose |
+|---|---|
+| \`wiki/overview.md\` | What this project is and why it exists |
+| \`wiki/preferences.md\` | Project-specific preferences and constraints |
+| \`wiki/decisions.md\` | Decisions and rationale |
+| \`wiki/workflows.md\` | Repeatable workflows |
+| \`wiki/sources.md\` | Source references and provenance |
+EOF
+
+write_if_missing "$MEM/current.md" <<EOF
+# Current State
+
+Updated: ${today}
+
+## Project
+
+- ${NAME} has hidden project memory at \`$MEM\`. \`${init_id}\`
+
+## Default Behavior
+
+- Use project memory first for project-specific context.
+- Use global memory at \`/Users/YOUR_USERNAME/.memory/\` for Ivo-wide preferences.
+- Do not load the whole memory folder.
+- Run lint after memory edits:
+
+\`\`\`bash
+MEMORY_ROOT="$MEM" /Users/YOUR_USERNAME/.memory/tools/memory-lint
+\`\`\`
+- Semantic-index rebuilds run automatically through the global launch agent.
+EOF
+
+write_if_missing "$MEM/wiki/overview.md" <<EOF
+# Overview
+
+- ${NAME} project memory was initialized on ${today}. \`${init_id}\`
+EOF
+
+write_if_missing "$MEM/wiki/preferences.md" <<EOF
+# Preferences
+
+- No ${NAME}-specific preferences captured yet. This page was initialized with project memory. \`${init_id}\`
+EOF
+
+write_if_missing "$MEM/wiki/decisions.md" <<EOF
+# Decisions
+
+## ${today}
+
+- Initialized hidden project memory for ${NAME}. \`${init_id}\`
+EOF
+
+write_if_missing "$MEM/wiki/workflows.md" <<EOF
+# Workflows
+
+- No repeatable ${NAME} workflows captured yet. This page was initialized with project memory. \`${init_id}\`
+EOF
+
+write_if_missing "$MEM/wiki/sources.md" <<EOF
+# Sources
+
+- No ${NAME} source references captured yet. This page was initialized with project memory. \`${init_id}\`
+EOF
+
+write_if_missing "$MEM/raw/chat/${ymd}-project-memory-init.md" <<EOF
+---
+created_at: ${today}
+source: local_initialization
+topic: project memory initialization
+---
+
+Initialized hidden project memory for ${NAME} at \`$MEM\`.
+EOF
+
+touch "$MEM/ledger.ndjson"
+
+if ! grep -q "\"id\":\"${init_id}\"" "$MEM/ledger.ndjson"; then
+  jq -cn \
+    --arg id "$init_id" \
+    --arg created_at "$today" \
+    --arg claim "${NAME} has hidden project memory at $MEM." \
+    --arg source "raw/chat/${ymd}-project-memory-init.md" \
+    '{
+      id: $id,
+      created_at: $created_at,
+      type: "project-init",
+      claim: $claim,
+      source: $source,
+      target: "wiki/overview.md",
+      status: "verified",
+      confidence: 1.0
+    }' >> "$MEM/ledger.ndjson"
+fi
+
+GLOBAL_MEMORY="${GLOBAL_MEMORY_ROOT:-$HOME/.memory}"
+if [ -d "$GLOBAL_MEMORY" ]; then
+  roots_file="$GLOBAL_MEMORY/project-roots.txt"
+  touch "$roots_file"
+  if ! grep -Fxq "$MEM" "$roots_file"; then
+    printf '%s\n' "$MEM" >> "$roots_file"
+  fi
+fi
+
+MEMORY_ROOT="$MEM" /Users/YOUR_USERNAME/.memory/tools/memory-lint >/dev/null
+printf "%s\n" "$MEM"

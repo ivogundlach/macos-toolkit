@@ -1,0 +1,189 @@
+#!/usr/bin/env bash
+# Refresh macOS app icons and notification badges in Launchie, UserNotifications,
+# Launch Services, and IconServices.
+# Usage: refresh-app-icons
+set -euo pipefail
+
+launchie_domain="de.nick-friedrich.Launchie"
+launchie_app="/Applications/Launchie.app"
+target_apps=("/Applications/Codex.app")
+lsregister="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
+state_root="$HOME/.local/state/refresh-app-icons"
+usernoted_db="$HOME/Library/Group Containers/group.com.apple.usernoted/db2/db"
+group_state="$HOME/Library/Group Containers/group.com.apple.usernoted/GroupService/NotificationGroupState.json"
+user_cache_dir="$(getconf DARWIN_USER_CACHE_DIR 2>/dev/null || true)"
+user_temp_dir="$(getconf DARWIN_USER_TEMP_DIR 2>/dev/null || true)"
+
+cache_count() {
+  defaults export "$launchie_domain" - 2>/dev/null \
+    | /usr/bin/python3 -c 'import json,plistlib,sys; data=plistlib.loads(sys.stdin.buffer.read()).get("LaunchieCachedApps"); print(len(json.loads(data))) if data else None' 2>/dev/null || true
+}
+
+patch_codex_template_icons() {
+  local app="/Applications/Codex.app"
+  local source="$app/Contents/Resources/icon-codex-light.png"
+  local one_x="$app/Contents/Resources/codexTemplate.png"
+  local two_x="$app/Contents/Resources/codexTemplate@2x.png"
+  [[ -f "$source" && -f "$one_x" && -f "$two_x" ]] || return 0
+
+  local stamp template_backup_dir tmp_one tmp_two
+  stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+  template_backup_dir="$state_root/template-backups/$stamp"
+  mkdir -p "$template_backup_dir"
+  cp "$one_x" "$template_backup_dir/codexTemplate.png"
+  cp "$two_x" "$template_backup_dir/codexTemplate@2x.png"
+  codesign -dv --verbose=2 "$app" >"$template_backup_dir/codesign-before.txt" 2>&1 || true
+
+  tmp_one="$(mktemp /tmp/codexTemplate.XXXXXX.png)"
+  tmp_two="$(mktemp /tmp/codexTemplate2x.XXXXXX.png)"
+  sips -z 18 18 "$source" --out "$tmp_one" >/dev/null
+  sips -z 36 36 "$source" --out "$tmp_two" >/dev/null
+  cp "$tmp_one" "$one_x"
+  cp "$tmp_two" "$two_x"
+  rm -f "$tmp_one" "$tmp_two"
+
+  codesign --force --deep --sign - "$app" >/dev/null
+  echo "$template_backup_dir"
+}
+
+run_usernoted_sql() {
+  local sql="$1"
+  for _ in {1..5}; do
+    if sqlite3 -cmd 'PRAGMA busy_timeout=5000;' "$usernoted_db" "$sql"; then
+      return 0
+    fi
+    killall usernoted >/dev/null 2>&1 || true
+    sleep 0.5
+  done
+  return 1
+}
+
+before="$(cache_count)"
+template_backup="$(patch_codex_template_icons)"
+badges_before="$(
+  sqlite3 "$usernoted_db" 'select count(*) from app where badge is not null and badge != 0;' 2>/dev/null || true
+)"
+unread_records_before="$(
+  sqlite3 "$usernoted_db" 'select count(*) from record where presented = 0 or presented is null;' 2>/dev/null || true
+)"
+
+defaults delete "$launchie_domain" LaunchieCachedApps 2>/dev/null || true
+osascript -e 'tell application "Launchie" to quit' 2>/dev/null || true
+for _ in {1..20}; do
+  pgrep -x Launchie >/dev/null || break
+  sleep 0.25
+done
+
+if [[ -x "$lsregister" ]]; then
+  "$lsregister" -kill -r -domain local -domain system -domain user >/dev/null 2>&1 || true
+fi
+
+killall NotificationCenter UserNotificationCenter usernoted iconservicesagent iconservicesd lsd quicklookd QuickLookUIService ThumbnailsAgent >/dev/null 2>&1 || true
+
+clear_os_icon_caches() {
+  local dir="$1"
+  [[ -n "$dir" && -d "$dir" ]] || return 0
+  case "$dir" in
+    /var/folders/*/*/*/C/|/private/var/folders/*/*/*/C/|/var/folders/*/*/*/T/|/private/var/folders/*/*/*/T/) ;;
+    *) return 0 ;;
+  esac
+  find "$dir" -maxdepth 1 \( \
+    -name 'com.apple.iconservices*' -o \
+    -name 'com.apple.quicklook*' -o \
+    -name 'com.apple.QuickLook*' \
+  \) -print -exec rm -rf {} + 2>/dev/null || true
+}
+
+clear_os_icon_caches "$user_cache_dir"
+clear_os_icon_caches "$user_temp_dir"
+qlmanage -r cache >/dev/null 2>&1 || true
+
+for app in "${target_apps[@]}"; do
+  if [[ -d "$app" ]]; then
+    touch "$app"
+    mdimport "$app" >/dev/null 2>&1 || true
+    if [[ -x "$lsregister" ]]; then
+      "$lsregister" -f "$app" >/dev/null 2>&1 || true
+    fi
+  fi
+done
+
+timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
+backup_dir="$state_root/backups/$timestamp"
+mkdir -p "$backup_dir"
+
+if [[ -f "$usernoted_db" ]]; then
+  cp "$usernoted_db" "$backup_dir/usernoted-db.sqlite" 2>/dev/null || true
+  [[ -f "$usernoted_db-wal" ]] && cp "$usernoted_db-wal" "$backup_dir/usernoted-db.sqlite-wal" 2>/dev/null || true
+  [[ -f "$usernoted_db-shm" ]] && cp "$usernoted_db-shm" "$backup_dir/usernoted-db.sqlite-shm" 2>/dev/null || true
+  run_usernoted_sql 'PRAGMA wal_checkpoint(FULL); UPDATE app SET badge = 0 WHERE badge IS NOT NULL AND badge != 0; DELETE FROM record; DELETE FROM delivered; DELETE FROM displayed; DELETE FROM snoozed;' >/dev/null || true
+fi
+
+if [[ -f "$group_state" ]]; then
+  cp "$group_state" "$backup_dir/NotificationGroupState.json" 2>/dev/null || true
+  /usr/bin/python3 - "$group_state" <<'PY'
+import json
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+try:
+    state = json.loads(path.read_text())
+    for section in state.get("sections", []):
+        section["notificationIdsByBundleId"] = {}
+    path.write_text(json.dumps(state, separators=(",", ":")))
+except OSError:
+    pass
+PY
+fi
+
+killall Finder Dock SystemUIServer iconservicesagent iconservicesd lsd quicklookd QuickLookUIService ThumbnailsAgent >/dev/null 2>&1 || true
+
+if [[ -d "$launchie_app" ]]; then
+  opened=0
+  for _ in {1..5}; do
+    if open -a "$launchie_app"; then
+      opened=1
+      break
+    fi
+    sleep 1
+  done
+  if [[ "$opened" != "1" ]]; then
+    echo "Launchie failed to reopen: $launchie_app" >&2
+    exit 1
+  fi
+else
+  echo "Launchie missing: $launchie_app" >&2
+  exit 1
+fi
+
+after=""
+for _ in {1..20}; do
+  sleep 0.5
+  after="$(cache_count)"
+  if [[ -n "$after" && "$after" != "0" ]]; then
+    break
+  fi
+done
+badges_after="$(
+  sqlite3 "$usernoted_db" 'select count(*) from app where badge is not null and badge != 0;' 2>/dev/null || true
+)"
+unread_records_after="$(
+  sqlite3 "$usernoted_db" 'select count(*) from record where presented = 0 or presented is null;' 2>/dev/null || true
+)"
+history_records_after="$(
+  sqlite3 "$usernoted_db" 'select count(*) from record;' 2>/dev/null || true
+)"
+
+echo "Launchie cache before: ${before:-unknown}"
+echo "Launchie cache after: ${after:-unknown}"
+echo "Notification badge rows before: ${badges_before:-unknown}"
+echo "Notification badge rows after: ${badges_after:-unknown}"
+echo "Unread notification records before: ${unread_records_before:-unknown}"
+echo "Unread notification records after: ${unread_records_after:-unknown}"
+echo "Delivered notification history after: ${history_records_after:-unknown}"
+echo "Backup: $backup_dir"
+[[ -n "${template_backup:-}" ]] && echo "Template icon backup: $template_backup"
+pgrep -x Launchie >/dev/null && echo "Launchie: running" || echo "Launchie: not running"
+pgrep -x NotificationCenter >/dev/null && echo "NotificationCenter: running" || echo "NotificationCenter: restarted on demand"
+pgrep -x UserNotificationCenter >/dev/null && echo "UserNotificationCenter: running" || echo "UserNotificationCenter: restarted on demand"

@@ -1,0 +1,32 @@
+#!/bin/bash
+# Cron dispatcher for the Market pipeline — replaces the three launchd agents
+# com.ivo.market.{ingest,debrief,watchdog} (2026-07-09). Those ran the venv
+# python directly, so macOS BTM listed them as anonymous "python" background
+# items and re-announced them on every background-item change. Cron jobs are
+# not BTM items, so the notifications stop.
+#
+# Invoked every 15 min. Each stage runs once per day, at or after its
+# scheduled time (ingest 08:00, debrief 16:15, watchdog 17:10) — a stamp file
+# per stage/day gives launchd-style catch-up after sleep, which bare cron
+# time-slot lines would silently skip.
+MARKET=/Users/YOUR_USERNAME/Projects/Market
+PY="$MARKET/venv/bin/python"
+LOGS="$MARKET/out/launchd_logs"
+STAMPS="$MARKET/out/cron_stamps"
+mkdir -p "$LOGS" "$STAMPS"
+TODAY=$(date +%Y-%m-%d)
+NOW=$(date +%H%M)
+
+run_stage() { # name after_hhmm cmd...
+    local name="$1" after="$2"; shift 2
+    local stamp="$STAMPS/$name.$TODAY"
+    [ "$NOW" -lt "$after" ] && return 0
+    [ -e "$stamp" ] && return 0
+    touch "$stamp"
+    ( cd "$MARKET" && "$@" >> "$LOGS/$name.out" 2>> "$LOGS/$name.err" )
+    find "$STAMPS" -name "$name.*" ! -name "$name.$TODAY" -delete
+}
+
+run_stage ingest   0800 "$PY" "$MARKET/pipeline/run.py" ingest
+run_stage debrief  1615 "$PY" "$MARKET/pipeline/run.py" debrief
+run_stage watchdog 1710 "$PY" "$MARKET/pipeline/watchdog.py"

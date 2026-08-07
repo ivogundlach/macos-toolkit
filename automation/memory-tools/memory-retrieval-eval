@@ -1,0 +1,273 @@
+#!/usr/bin/env python3
+"""memory-retrieval-eval — measure whether semantic search actually finds things.
+
+The Tool Status registry proves the memory tools RUN. Nothing proved they WORK.
+This scores real questions against known-correct answers so retrieval quality is
+a number that can regress visibly instead of degrading silently.
+
+  memory-retrieval-eval              human report, exit 1 if recall@5 < threshold
+  memory-retrieval-eval --json       machine output
+  memory-retrieval-eval --verbose    show what came back for every case
+
+Gold set: ~/.memory/evals/retrieval-gold.jsonl, one case per line:
+    {"q": "natural question", "expect": "path substring", "note": "why"}
+
+`expect` is a SUBSTRING of the expected result path, so cases survive file moves
+and date-stamped capture names. Questions are deliberately phrased in different
+vocabulary from their target file — a gold set that restates the filename tests
+nothing but the tokenizer.
+
+The evals/ directory is excluded from indexing (index-scope-excludes.tsv): this
+file contains every question, so indexing it would let each query match its own
+answer key.
+
+Threshold: MEMORY_EVAL_MIN_RECALL5 (default 0.80). Exit 0 pass, 1 below
+threshold, 2 setup error.
+
+MEMORY_EVAL_EXIT_OK=1 forces exit 0 even when below threshold. The scheduled
+LaunchAgent sets it: a dip in recall is a QUALITY signal, reported by the
+Dashboard from last-run.json, not a broken job. Without this, launchd records a
+nonzero exit and the job itself looks failed, which is a different problem with a
+different fix and would send the wrong person looking in the wrong place.
+
+--contamination checks that no gold question appears verbatim in the corpus.
+A question that does becomes the top hit for its own case, so the eval would
+score its own paperwork instead of the memory system. This is not theoretical:
+it happened on the first run, via the capture that documented the eval.
+"""
+import json, os, re, subprocess, sys
+
+ROOT = os.environ.get("MEMORY_ROOT", os.path.expanduser("~/.memory"))
+GOLD = os.path.join(ROOT, "evals", "retrieval-gold.jsonl")
+QUERY = os.path.join(ROOT, "tools", "memory-semantic-query")
+STATE = os.path.expanduser("~/.local/state/memory-retrieval-eval")
+MIN_R5 = float(os.environ.get("MEMORY_EVAL_MIN_RECALL5", "0.80"))
+TOPK = 5
+
+RESULT_RE = re.compile(r"^\s*(-?\d+\.\d+)\s+(\S.*)$")
+
+
+def open_index(dbp):
+    """Read-only connection that actually sees the CURRENT index.
+
+    Not `immutable=1`. That flag promises sqlite the file cannot change, so it
+    skips the -wal entirely and reads a pre-checkpoint snapshot — on this WAL
+    database that is minutes-to-hours stale. It cost a real diagnosis: after a
+    contaminating line was removed and the file reindexed, this check kept
+    reporting the contamination, because the fix was sitting in the -wal it
+    refused to read. A stale reader reports the past as the present.
+
+    `immutable=1` is kept only as a FALLBACK, for the case it was introduced to
+    solve: a WAL database whose -shm cannot be created (read-only directory,
+    another uid) fails to open mode=ro at all. A stale answer beats no answer for
+    a diagnostic — but only after the honest read has been tried.
+    """
+    import sqlite3
+    try:
+        return sqlite3.connect(f"file:{dbp}?mode=ro", uri=True)
+    except sqlite3.OperationalError:
+        return sqlite3.connect(f"file:{dbp}?immutable=1", uri=True)
+
+
+QUERY_ERRORS = []
+
+
+def run_query(q, top=TOPK):
+    """Return the ranked result paths for one question.
+
+    A query that ERRORS is not a query that found nothing. Scoring a crash as a
+    zero is the worst failure this harness can have: it reports a broken tool as
+    a quality problem, sending every hour of investigation to the wrong place.
+    Found live — a two-letter word in a question produced an empty FTS5 group,
+    which killed the whole query, and 12 cases were silently scored as misses.
+    Errors are collected and surfaced separately, and any run with one refuses to
+    report a number at all.
+    """
+    env = dict(os.environ)
+    env["MEMORY_QUERY_LOG"] = "0"      # eval traffic must not pollute real telemetry
+    out = subprocess.run([sys.executable, QUERY, "--top", str(top), q],
+                         capture_output=True, text=True, env=env, timeout=60)
+    paths = []
+    for line in out.stdout.splitlines():
+        m = RESULT_RE.match(line)
+        if m and not line.startswith("         "):
+            paths.append(m.group(2).strip())
+    # The query tool exits 0 on a handled query error and prints to stdout, so a
+    # non-zero returncode alone is not enough to detect this.
+    err = (out.stderr or "") + "\n" + "\n".join(
+        l for l in out.stdout.splitlines() if "query error" in l)
+    for line in err.splitlines():
+        line = line.strip()
+        if not line or "WARNING" in line:
+            continue
+        if "error" in line.lower() or "Traceback" in line:
+            QUERY_ERRORS.append({"q": q, "error": line})
+            break
+    if out.returncode not in (0,):
+        QUERY_ERRORS.append({"q": q, "error": f"exit {out.returncode}"})
+    return paths
+
+
+def unresolvable(cases):
+    """Gold cases whose expected document is no longer in the index.
+
+    A renamed or deleted target makes its case impossible to satisfy. Counted as
+    a retrieval miss it would look like a permanent ranking regression that no
+    amount of tuning fixes — the same failure shape as any proxy that silently
+    turns missing data into bad data. Reported separately and EXCLUDED from the
+    score, so the number keeps meaning what it says.
+    """
+    import sqlite3
+    dbp = os.environ.get("SEMANTIC_DB", os.path.join(ROOT, "semantic-index.sqlite"))
+    if not os.path.isfile(dbp):
+        return []
+    try:
+        db = open_index(dbp)
+        paths = [f"{rt}/{rp}" for rt, rp in
+                 db.execute("SELECT root_tag, rel_path FROM docs")]
+        db.close()
+    except sqlite3.DatabaseError:
+        return []
+    return [c["expect"] for c in cases
+            if not any(c["expect"] in p for p in paths)]
+
+
+def contamination(cases):
+    """Gold questions that appear verbatim inside an indexed document.
+
+    Such a case is unscoreable: the document restating the question is the best
+    lexical match for it by construction, so the eval measures its own notes.
+    Matching is on the raw text the index actually holds, which is exactly what
+    the ranker sees.
+    """
+    import sqlite3
+    dbp = os.environ.get("SEMANTIC_DB", os.path.join(ROOT, "semantic-index.sqlite"))
+    if not os.path.isfile(dbp):
+        return []
+    hits = []
+    try:
+        db = open_index(dbp)
+        for c in cases:
+            q = c["q"].strip().lower()
+            for rt, rp, raw in db.execute("SELECT root_tag, rel_path, raw FROM docs"):
+                if q in (raw or "").lower():
+                    hits.append({"q": c["q"], "path": f"{rt}/{rp}"})
+                    break
+        db.close()
+    except sqlite3.DatabaseError:
+        return []
+    return hits
+
+
+def main():
+    argv = sys.argv[1:]
+    if any(a in ("-h", "--help") for a in argv):
+        print(__doc__); return 0
+    if any(a in ("--version", "-V") for a in argv):
+        print("memory-retrieval-eval (recall@k for memory-semantic-query)"); return 0
+    as_json = "--json" in argv
+    verbose = "--verbose" in argv
+    contam_only = "--contamination" in argv
+
+    if not os.path.isfile(GOLD):
+        print(f"memory-retrieval-eval: no gold set at {GOLD}", file=sys.stderr); return 2
+
+    cases = []
+    for i, line in enumerate(open(GOLD), 1):
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        try:
+            c = json.loads(line)
+            cases.append(c)
+        except json.JSONDecodeError:
+            print(f"memory-retrieval-eval: bad JSON at {GOLD}:{i}", file=sys.stderr); return 2
+    if not cases:
+        print("memory-retrieval-eval: gold set is empty", file=sys.stderr); return 2
+
+    missing = unresolvable(cases)
+    if missing:
+        print(f"WARNING: {len(missing)} gold case(s) point at a document that is no "
+              "longer indexed; excluded from the score, fix or retire them:",
+              file=sys.stderr)
+        for m in missing:
+            print(f"  {m}", file=sys.stderr)
+        cases = [c for c in cases if c["expect"] not in missing]
+        if not cases:
+            print("memory-retrieval-eval: every gold case is unresolvable", file=sys.stderr)
+            return 2
+
+    contaminated = contamination(cases)
+    if contam_only:
+        for c in contaminated:
+            print(f"CONTAMINATED: {c['path']}\n  contains gold question: {c['q']}")
+        if not contaminated:
+            print(f"no contamination: none of {len(cases)} gold questions "
+                  "appears verbatim in an indexed document")
+        return 1 if contaminated else 0
+
+    hits1 = hits5 = 0
+    failures, results = [], []
+    for c in cases:
+        paths = run_query(c["q"])
+        want = c["expect"]
+        rank = next((i + 1 for i, p in enumerate(paths) if want in p), None)
+        if rank == 1:
+            hits1 += 1
+        if rank is not None and rank <= TOPK:
+            hits5 += 1
+        else:
+            failures.append({"q": c["q"], "expect": want, "got": paths[:3],
+                             "note": c.get("note", "")})
+        results.append({"q": c["q"], "expect": want, "rank": rank})
+        if verbose:
+            mark = "ok  " if rank == 1 else ("~   " if rank else "MISS")
+            print(f"{mark} r={rank if rank else '-':>2}  {c['q'][:58]}")
+
+    n = len(cases)
+    r1, r5 = hits1 / n, hits5 / n
+    # A run with query errors measured a broken tool, not retrieval quality. It
+    # must never PASS, and it must never overwrite a good verdict with a number
+    # that means nothing.
+    summary = {"cases": n, "recall_at_1": round(r1, 3), "recall_at_5": round(r5, 3),
+               "threshold": MIN_R5,
+               "pass": r5 >= MIN_R5 and not QUERY_ERRORS, "failures": failures,
+               "contaminated": contaminated, "unresolvable": missing,
+               "query_errors": QUERY_ERRORS[:10],
+               "query_error_count": len(QUERY_ERRORS)}
+    if QUERY_ERRORS:
+        summary["headline"] = (f"{len(QUERY_ERRORS)} quer(ies) failed to run — "
+                               "the score below is not a quality measurement")
+
+    os.makedirs(STATE, exist_ok=True)
+    with open(os.path.join(STATE, "last-run.json"), "w") as fh:
+        json.dump(summary, fh, indent=2)
+
+    if as_json:
+        print(json.dumps(summary, indent=2))
+    else:
+        print(f"\nretrieval eval: {n} cases | recall@1 {r1:.0%} | recall@5 {r5:.0%} "
+              f"| threshold {MIN_R5:.0%} -> {'PASS' if summary['pass'] else 'FAIL'}")
+        if QUERY_ERRORS:
+            print(f"\nBROKEN: {len(QUERY_ERRORS)} quer(ies) ERRORED rather than "
+                  "returning nothing. The score above measures a broken query "
+                  "tool, not retrieval quality — fix this before reading it:")
+            for e in QUERY_ERRORS[:5]:
+                print(f"  {e['error']}\n    Q: {e['q'][:70]}")
+        if contaminated:
+            print(f"\nWARNING: {len(contaminated)} gold question(s) appear verbatim in "
+                  "an indexed file, so those cases score the paperwork, not the memory:")
+            for c in contaminated:
+                print(f"  {c['path']}\n    {c['q']}")
+        if failures:
+            print(f"\n{len(failures)} case(s) where the right file was NOT in the top {TOPK}:")
+            for f in failures:
+                print(f"  Q: {f['q']}")
+                print(f"     want *{f['expect']}*  got: {', '.join(f['got']) or '(nothing)'}")
+    if os.environ.get("MEMORY_EVAL_EXIT_OK") == "1":
+        return 0
+    return 0 if summary["pass"] else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

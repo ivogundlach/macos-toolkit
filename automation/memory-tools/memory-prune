@@ -1,0 +1,157 @@
+#!/usr/bin/env python3
+"""memory-prune — bloat removal for ~/.memory/raw/chat captures.
+
+Two-step, non-destructive workflow:
+  memory-prune                 -> writes a REPORT (no mutation) and prints it
+  memory-prune --apply REPORT  -> after Ivo approves the exact report: backs up
+                                  (verified tar), then adds `status: stale` to
+                                  the frontmatter of the non-canonical member
+                                  of each EXACT-duplicate group only.
+
+Capture identity is topic+body, never body alone: many legitimate captures have
+a body of just "Yes." with all the meaning in the topic line.
+Near-duplicates and empty-body captures are REPORTED for manual decision, never
+auto-staled. Nothing is ever deleted; ledger.ndjson is never touched. Stale
+files drop out of the semantic index at the next scheduled build (the builder
+skips `status: stale` files and prunes their rows). Un-stale by removing the
+line. Every marking is appended to an audit log.
+"""
+import sys, os, re, json, hashlib, tarfile, datetime
+from pathlib import Path
+
+MEMORY_ROOT = Path(os.environ.get("MEMORY_ROOT", Path.home() / ".memory"))
+CHAT = MEMORY_ROOT / "raw/chat"
+STATE = Path.home() / ".local/state/memory-prune"
+AUDIT = STATE / "audit.ndjson"
+
+FM_RE = re.compile(r"\A---\n(.*?)\n---\n", re.DOTALL)
+
+def load_captures():
+    caps = []
+    for f in sorted(CHAT.rglob("*.md")):
+        text = f.read_text(errors="ignore")
+        m = FM_RE.match(text)
+        fm = m.group(1) if m else ""
+        body = text[m.end():] if m else text
+        stale = bool(re.search(r"^status:\s*stale\s*$", fm, re.MULTILINE))
+        cm = re.search(r"^created_at:\s*(\S+)", fm, re.MULTILINE)
+        tm = re.search(r"^topic:\s*(.+)$", fm, re.MULTILINE)
+        topic = (tm.group(1).strip() if tm else "")
+        # Identity = topic + body. Thin captures are common and legitimate: the
+        # body is often a bare "Yes." approving something, and ALL the meaning
+        # lives in the topic line. Hashing the body alone would collapse three
+        # distinct approvals into one "duplicate" group and destroy the record
+        # of what was approved.
+        ident = hashlib.sha256((topic + "\n" + body.strip()).encode()).hexdigest()[:16]
+        caps.append({"path": f, "body": body.strip(), "stale": stale, "topic": topic,
+                     "created": cm.group(1) if cm else "",
+                     "bodyhash": ident})
+    return caps
+
+def tokens(s):
+    return {t for t in re.findall(r"[a-z0-9]+", s.lower()) if len(t) > 2}
+
+def build_report(caps):
+    active = [c for c in caps if not c["stale"]]
+    # exact duplicate groups (same normalized body)
+    by_hash = {}
+    for c in active:
+        by_hash.setdefault(c["bodyhash"], []).append(c)
+    exact = []
+    for h, group in by_hash.items():
+        if len(group) > 1:
+            group.sort(key=lambda c: c["created"], reverse=True)  # newest = canonical
+            exact.append({"keep": str(group[0]["path"]),
+                          "stale": [str(c["path"]) for c in group[1:]]})
+    # near-duplicates (report only) — compare topic+body so thin captures whose
+    # meaning lives in the topic are not judged on body text alone
+    near = []
+    toks = [(c, tokens(c["topic"] + " " + c["body"])) for c in active
+            if len(c["topic"] + c["body"]) > 40]
+    for i in range(len(toks)):
+        for j in range(i + 1, len(toks)):
+            a, ta = toks[i]; b, tb = toks[j]
+            if not ta or not tb or a["bodyhash"] == b["bodyhash"]:
+                continue
+            jac = len(ta & tb) / len(ta | tb)
+            if jac >= 0.9:
+                near.append({"a": str(a["path"]), "b": str(b["path"]),
+                             "jaccard": round(jac, 3)})
+    # Empty-body captures (report only). NOT a length heuristic: a terse capture
+    # like "Yes." or a one-line user correction is among the highest-value
+    # memory there is (verbatim user voice). Only a genuinely empty body — no
+    # content under the frontmatter at all — is flagged.
+    tiny = [str(c["path"]) for c in active if not c["body"]]
+    return {"generated_at": datetime.datetime.now().astimezone().isoformat(timespec="seconds"),
+            "scanned": len(caps), "already_stale": len(caps) - len(active),
+            "exact_duplicate_groups": exact,
+            "near_duplicates_manual": near,
+            "empty_body_manual": tiny}
+
+def apply_report(report_path):
+    report = json.loads(Path(report_path).read_text())
+    targets = [Path(p) for g in report["exact_duplicate_groups"] for p in g["stale"]]
+    if not targets:
+        print("nothing to apply: no exact-duplicate groups in report")
+        return 0
+    # verified backup before mutation
+    STATE.mkdir(parents=True, exist_ok=True)
+    ts = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+    bak = STATE / f"backup-{ts}.tar.gz"
+    with tarfile.open(bak, "w:gz") as tar:
+        tar.add(CHAT, arcname="raw-chat")
+        led = MEMORY_ROOT / "ledger.ndjson"
+        if led.is_file():
+            tar.add(led, arcname="ledger.ndjson")
+    with tarfile.open(bak, "r:gz") as tar:   # integrity check: fully readable
+        names = tar.getnames()
+    n_md = sum(1 for f in CHAT.rglob('*.md'))
+    if len([n for n in names if n.endswith(".md")]) < n_md:
+        print(f"ABORT: backup incomplete ({bak})"); return 1
+    print(f"backup verified: {bak} ({len(names)} entries)")
+
+    marked = 0
+    with open(AUDIT, "a") as audit:
+        for p in targets:
+            if not p.is_file():
+                print(f"skip (missing): {p}"); continue
+            text = p.read_text(errors="ignore")
+            m = FM_RE.match(text)
+            if not m or re.search(r"^status:\s*stale\s*$", m.group(1), re.MULTILINE):
+                continue
+            new = text[:m.end() - 4] + "status: stale\n---\n" + text[m.end():]
+            p.write_text(new)
+            audit.write(json.dumps({"ts": ts, "action": "stale-mark",
+                                    "file": str(p), "backup": str(bak)}) + "\n")
+            marked += 1
+    print(f"stale-marked {marked} exact-duplicate capture(s); "
+          "index rows drop at the next scheduled semantic build")
+    print(f"rollback: tar -xzf {bak} -C {CHAT.parent} raw-chat")
+    return 0
+
+def main():
+    # Probes must be answered before any work: the Tool Status registry health
+    # check runs `<binary> --version`, and falling through to the report path
+    # made every dashboard scan write a report file (22 accumulated in one
+    # evening). Same reason memory-transcript-distill answers probes early.
+    if any(a in ("--version", "-V") for a in sys.argv[1:]):
+        print("memory-prune (report-first dedup for ~/.memory/raw/chat)")
+        return 0
+    if any(a in ("--help", "-h") for a in sys.argv[1:]):
+        print(__doc__)
+        return 0
+    if "--apply" in sys.argv:
+        i = sys.argv.index("--apply")
+        if i + 1 >= len(sys.argv):
+            print("usage: memory-prune --apply REPORT.json"); return 2
+        return apply_report(sys.argv[i + 1])
+    report = build_report(load_captures())
+    STATE.mkdir(parents=True, exist_ok=True)
+    out = STATE / f"report-{datetime.datetime.now().strftime('%Y%m%d-%H%M%S')}.json"
+    out.write_text(json.dumps(report, indent=2))
+    print(json.dumps(report, indent=2))
+    print(f"\nreport written: {out}\napply with: memory-prune --apply {out}")
+    return 0
+
+if __name__ == "__main__":
+    raise SystemExit(main())
