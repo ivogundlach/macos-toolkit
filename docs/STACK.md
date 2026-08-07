@@ -385,6 +385,12 @@ Excluded on purpose: `AmethystFork` (a fork with upstream history) and the
 third-party clones `CLI-Anything`, `CodexBar`, `knockoff`, `claude-video` — those
 are mirrored separately as `*-local` repos.
 
+**The app list is hardcoded**, in `APPS=()` in `~/.local/bin/app-repo-lib.sh`.
+Nothing discovers apps from the filesystem, so a new app has no repo until it is
+added there and `app-repo-bootstrap` is run. That rule is now written into the
+`github-workflow` skill, because the failure is silent: an unlisted app is not
+reported as missing, it is simply never backed up per-change.
+
 ### 7b. Snapshot archive — `personal-repo-sync` *(backstop)*
 
 `g2pxg4mff4-wq/Personal-Repo`, nightly at 23:30. A daily full-tree snapshot of
@@ -396,6 +402,21 @@ tree is routinely dirty and its last local commit is old. Every run uses a fresh
 shallow clone. Reading the local checkout to judge the backup's health is a
 category error (and exactly the "reading a proxy instead of real state" trap
 documented in §11).
+
+Its coverage is not uniform, and the difference matters:
+
+- **LaunchAgents are archived by glob** (`com.ivo*.plist`, `com.user.*.plist`).
+  A new job is picked up with no action
+- **`~/.local/bin` is archived from an explicit list** — `local_bin_scripts` in
+  `scripts/sync-from-machine.sh`. A new script is **not** picked up, and nothing
+  notices: the loop verifies that every listed source exists, never that every
+  existing source is listed. On 2026-08-06 that had left `app-repo-sync`,
+  `app-repo-bootstrap`, `app-repo-lib.sh`, and `public-toolkit-publish` — the
+  machinery of §7a and §7f — with no backup at all
+
+Adding a durable script to `~/.local/bin` therefore includes adding it to that
+manifest. Third-party binaries (`agy`, `uv`, `uvx`, the `*-pp-cli` tools) and
+compiled products archived from source elsewhere (`quit-on-close`) stay out.
 
 ### 7c. Memory corpus — `memory-corpus-backup` *(daily 17:30)*
 
@@ -480,6 +501,37 @@ source rather than patched in the export:
 - The vendored `bird-search` library is MIT with its `LICENSE` and copyright
   notice preserved, and its hardcoded bearer token is Twitter's public web-client
   token, not a personal credential
+
+**What is included is decided by a positive allowlist of roots**, not by a
+denylist. `positive_roots` in `public/export-policy.json` names thirteen roots
+(`apps`, `automation/codex`, `automation/local-bin`, `automation/memory-tools`,
+`automation/memory-tests`, and others); a file landing in one of them with an
+allowed suffix is published on the next 13:15 run without anyone deciding to
+publish it. That is the property to keep in mind when writing a new file: opting
+*out* is the deliberate act, via `excluded_roots` plus `documented_exclusions`.
+
+The memory system is the intended shape of that split. `automation/memory-tools`
+and `automation/memory-tests` are positive roots, so the whole retrieval stack —
+chunker, embedder, fusion, daemon, the vector matrix, the health and eval
+harnesses — is public and copyable. `.memory` is both an excluded root and an
+excluded *directory name*, so the notes, the semantic index, the transcripts, and
+the retrieval gold set are not. A memory tool must read its data from `~/.memory`
+at runtime and never carry corpus content, gold questions, or captured notes
+inline; the eval harness is public precisely because its gold set lives in
+`~/.memory/evals/` rather than in the script.
+
+Scripts that hold private repository identity are excluded and documented:
+`personal-repo-sync`, `public-toolkit-publish`, and the three `app-repo-*` files.
+Behind those hand-written exclusions sits a detector that **fails the build** on
+any `github.com/g2pxg4mff4-wq/…` reference other than `macos-toolkit` itself. The
+exclusions are the intent; the detector is the backstop for the next file nobody
+remembers to exclude.
+
+The honest limit: every gate here catches *secrets and identity*. None of them
+can detect content that is merely **personal** — a third party's name, a private
+message, someone else's address. That class has only ever been caught by reading
+the file, which is why fixtures and sample data under a positive root must be
+written as though a stranger will read them, because one will.
 
 ---
 
