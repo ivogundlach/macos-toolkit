@@ -322,7 +322,7 @@ def should_queue_repair(item: dict[str, Any], incident: dict[str, Any]) -> tuple
     # authority from Auth incidents, so Terra could at best burn a full run to
     # restate "needs login". These route straight to a one-click sign-in card.
     fix = item.get("fix") or {}
-    if fix.get("kind") == "launch" or item.get("category") == "Auth":
+    if fix.get("kind") == "launch" or item.get("category") == "Auth" or item.get("needsIvo"):
         return False, "needs-ivo-not-agent"
     standing = standing_request(str(item.get("id") or ""))
     if standing is not None:

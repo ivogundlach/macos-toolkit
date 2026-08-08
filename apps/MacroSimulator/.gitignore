@@ -24,3 +24,6 @@ build-clt/
 **/*.key
 **/*.p12
 **/*.mobileprovision
+
+# Compiled output — rebuild with ./build.sh
+/MacroSimulatorApp

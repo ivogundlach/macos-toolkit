@@ -3,7 +3,7 @@
   "type": "object",
   "additionalProperties": false,
   "properties": {
-    "schemaVersion": {"const": 5},
+    "schemaVersion": {"type": "integer", "enum": [5]},
     "status": {
       "type": "string",
       "enum": ["repaired", "needs_approval", "failed", "no_change"]
@@ -87,6 +87,7 @@
   },
   "required": [
     "schemaVersion", "status", "summary", "root_cause", "proposed_fix", "decision_impact", "decision_basis",
-    "research_urls", "verification", "changed_paths", "proposed_paths", "requested_action", "hard_stop"
+    "research_urls", "verification", "changed_paths", "proposed_paths", "escalation", "requested_action",
+    "hard_stop"
   ]
 }

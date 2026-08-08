@@ -1,0 +1,21 @@
+# Rebuild:  python3 -m venv venv && venv/bin/python -m pip install -r requirements.txt
+#
+# The venv/ directory is gitignored, so this file is the only record of what
+# belongs in it. Captured 2026-08-07 from the working environment.
+# Python 3.9 (the venv's interpreter).
+
+exchange_calendars==4.5.6
+greenlet==3.2.5
+korean-lunar-calendar==0.3.1
+numpy==2.0.2
+pandas==2.3.3
+playwright==1.60.0
+pyee==13.0.1
+pyluach==2.3.0
+pypdf==6.13.2
+python-dateutil==2.9.0.post0
+pytz==2026.2
+six==1.17.0
+toolz==1.1.0
+typing_extensions==4.15.0
+tzdata==2026.2

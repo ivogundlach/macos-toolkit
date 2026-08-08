@@ -3,15 +3,7 @@
   "type": "object",
   "additionalProperties": false,
   "properties": {
-    "schemaVersion": {"const": 5},
-    "requestID": {"type": "string", "minLength": 1, "maxLength": 200},
-    "incidentID": {"type": "string", "maxLength": 400},
-    "generation": {"type": "string", "minLength": 16, "maxLength": 200},
-    "revision": {"type": "integer", "minimum": 1},
-    "authorityDigest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
-    "decision": {"type": "string", "enum": ["approve", "deny", "dismiss", "thoughts", "stop", "revoke"]},
-    "thoughts": {"type": "string", "maxLength": 2400},
-    "createdAt": {"type": "string", "maxLength": 80},
+    "schemaVersion": {"type": "integer", "enum": [5]},
     "decision_impact": {"type": "string", "enum": ["preserves_decisions", "overrides_decision", "uncertain"]},
     "decision_basis": {"type": "string", "maxLength": 2400},
     "confidence": {"type": "string", "enum": ["high", "medium", "low"]},
@@ -28,12 +20,5 @@
       }
     }
   },
-  "anyOf": [
-    {
-      "required": ["schemaVersion", "requestID", "generation", "revision", "authorityDigest", "decision", "thoughts", "createdAt"]
-    },
-    {
-      "required": ["decision_impact", "decision_basis", "confidence", "contract_citations"]
-    }
-  ]
+  "required": ["schemaVersion", "decision_impact", "decision_basis", "confidence", "contract_citations"]
 }

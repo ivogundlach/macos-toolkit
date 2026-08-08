@@ -8,6 +8,37 @@ BIN="$BUILD/ToolStatusDashboard"
 SDK="$(xcrun --show-sdk-path)"
 TARGET="arm64-apple-macosx26.0"
 
+# The model API rejects an output schema outside its strict structured-output
+# subset with a 400, before the repair agent runs at all. That failure is
+# server-side and looks exactly like an ordinary unsuccessful repair, so a
+# `{"const": 5}` property shipped on 2026-08-04 and silently made every repair a
+# no-op for three days. Refuse to deploy a schema that would be rejected.
+python3 - "$ROOT" <<'VALIDATE_SCHEMAS' || exit 1
+import importlib.util, json, sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+spec = importlib.util.spec_from_file_location("w", root / "scripts/tool-status-repair-worker.py")
+worker = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(worker)
+problems = []
+for name in ("tool-status-repair-result.schema.json", "tool-status-repair-decision.schema.json"):
+    path = root / "scripts" / name
+    try:
+        schema = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as error:
+        problems.append(f"{name}: unreadable ({error})")
+        continue
+    problems.extend(f"{name}: {issue}" for issue in worker.structured_output_schema_errors(schema))
+if problems:
+    print("Refusing to build: the model API would reject these repair schemas,")
+    print("which would make every repair a silent no-op:")
+    for problem in problems:
+        print(f"  - {problem}")
+    raise SystemExit(1)
+print("Repair output schemas conform to the API structured-output subset.")
+VALIDATE_SCHEMAS
+
 rm -rf "$APP" "$BIN" "$BUILD/render-preview" \
   "$BUILD/Tool Status Dashboard.app" \
   "$BUILD/Tool Status Dashboard Notifier.app"

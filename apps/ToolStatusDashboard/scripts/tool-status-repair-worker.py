@@ -1136,6 +1136,17 @@ def redact(text: object, limit: int = 5000) -> str:
     return value[:limit]
 
 
+def tail_lines(chunks: list[str], limit: int = 1200) -> str:
+    """Keep the END of a failing run's output.
+
+    `redact` keeps the head, which is the banner. A process that dies on startup
+    prints its reason last, so head-truncation is precisely the wrong end to keep
+    when explaining a failure.
+    """
+    text = "".join(chunks).strip()
+    return text[-limit:] if len(text) > limit else text
+
+
 def sanitize_persisted(value: Any, depth: int = 0) -> Any:
     """Redact and bound nested diagnostics before they reach state or history."""
     if depth > 8:
@@ -3440,6 +3451,82 @@ def trusted_health_result(
     return True, "The original trusted health check is healthy and fresh."
 
 
+# The model API enforces a strict subset of JSON Schema for `--output-schema`, and
+# a violation is rejected with a 400 before the agent does any work at all. That is
+# not a degraded repair, it is a repair lane that cannot run -- and because the
+# rejection happens server-side it looked exactly like an ordinary unsuccessful
+# repair in the history. A `{"const": 5}` property with no `type` shipped on
+# 2026-08-04 and silently failed 100% of live repairs for three days. Validate the
+# schemas locally so a rejected schema is refused loudly here instead of being
+# discovered by Ivo pressing Approve and watching nothing happen.
+STRUCTURED_OUTPUT_TYPES = {"string", "number", "integer", "boolean", "object", "array", "null"}
+
+
+def structured_output_schema_errors(node: Any, path: str = "root") -> list[str]:
+    """Report the ways this schema violates the API's structured-output subset."""
+    errors: list[str] = []
+    if not isinstance(node, dict):
+        return [f"{path}: schema node must be an object"]
+    if "$ref" in node:
+        return errors
+    if "const" in node:
+        errors.append(f"{path}: 'const' is not supported; use \"enum\": [value] with an explicit type")
+    for unsupported in ("allOf", "oneOf", "not"):
+        if unsupported in node:
+            errors.append(f"{path}: '{unsupported}' is not supported")
+    if "anyOf" in node:
+        branches = node.get("anyOf")
+        if path == "root":
+            errors.append("root: 'anyOf' is not supported at the top level")
+        if isinstance(branches, list):
+            for index, branch in enumerate(branches):
+                errors.extend(structured_output_schema_errors(branch, f"{path}.anyOf[{index}]"))
+        return errors
+    node_type = node.get("type")
+    if node_type is None:
+        errors.append(f"{path}: every schema node needs an explicit 'type'")
+    elif isinstance(node_type, str) and node_type not in STRUCTURED_OUTPUT_TYPES:
+        errors.append(f"{path}: unsupported type '{node_type}'")
+    if node_type == "object":
+        properties = node.get("properties")
+        if node.get("additionalProperties") is not False:
+            errors.append(f"{path}: objects must set \"additionalProperties\": false")
+        if not isinstance(properties, dict) or not properties:
+            errors.append(f"{path}: objects must declare 'properties'")
+            properties = {}
+        required = node.get("required")
+        required_names = set(required) if isinstance(required, list) else set()
+        missing = sorted(set(properties) - required_names)
+        if missing:
+            errors.append(
+                f"{path}: every property must be listed in 'required'; missing {', '.join(missing)}"
+            )
+        for name, value in properties.items():
+            errors.extend(structured_output_schema_errors(value, f"{path}.{name}"))
+    if node_type == "array":
+        items = node.get("items")
+        if items is None:
+            errors.append(f"{path}: arrays must declare 'items'")
+        else:
+            errors.extend(structured_output_schema_errors(items, f"{path}.items"))
+    return errors
+
+
+def output_schema_problems() -> list[str]:
+    """Validate every schema this worker hands to the model API."""
+    problems: list[str] = []
+    for schema_path in (SCHEMA, DECISION_SCHEMA):
+        try:
+            schema = json.loads(schema_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as error:
+            problems.append(f"{schema_path.name}: unreadable ({error})")
+            continue
+        problems.extend(
+            f"{schema_path.name}: {issue}" for issue in structured_output_schema_errors(schema)
+        )
+    return problems
+
+
 def core_repair_invariants(snapshot: dict[str, dict[str, Any]]) -> tuple[bool, str]:
     safe, restored, flagged = protected_control_check(snapshot)
     if not safe:
@@ -3532,8 +3619,26 @@ def call_luna_live(
     except subprocess.TimeoutExpired:
         terminate_process_group(process)
         rc = 137
+    # The poll loop stops the instant the child exits, so everything still sitting
+    # in the pipe -- which is exactly where a startup error such as a rejected
+    # output schema lands -- was being discarded. Without this drain the history
+    # shows only the first banner line and a bare returnCode, which is what let a
+    # 100%-fatal schema rejection look like an ordinary unsuccessful repair.
+    if process.stdout is not None:
+        try:
+            chunks.append(process.stdout.read(LIVE_MODEL_OUTPUT_LIMIT) or "")
+        except (OSError, ValueError):
+            pass
     result = parse_result(output)
     log = redact("".join(chunks), 2200)
+    if result is None and rc != 0:
+        # A run that produced no parseable result is a broken repair lane, not a
+        # repair that merely did not succeed. Record it distinctly so the health
+        # check below can see it and so the tail of the log survives truncation.
+        append_history(
+            "luna-live-unusable", job, returnCode=rc,
+            detail=redact(tail_lines(chunks), 1200),
+        )
     append_history(
         "luna-live-finished", job, returnCode=rc, status=(result or {}).get("status"),
         revoked=revocation, log=log,
@@ -5570,6 +5675,18 @@ def process_job(job_path: Path, job: dict[str, Any]) -> None:
     due = parse_time(job.get("nextAttemptAt"))
     if due and due > now():
         return
+    # Some rows record something that already happened and that only Ivo can
+    # close -- a mail draft that failed to save days ago cannot be repaired
+    # retroactively by anyone. Running one through the repair lane produces an
+    # endless retry against an unfixable past event, and offers an Approve button
+    # with nothing behind it. Leave the card visible; take it out of the queue.
+    if (job.get("item") or {}).get("needsIvo"):
+        finish_success(
+            job_path, job, None,
+            "This records a past event that only Ivo can close, so no repair was attempted.",
+            "needs_ivo",
+        )
+        return
     # A v5 grant owns the incident after approval.  It is deliberately checked
     # before any deterministic recipe, staged candidate, or owner-scope logic so
     # paths/commands may evolve freely inside the durable issue objective.
@@ -6133,6 +6250,17 @@ def main() -> int:
         if recovered:
             append_history("config-journal-recovered",
                            {"id": "tool-status-repair-worker", "item": {}}, details=recovered)
+        # A schema the API will reject makes every model repair a guaranteed
+        # no-op. Refuse to burn attempts (and Ivo's approvals) against it, and
+        # record it so the scanner raises a visible card instead of the lane
+        # failing quietly forever.
+        schema_problems = output_schema_problems()
+        if schema_problems:
+            append_history(
+                "repair-schema-invalid", {"id": "tool-status-repair-worker", "item": {}},
+                details=schema_problems,
+            )
+            return 78
         process_decisions()
         reconsider_legacy_pending()
         recover_active_issue_grants()

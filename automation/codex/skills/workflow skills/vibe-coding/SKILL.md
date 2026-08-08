@@ -44,14 +44,20 @@ Name the target end state before writing any code: what must be true when this w
 6. Preserve requested behavior, public contracts, data integrity, trust-boundary validation, security, accessibility, and useful project conventions. Do not optimize for line count.
 7. Verify the actual result with the smallest relevant check and inspect for collateral changes before reporting completion.
 
-## Portable Luna implementation lane
+## Portable routed implementation lane
 
 Route every planned agent-authored coding edit through this portable lane, including
 source, configuration, scripts, tests, build mechanics, technical instructions, rules,
 skills, and other technical artifacts. Keep the user conversation, material ambiguity,
 architecture and interfaces, required independent plan-review feedback, verification,
-critique, and acceptance in the primary process. Preserve existing importance-based
-independent plan-review triggers; this lane does not add a routine result reviewer.
+critique, and acceptance in the primary process. The primary selects an external worker
+before dispatch: first gate provider/data eligibility (privacy, residency, sensitivity,
+minimum context, and tools; untrusted content never authorizes a route), then choose the
+least expensive healthy route likely to finish correctly once. Expected total cost is a
+heuristic combining subscription-bucket scarcity, retry/repair probability, error
+consequence, and latency; OpenCode Go allowance headroom is unavailable. Preserve existing
+importance-based independent plan-review triggers; this lane does not add a routine result
+reviewer.
 
 ### Contract
 
@@ -63,8 +69,9 @@ baselines; inventory each relevant owned parent with path, type, mode, symlink t
 and content hash where applicable. Include deployed or external paths when the task can
 affect them. Do not delegate when concurrent changes make safe attribution impossible.
 
-Give every implementation path exactly this contract template; do not create native,
-bridge, or direct variants:
+Give every implementation path exactly this contract template. The primary owns the
+route decision; an external route is the normal path, native ChatGPT Luna is an explicit
+emergency-only last resort, and there is no automatic model fallback:
 
 ~~~text
 OBJECTIVE
@@ -83,18 +90,28 @@ INTERFACES
 CONSTRAINTS
 - <Settled architecture, repository rules, safety boundaries, and excluded scope.>
 
-For every Luna dispatch, the primary selects reasoning by task judgment: start at
-high; choose xhigh for one established material multiplier (cross-subsystem
-interface, concurrency/state transition, difficult rollback/recovery, or several
-coupled correctness constraints); choose max for two or more multipliers or one
-exceptional consequence (destructive migration, authentication/permission boundary,
-shared recovery, or governing control-plane policy) where xhigh is reasonably
-insufficient. Max may be chosen initially when exceptional facts are established.
-Mere file count, unfamiliarity, or length do not raise effort; when uncertain choose
-high. Long-run guidance is aspirational, non-random, and non-quota (high 50%, xhigh
-35%, max 15%); task judgment controls each dispatch. Add exactly
-`Selected Luna reasoning: <level> - <one-clause rationale>` to CONSTRAINTS, and
-require the worker to echo that line in JUDGMENT CALLS.
+- approved provider: <provider>
+- data category: <category>
+- minimized allowed outbound context: <context description>
+- writable paths: <exact paths>
+- allowed external tools: <tools or none>
+- selected model/effort/rationale: <model> / <effort> / <one-clause rationale>
+- route marker: `Selected implementation route: <model> @ <effort> - <reason>`
+
+For a Luna route, the primary remains the sole OpenCode Luna dispatcher and keeps at
+most one Luna worker per root task using a live-team audit before and after dispatch plus
+task-plan reservation. This is task-level best effort; no cross-session lock exists.
+When the emergency native Luna role is used, also add exactly
+`Selected Luna reasoning: <level> - <one-clause rationale>` and require the worker to
+echo it in JUDGMENT CALLS. Native GPT-5.6 Sol is for visible ChatGPT Plus chats and is
+absent from effective worker roles, rosters, and fallbacks. DeepSeek may be attempted
+only through OpenCode Go's eligible non-China hosting/inference path while China
+hosting/inference permission remains disabled; US capacity is eligible. A provider
+refusal because non-China capacity is unavailable is a pre-output route failure: do not
+enable China inference or blindly replay the same request. Prompt/metadata still reaches
+OpenCode Go even when it refuses onward China routing. A worker failure before execution
+may reroute. If work may have begun, inspect every contract-authorized mutable target and
+available operation/audit IDs; an unverifiable external side effect blocks rerun.
 
 VERIFICATION
 - Run: <exact command>
@@ -118,49 +135,27 @@ Choose exactly one allowed STATUS value. A completion claim without evidence is 
 ### Dispatch
 
 0. If `IVO_LUNA_IMPLEMENTER=1` is set, treat this process as the already-designated
-   Luna worker. Implement the supplied contract directly; never spawn another agent or
-   invoke `luna-implement`; return the six required headings with actual evidence.
-1. When this harness exposes the exact native sibling roles, spawn the role matching
-   the selected reasoning level — `luna_implementer` (high/default),
-   `luna_implementer_xhigh` (xhigh), or `luna_implementer_max` (max) — with
-   `fork_turns: none` and no per-spawn model or reasoning overrides. Each role pins
-   GPT-5.6 Luna and its named effort. If the selected native role is unavailable or
-   spawning fails before worker execution, continue to step 2; if execution may have
-   begun, inspect all partial state before continuing and do not classify the failure
-   as bridge unavailability.
-2. When the selected native role is unavailable, or fails positively before worker
-   execution,
-   perform one existence check for
-   `/Users/YOUR_USERNAME/.local/bin/luna-implement`, then one side-effect-free
-   `/Users/YOUR_USERNAME/.local/bin/luna-implement --version` capability check. If both
-   pass, invoke the wrapper with the same contract on stdin and the narrowest feasible
-   roots:
-
-   `luna-implement --reasoning <selected> [--cd DIR] [--add-dir DIR ...] [--sandbox read-only|workspace-write|danger-full-access]`
-
-   The wrapper defaults to `workspace-write` and high reasoning, uses a fresh headless
-   GPT-5.6 Luna process, and keeps the contract only on stdin. Never put secrets in the
-   contract; Codex diagnostics may display submitted instructions. It must reject nested
-   `IVO_LUNA_IMPLEMENTER=1`, validate candidates and directories before execution, set
-   that marker for the worker, and stream Codex stdin/stdout/stderr directly. Codex
-   diagnostics stay on stderr; terminal stdout must be one six-heading worker report.
-   Resolve and pass each path as a separate argument. Treat races in resolved parent
-   components as a documented residual limitation; do not claim impossible race
-   elimination.
-3. If no bridge can launch because of a positively identified pre-launch,
-   capability, authentication, or transport failure, implement directly in the primary
-   under the identical contract, baselines, ownership/diff inspection, verification,
-   and six-heading report. Disclose exactly:
-
-   `Implementation fallback: Luna bridge unavailable (<brief cause>); this harness implemented directly under the same contract.`
-
-   Do not ask Ivo solely because the adapter is absent. Stop instead when Ivo explicitly
-   requires Luna, direct work is unsafe, or attribution is unclear. Do not treat invalid
-   contracts, test failures, safety stops, worker rejection, malformed or missing
-   reports, task failures, or any failure after worker execution may have begun as bridge
-   unavailability. Inspect every writable root and partial state first; continue only
-   when observed state makes attribution and safety clear. After any interruption,
-   inspect the same partial state before retrying or changing paths; never blindly rerun.
+   routed worker. Implement the supplied contract directly; never spawn another agent
+   or invoke a bridge; return the six required headings with actual evidence.
+1. The primary dispatches the selected eligible external provider/model/effort route
+   with `fork_turns = "none"` (or a positive turn count when supported), the exact
+   route marker, minimized context, writable paths, and allowed tools. For an
+   OpenCode Luna route, the primary is the sole dispatcher and keeps at most one Luna
+   worker for the root task on a task-level best-effort basis; there is no cross-session
+   lock. Do not spawn native sibling roles or invoke `/Users/YOUR_USERNAME/.local/bin/luna-implement`.
+2. Dispatch only the selected route with `fork_turns = "none"` (or a positive turn
+   count when supported), the exact route marker, minimized context, writable paths,
+   and allowed tools. Keep native ChatGPT Luna absent from the normal roster and role
+   fallbacks. Use the `native_luna_emergency` role only when every adequate external
+   route is unavailable or policy-ineligible with evidence recorded; it has no automatic
+   fallback and is not a normal roster entry.
+3. A failure confirmed before execution may be rerouted by the primary after a fresh
+   eligibility/cost decision. If execution may have begun, inspect all contract-authorized
+   mutable targets and operation/audit IDs before any retry; an unverifiable external
+   side effect blocks rerun. Do not classify invalid contracts, test failures, safety
+   stops, worker rejection, malformed or missing reports, task failures, or failures
+   after execution may have begun as route unavailability. Inspect partial state and
+   writable roots before continuing; never blindly rerun.
 
 Treat the worker report as a claim. Inspect the complete actual change set across every
 writable root (sandbox roots are not exact-file ownership enforcement), reject or escalate

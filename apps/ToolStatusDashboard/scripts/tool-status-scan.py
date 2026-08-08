@@ -23,6 +23,7 @@ import plistlib
 import re
 import shlex
 import shutil
+import socket
 import sqlite3
 import subprocess
 import sys
@@ -116,6 +117,7 @@ def rec(
     record_id: str | None = None,
     self_healing: bool = False,
     owner: str | None = None,
+    needs_ivo: bool = False,
 ) -> None:
     rows.append(
         {
@@ -145,6 +147,11 @@ def rec(
             # on a manual approval. Set this ONLY where the named project's
             # source is genuinely the fix; it grants write authority.
             "owner": owner,
+            # True == no agent can resolve this; it records something that already
+            # happened and only Ivo can close. Queuing such a row for autonomous
+            # repair produces an endless retry against an unfixable past event and
+            # an Approve button that cannot possibly work.
+            "needsIvo": bool(needs_ivo),
         }
     )
 
@@ -433,6 +440,24 @@ def executable_on_disk(binary: str) -> str | None:
     return None
 
 
+# A tool that never implemented the probe flag exits nonzero for a reason that
+# says nothing about its health. Crashes look different: a missing interpreter or
+# library gives 126/127, and a broken program gives a traceback or a signal.
+UNSUPPORTED_PROBE_TEXT = re.compile(
+    r"(?i)\b(unknown|unrecognized|invalid|illegal)\s+(argument|option|flag|command|switch)"
+    r"|\busage\s*:|\bunknown\s+arg\b|--help'? for (more )?(information|usage)"
+)
+
+
+def unsupported_probe(rc_code: int, output: str) -> bool:
+    """True when the nonzero exit means "no such flag", not "this tool is broken"."""
+    if rc_code in (126, 127) or rc_code < 0:
+        return False
+    if re.search(r"(?i)traceback \(most recent call last\)|command not found|no such file", output):
+        return False
+    return bool(UNSUPPORTED_PROBE_TEXT.search(output))
+
+
 def registry_records(rows: list[dict[str, Any]]) -> set[str]:
     """Render one row per registry entry. Returns the set of covered binaries."""
     covered: set[str] = set(BUILTIN_BINARIES)
@@ -516,6 +541,27 @@ def registry_records(rows: list[dict[str, Any]]) -> set[str]:
             exec_budget -= 1
             flag = "--version" if check == "version" else "--help"
             rc_code, out = run([binary, flag], timeout=timeout_seconds)
+            if rc_code != 0 and unsupported_probe(rc_code, out):
+                # Try the other probe before concluding anything: auto-registration
+                # guesses a flag, and a tool that never implemented it is not broken.
+                alternate = "--help" if flag == "--version" else "--version"
+                alt_rc, alt_out = run([binary, alternate], timeout=timeout_seconds)
+                if alt_rc == 0:
+                    flag, rc_code, out = alternate, alt_rc, alt_out
+                elif unsupported_probe(alt_rc, alt_out):
+                    # Neither probe is implemented. That is a fact about the
+                    # registry entry, not about the tool, so it must never become
+                    # an incident or a notification. app-repo-bootstrap -- a
+                    # one-time script with no flag parsing -- produced 256
+                    # consecutive "failures" this way.
+                    rec(
+                        rows, name, "Custom CLI", "unknown",
+                        "No health check available",
+                        f"{path} implements neither --version nor --help, so its registry "
+                        f"check cannot report health. Set it to 'exists': "
+                        f"tool-status-register set {binary} --check exists",
+                    )
+                    continue
             if rc_code != 0:
                 rec(
                     rows, name, "Custom CLI", "warn",
@@ -618,6 +664,40 @@ SELF_REPORTED_STATUS: dict[str, tuple[Path, Any]] = {
 }
 
 
+DECLARED_PORT = re.compile(r"--port[=\s]+(\d{2,5})\b")
+
+
+def declared_port_serving(data: dict[str, Any]) -> tuple[bool, str]:
+    """True when the job declares a port and that port is actually being served.
+
+    A KeepAlive service can be perfectly healthy while launchd records a nonzero
+    exit: the supervised wrapper notices an instance is already running, refuses
+    to start a second one, and exits 1. launchd then reports "last exit code = 1"
+    forever while the service happily serves traffic. com.opencodex.proxy sat in
+    that state for 115 consecutive scans -- alive on port 10100 the whole time.
+    Where the job names the port it serves, serving that port is the better
+    evidence, so it wins over launchd's bookkeeping.
+    """
+    arguments = data.get("ProgramArguments")
+    if not isinstance(arguments, list):
+        return False, ""
+    match = DECLARED_PORT.search(" ".join(str(value) for value in arguments))
+    if not match:
+        return False, ""
+    port = int(match.group(1))
+    if not 1 <= port <= 65535:
+        return False, ""
+    for family, address in ((socket.AF_INET, ("127.0.0.1", port)), (socket.AF_INET6, ("::1", port))):
+        try:
+            with socket.socket(family, socket.SOCK_STREAM) as probe:
+                probe.settimeout(0.4)
+                if probe.connect_ex(address) == 0:
+                    return True, f"declared port {port} is being served"
+        except OSError:
+            continue
+    return False, ""
+
+
 def newer_success_status(label: str, data: dict[str, Any]) -> tuple[bool, str]:
     entry = SELF_REPORTED_STATUS.get(label)
     if entry is None:
@@ -686,6 +766,8 @@ def launch_agent_records(rows: list[dict[str, Any]]) -> None:
         running = bool(job and job.get("state") == "running")
         last_exit = job.get("last exit code") if job else None
         superseded, superseded_evidence = newer_success_status(label, data)
+        if not superseded:
+            superseded, superseded_evidence = declared_port_serving(data)
         fix = None
         if not exists:
             state = "fail"
@@ -1342,6 +1424,112 @@ def deployed_source_drift_records(rows: list[dict[str, Any]]) -> None:
     )
 
 
+# How many recent model repair finishes to judge, and how many must be unusable
+# before the lane counts as broken rather than merely unlucky.
+REPAIR_LANE_WINDOW = 6
+REPAIR_LANE_MIN_RUNS = 3
+REPAIR_FINISH_EVENTS = {
+    "luna-live-finished", "luna-finished", "terra-finished", "decision-audit-finished",
+}
+
+
+def repair_lane_health(rows: list[dict[str, Any]]) -> None:
+    """Check that the thing which fixes everything else is itself working.
+
+    The dashboard monitored 135 targets and never once checked whether its own
+    repair agent could run. A rejected output schema made every model repair a
+    guaranteed no-op for three days; each run was recorded as an ordinary
+    unsuccessful repair and retried on a six-hour timer, so approving a fix did
+    nothing and nothing ever said so. A repair lane that produces no usable
+    result is a broken tool, and a broken tool is reported, not retried in
+    silence.
+    """
+    history = STATE / "repair-history.jsonl"
+    finishes: list[dict[str, Any]] = []
+    schema_invalid: list[str] = []
+    try:
+        with history.open("r", encoding="utf-8", errors="replace") as handle:
+            # Only the tail matters; the file grows past a megabyte.
+            for line in handle.readlines()[-4000:]:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                except ValueError:
+                    continue
+                if not isinstance(entry, dict):
+                    continue
+                event = entry.get("event")
+                if event in REPAIR_FINISH_EVENTS:
+                    finishes.append(entry)
+                elif event == "repair-schema-invalid":
+                    details = entry.get("details")
+                    schema_invalid = details if isinstance(details, list) else [str(details)]
+                elif event in {"luna-live-started", "terra-started", "luna-started"}:
+                    # A fresh attempt clears a previously recorded schema refusal.
+                    schema_invalid = []
+    except OSError as exc:
+        rec(
+            rows, "Repair pipeline", "Background Job", "warn",
+            "The repair history cannot be read, so repair health is unknown",
+            str(exc), str(history),
+            cause_code="tool_status.repair_lane_unverifiable",
+            notification_policy="consecutive",
+            record_id="Background Job:Repair pipeline",
+            needs_ivo=True,
+        )
+        return
+
+    recent = finishes[-REPAIR_LANE_WINDOW:]
+    # "Unusable" means the run returned no parseable result at all -- the agent
+    # never got to say anything. That is distinct from a repair that ran and
+    # concluded it could not fix the problem, which is a legitimate outcome.
+    unusable = [
+        entry for entry in recent
+        if entry.get("status") in (None, "") and entry.get("returnCode") not in (0, None)
+    ]
+    if schema_invalid:
+        state, headline = "fail", "The repair agent's output schema is rejected, so no repair can run"
+        detail = "; ".join(str(problem) for problem in schema_invalid)[:700]
+        cause = "tool_status.repair_schema_invalid"
+        policy = "immediate"
+    elif len(recent) >= REPAIR_LANE_MIN_RUNS and len(unusable) == len(recent):
+        state = "fail"
+        headline = f"The last {len(recent)} repair runs produced no result — approving a fix will not work"
+        detail = clip(str(unusable[-1].get("log") or unusable[-1].get("detail") or "no output recorded"), 700)
+        cause = "tool_status.repair_lane_dead"
+        policy = "immediate"
+    else:
+        usable = len(recent) - len(unusable)
+        state, cause, policy = "ok", None, "consecutive"
+        headline = (
+            f"{usable} of the last {len(recent)} repair runs returned a usable result"
+            if recent else "No repair runs recorded yet"
+        )
+        detail = ""
+    rec(
+        rows, "Repair pipeline", "Background Job", state, headline, detail, str(history),
+        fix=fix_manual(
+            "Inspect the repair agent",
+            "The repair agent itself is failing, so every card waiting on a repair is stuck. "
+            "Run the worker by hand and read its output; the failing schema or command is "
+            "reported in the repair history at the evidence path above.",
+            [str(HOME / ".local/bin/tool-status-repair-worker")],
+        ) if state != "ok" else None,
+        cause_code=cause,
+        notification_policy=policy,
+        cause_params={"unusable": str(len(unusable)), "window": str(len(recent))} if cause else {},
+        record_id="Background Job:Repair pipeline",
+        # Deliberately NOT owned by the repair agent, and never queued to it. A
+        # dead repair lane cannot repair itself, so queuing this row can only
+        # burn retries -- and granting write authority here would let the agent
+        # "fix" the very check that grades it by editing the check. This one
+        # always comes to Ivo.
+        needs_ivo=True,
+    )
+
+
 # Display cap for the process inventory. Overflow is a display limit, never a
 # health problem: it reports as an informational row, never a warn (a warn here
 # escalates to autonomous repair and produces a manual-intervention card for
@@ -1569,6 +1757,11 @@ def operational_failure_records(rows: list[dict[str, Any]]) -> None:
         cause_code=("apple_mail_draft.state_unreadable" if mail_state_error else "apple_mail_draft.failed")
         if mail_state_error or failed_mail else None,
         notification_policy="immediate" if mail_state_error or permanent_mail else "consecutive",
+        # A manual-review failure is a finished event: a draft that already failed
+        # to save, days ago. No agent can retroactively repair it, so it must not
+        # enter the repair queue -- one such record kept the repair lane retrying
+        # for two days and offered Ivo an Approve button with nothing behind it.
+        needs_ivo=bool(manual_review_mail) and not mail_state_error,
         cause_params={
             "count": str(len(failed_mail)),
             "manual_review_count": str(len(manual_review_mail)),
@@ -1979,6 +2172,7 @@ def main() -> int:
     launch_agent_records(rows)
     dashboard_runtime_records(rows)
     deployed_source_drift_records(rows)
+    repair_lane_health(rows)
     operational_failure_records(rows)
     source_archive_coverage_record(rows)
     market_records(rows)
