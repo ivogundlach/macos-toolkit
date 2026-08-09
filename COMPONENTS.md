@@ -134,6 +134,7 @@ Policy exclusions are listed by path and reason; source contents and secret valu
 - `apps/School/sync/uahsync/canvas_ics.py` — excluded root: apps/School.
 - `apps/School/sync/uahsync/canvas_rest.py` — excluded root: apps/School.
 - `apps/School/sync/uahsync/config.py` — excluded root: apps/School.
+- `apps/School/sync/uahsync/dashboard.py` — excluded root: apps/School.
 - `apps/School/sync/uahsync/grades.py` — excluded root: apps/School.
 - `apps/School/sync/uahsync/lock.py` — excluded root: apps/School.
 - `apps/School/sync/uahsync/markers.py` — excluded root: apps/School.
@@ -238,8 +239,10 @@ Policy exclusions are listed by path and reason; source contents and secret valu
 - `docs/REPOSITORY_MAP.md` — unknown path.
 - `public/export-policy.json` — unknown path.
 - `scripts/build-public-toolkit.py` — unknown path.
+- `scripts/export-public-settings.py` — unknown path.
 - `scripts/inventory-from-machine.py` — unknown path.
 - `scripts/sync-from-machine.sh` — unknown path.
+- `scripts/test-public-settings.py` — unknown path.
 - `scripts/test-public-toolkit.py` — unknown path.
 - `third-party-local/AmethystFork/LOCAL_BRANCH` — excluded root: third-party-local.
 - `third-party-local/AmethystFork/LOCAL_HEAD` — excluded root: third-party-local.

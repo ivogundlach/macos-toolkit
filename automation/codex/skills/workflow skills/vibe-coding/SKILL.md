@@ -156,6 +156,11 @@ Choose exactly one allowed STATUS value. A completion claim without evidence is 
    stops, worker rejection, malformed or missing reports, task failures, or failures
    after execution may have begun as route unavailability. Inspect partial state and
    writable roots before continuing; never blindly rerun.
+4. After collecting the worker's terminal report and completing any required partial-state
+   inspection, call the available close, release, or interrupt-equivalent operation exactly
+   once so the worker leaves Active. Never close before collecting output or inspecting
+   partial state. This lifecycle change must preserve the worker's task and thread history;
+   it never deletes or archives that history.
 
 Treat the worker report as a claim. Inspect the complete actual change set across every
 writable root (sandbox roots are not exact-file ownership enforcement), reject or escalate

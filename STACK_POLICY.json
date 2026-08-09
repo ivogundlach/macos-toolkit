@@ -1,0 +1,122 @@
+{
+  "schema_version": 1,
+  "public_contract": "Publish only explicitly reviewed preference keys whose values match the declared shape. Unknown keys remain pending review and are never copied.",
+  "prohibited_key_pattern": "(?i)(account|address|auth|bookmark|cookie|credential|device|email|history|host|license|login|password|secret|serial|session|ssid|token|uuid|webhook|window.?title)",
+  "preference_domains": [
+    {
+      "domain": "NSGlobalDomain",
+      "source": "Library/Preferences/.GlobalPreferences.plist",
+      "output": "macos-global.json",
+      "reviewed": "2026-08-09",
+      "keys": {
+        "AppleActionOnDoubleClick": {"type": "string", "allowed": ["Maximize", "Minimize", "None"]},
+        "AppleInterfaceStyle": {"type": "string", "allowed": ["Dark", "Light"]},
+        "AppleKeyboardUIMode": {"type": "integer", "minimum": 0, "maximum": 3},
+        "AppleMenuBarVisibleInFullscreen": {"type": "boolean"},
+        "AppleMiniaturizeOnDoubleClick": {"type": "boolean"},
+        "AppleShowAllExtensions": {"type": "boolean"},
+        "AppleShowScrollBars": {"type": "string", "allowed": ["Always", "Automatic", "WhenScrolling"]},
+        "AppleSpacesSwitchOnActivate": {"type": "boolean"},
+        "AppleTemperatureUnit": {"type": "string", "allowed": ["Celsius", "Fahrenheit"]},
+        "NSAllowContinuousSpellChecking": {"type": "boolean"},
+        "NSAutomaticCapitalizationEnabled": {"type": "boolean"},
+        "NSAutomaticDashSubstitutionEnabled": {"type": "boolean"},
+        "NSAutomaticPeriodSubstitutionEnabled": {"type": "boolean"},
+        "NSAutomaticQuoteSubstitutionEnabled": {"type": "boolean"},
+        "NSAutomaticSpellingCorrectionEnabled": {"type": "boolean"},
+        "NSAutomaticTextCompletionEnabled": {"type": "boolean"}
+      }
+    },
+    {
+      "domain": "com.apple.dock",
+      "source": "Library/Preferences/com.apple.dock.plist",
+      "output": "dock.json",
+      "reviewed": "2026-08-09",
+      "keys": {
+        "autohide": {"type": "boolean"},
+        "autohide-delay": {"type": "number", "minimum": 0, "maximum": 10},
+        "autohide-time-modifier": {"type": "number", "minimum": 0, "maximum": 10},
+        "largesize": {"type": "number", "minimum": 16, "maximum": 256},
+        "magnification": {"type": "boolean"},
+        "mru-spaces": {"type": "boolean"},
+        "orientation": {"type": "string", "allowed": ["bottom", "left", "right"]},
+        "tilesize": {"type": "number", "minimum": 16, "maximum": 256},
+        "wvous-bl-corner": {"type": "integer", "minimum": 0, "maximum": 14},
+        "wvous-bl-modifier": {"type": "integer", "minimum": 0, "maximum": 2097152},
+        "wvous-br-corner": {"type": "integer", "minimum": 0, "maximum": 14},
+        "wvous-br-modifier": {"type": "integer", "minimum": 0, "maximum": 2097152},
+        "wvous-tl-corner": {"type": "integer", "minimum": 0, "maximum": 14},
+        "wvous-tl-modifier": {"type": "integer", "minimum": 0, "maximum": 2097152},
+        "wvous-tr-corner": {"type": "integer", "minimum": 0, "maximum": 14},
+        "wvous-tr-modifier": {"type": "integer", "minimum": 0, "maximum": 2097152}
+      }
+    },
+    {
+      "domain": "com.apple.finder",
+      "source": "Library/Preferences/com.apple.finder.plist",
+      "output": "finder.json",
+      "reviewed": "2026-08-09",
+      "keys": {
+        "FXArrangeGroupViewBy": {"type": "string", "allowed": ["Date Added", "Date Created", "Date Last Opened", "Date Modified", "Kind", "Name", "None", "Size", "Tags"]},
+        "FXDefaultSearchScope": {"type": "string", "allowed": ["SCcf", "SCev", "SCsp"]},
+        "FXEnableExtensionChangeWarning": {"type": "boolean"},
+        "FXPreferredGroupBy": {"type": "string", "allowed": ["Date Added", "Date Created", "Date Last Opened", "Date Modified", "Kind", "Name", "None", "Size", "Tags"]},
+        "FXPreferredViewStyle": {"type": "string", "allowed": ["clmv", "Flwv", "icnv", "Nlsv"]},
+        "FXRemoveOldTrashItems": {"type": "boolean"},
+        "ShowExternalHardDrivesOnDesktop": {"type": "boolean"},
+        "ShowHardDrivesOnDesktop": {"type": "boolean"},
+        "ShowMountedServersOnDesktop": {"type": "boolean"},
+        "ShowPathbar": {"type": "boolean"},
+        "ShowRecentTags": {"type": "boolean"},
+        "ShowRemovableMediaOnDesktop": {"type": "boolean"},
+        "ShowSidebar": {"type": "boolean"},
+        "ShowStatusBar": {"type": "boolean"}
+      }
+    },
+    {
+      "domain": "com.apple.AppleMultitouchTrackpad",
+      "source": "Library/Preferences/com.apple.AppleMultitouchTrackpad.plist",
+      "output": "trackpad.json",
+      "reviewed": "2026-08-09",
+      "keys": {
+        "Clicking": {"type": "boolean"},
+        "TrackpadCornerSecondaryClick": {"type": "integer", "minimum": 0, "maximum": 3},
+        "TrackpadFourFingerHorizSwipeGesture": {"type": "integer", "minimum": 0, "maximum": 3},
+        "TrackpadFourFingerVertSwipeGesture": {"type": "integer", "minimum": 0, "maximum": 3},
+        "TrackpadMomentumScroll": {"type": "boolean"},
+        "TrackpadPinch": {"type": "integer", "minimum": 0, "maximum": 3},
+        "TrackpadRightClick": {"type": "boolean"},
+        "TrackpadRotate": {"type": "integer", "minimum": 0, "maximum": 3},
+        "TrackpadScroll": {"type": "boolean"},
+        "TrackpadThreeFingerDrag": {"type": "boolean"},
+        "TrackpadTwoFingerDoubleTapGesture": {"type": "integer", "minimum": 0, "maximum": 3}
+      }
+    },
+    {
+      "domain": "com.apple.WindowManager",
+      "source": "Library/Preferences/com.apple.WindowManager.plist",
+      "output": "window-manager.json",
+      "reviewed": "2026-08-09",
+      "keys": {
+        "AutoHide": {"type": "boolean"},
+        "EnableStandardClickToShowDesktop": {"type": "boolean"},
+        "EnableTiledWindowMargins": {"type": "boolean"},
+        "GloballyEnabled": {"type": "boolean"},
+        "HideDesktop": {"type": "boolean"},
+        "StageManagerHideWidgets": {"type": "boolean"}
+      }
+    },
+    {
+      "domain": "com.apple.menuextra.clock",
+      "source": "Library/Preferences/com.apple.menuextra.clock.plist",
+      "output": "menu-bar-clock.json",
+      "reviewed": "2026-08-09",
+      "keys": {
+        "ShowAMPM": {"type": "boolean"},
+        "ShowDate": {"type": "integer", "minimum": 0, "maximum": 3},
+        "ShowDayOfWeek": {"type": "boolean"},
+        "ShowSeconds": {"type": "boolean"}
+      }
+    }
+  ]
+}

@@ -1,19 +1,51 @@
-# Ivo's macOS Source & Restoration Toolkit
+# Ivo's macOS Stack
 
-This repository is a reviewable source and restoration toolkit for macOS. It
-contains Ivo-owned application source, small automations, and reference
-material that friends can inspect and adapt. It is not an installer and does
-not promise a turnkey clean-machine setup.
+This repository is the public, agent-readable map of how Ivo uses a Mac. It
+covers the visible layer—applications and interfaces—as well as the machinery
+underneath: command-line tools, custom apps, scripts, scheduled jobs, agent
+configuration, and reviewed macOS settings. It is designed for selective
+adoption. It is not an install-everything script or a claim that a clean-machine
+restore has been fully verified.
+
+“Comprehensive” describes the map and its accounting: every discovery surface
+has a visible status. It does not mean every preference, private data store, or
+currently unexportable component is published. `pending_review` and `excluded`
+entries are part of the result, not claims of completed export coverage.
 
 Not all clean-machine install paths have been verified. Friends supply their
 own credentials, accounts, signing identities, and service configuration. Do
 not pipe this repository to a shell. Inspect every file and command before
 use, then verify each component on the target Mac.
 
-The public export intentionally omits School, Shortcuts, private memory,
-third-party patches, runtime state, credentials, and generated/private
-inventory. The exported Codex material is a reference template; replace the
-placeholder home path with the local home path only after review.
+## Start with the catalog
+
+- [`STACK.json`](STACK.json) is the machine-readable inventory: installed GUI
+  applications, Homebrew and Mac App Store packages, local commands, safe
+  operating-system facts, provenance, and the status of every discovery surface.
+- [`docs/STACK.md`](docs/STACK.md) explains how the components fit together and
+  records operational lessons that a flat inventory cannot express.
+- [`STACK_POLICY.json`](STACK_POLICY.json) lists every preference key approved
+  for public export. [`settings/`](settings/) contains the resulting values and
+  a manifest showing how many unreviewed keys remain private.
+- [`COMPONENTS.json`](COMPONENTS.json) maps exported source components and every
+  documented exclusion.
+
+The catalog uses five explicit coverage states: `included`,
+`safely_summarized`, `excluded`, `unavailable`, and `pending_review`. A missing
+component is therefore visible as a decision or gap rather than silently
+disappearing.
+
+## Privacy boundary
+
+The public export intentionally omits School, Shortcut source, private memory,
+third-party patches, browser and communication history, personal files,
+credentials, license values, device identifiers, and runtime state. Preference
+files are never copied wholesale. A setting is published only when its domain,
+key, value type, and allowed value range have been reviewed. Unknown keys are
+counted but not named or copied.
+
+The exported Codex material is a reference template. Replace
+`/Users/YOUR_USERNAME` only after reviewing the surrounding command or file.
 
 The phishing-header skill and its API reference are included in full. Three
 documented placeholder authorization-header examples receive exact
@@ -27,15 +59,6 @@ this candidate without linking the private repository. Component-level
 verification status and path-level exclusion reasons are recorded in
 `COMPONENTS.json` and `COMPONENTS.md`.
 
-## Start here
-
-[`docs/STACK.md`](docs/STACK.md) is the map of the whole machine — every
-application, scheduled job, CLI, backup mechanism, and system customization,
-plus a landmine section recording the failures that already cost time. Read it
-first if you want to understand how the pieces relate before reading any one
-component. It is generated from the live machine's tool registry and LaunchAgent
-directory, so it describes what actually runs rather than what was intended.
-
 ## Review before restoring
 
 1. Read this file, `SECURITY.md`, `CONTRIBUTING.md`, and
@@ -47,3 +70,11 @@ directory, so it describes what actually runs rather than what was intended.
 The toolkit is deliberately source-first: it does not execute component code,
 install LaunchAgents, publish a repository, or make network requests during
 export.
+
+## Updates
+
+Public updates are deliberate and on demand. The exporter builds from an
+immutable private snapshot, generates the catalog and settings manifests,
+performs fail-closed privacy checks, runs a second secret scan, and publishes
+only when the complete candidate passes review. No scheduled job publishes this
+repository unattended.

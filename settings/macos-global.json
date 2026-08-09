@@ -1,0 +1,23 @@
+{
+  "domain": "NSGlobalDomain",
+  "reviewed": "2026-08-09",
+  "schemaVersion": 1,
+  "values": {
+    "AppleActionOnDoubleClick": "Minimize",
+    "AppleInterfaceStyle": "Dark",
+    "AppleKeyboardUIMode": 2,
+    "AppleMenuBarVisibleInFullscreen": false,
+    "AppleMiniaturizeOnDoubleClick": false,
+    "AppleShowAllExtensions": true,
+    "AppleShowScrollBars": "Always",
+    "AppleSpacesSwitchOnActivate": false,
+    "AppleTemperatureUnit": "Fahrenheit",
+    "NSAllowContinuousSpellChecking": false,
+    "NSAutomaticCapitalizationEnabled": true,
+    "NSAutomaticDashSubstitutionEnabled": true,
+    "NSAutomaticPeriodSubstitutionEnabled": true,
+    "NSAutomaticQuoteSubstitutionEnabled": true,
+    "NSAutomaticSpellingCorrectionEnabled": true,
+    "NSAutomaticTextCompletionEnabled": true
+  }
+}

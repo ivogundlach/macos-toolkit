@@ -1,0 +1,97 @@
+{
+  "contract": "Publish only explicitly reviewed preference keys whose values match the declared shape. Unknown keys remain pending review and are never copied.",
+  "coverageStates": [
+    "included",
+    "safely_summarized",
+    "excluded",
+    "unavailable",
+    "pending_review"
+  ],
+  "domains": [
+    {
+      "approvedKeyCount": 16,
+      "domain": "NSGlobalDomain",
+      "exportedKeyCount": 16,
+      "output": "settings/macos-global.json",
+      "outputSha256": "0dbb0bc9b93236a5f9711f3f4f385e5d5366d5c35806f5aab0a85fa6b7f56f7b",
+      "pendingKeyCount": 49,
+      "policyDecision": "field-level positive allowlist",
+      "redactionCount": 0,
+      "reviewStatus": "approved",
+      "reviewed": "2026-08-09",
+      "sourceSha256": "586012719df54976d828863321a3a79c6c998bef19225a1dee7e0b7e1566e46e",
+      "status": "included"
+    },
+    {
+      "approvedKeyCount": 16,
+      "domain": "com.apple.dock",
+      "exportedKeyCount": 16,
+      "output": "settings/dock.json",
+      "outputSha256": "a68572b6621533c420989d4a9447f5eb933273fb612a197042bbf24bbdf56d54",
+      "pendingKeyCount": 23,
+      "policyDecision": "field-level positive allowlist",
+      "redactionCount": 0,
+      "reviewStatus": "approved",
+      "reviewed": "2026-08-09",
+      "sourceSha256": "803651aaf1a1c999a0d29cf680608c254816372cb86847e44947664203044325",
+      "status": "included"
+    },
+    {
+      "approvedKeyCount": 14,
+      "domain": "com.apple.finder",
+      "exportedKeyCount": 14,
+      "output": "settings/finder.json",
+      "outputSha256": "90ad7ac80e98f794e72ca73f473afbd96237ec848974ab0f48dfa175d18814ec",
+      "pendingKeyCount": 58,
+      "policyDecision": "field-level positive allowlist",
+      "redactionCount": 0,
+      "reviewStatus": "approved",
+      "reviewed": "2026-08-09",
+      "sourceSha256": "2c4f78af932aee69cd91905834178b55b3d03eb352e84e97606896f763959fc7",
+      "status": "included"
+    },
+    {
+      "approvedKeyCount": 11,
+      "domain": "com.apple.AppleMultitouchTrackpad",
+      "exportedKeyCount": 11,
+      "output": "settings/trackpad.json",
+      "outputSha256": "ea33be862f35c9524d888da9d16d529e98928fb486ea46a6820269d44dd9928b",
+      "pendingKeyCount": 17,
+      "policyDecision": "field-level positive allowlist",
+      "redactionCount": 0,
+      "reviewStatus": "approved",
+      "reviewed": "2026-08-09",
+      "sourceSha256": "61f9d449112628a30caf08213ed7bce0bc6bf1db0bb6b53b283175859e9a50c7",
+      "status": "included"
+    },
+    {
+      "approvedKeyCount": 6,
+      "domain": "com.apple.WindowManager",
+      "exportedKeyCount": 6,
+      "output": "settings/window-manager.json",
+      "outputSha256": "adea86deba683d60388099985806978007ac306fe794ae85fac90ccf7df5f791",
+      "pendingKeyCount": 6,
+      "policyDecision": "field-level positive allowlist",
+      "redactionCount": 0,
+      "reviewStatus": "approved",
+      "reviewed": "2026-08-09",
+      "sourceSha256": "80f89084f603623035af1da68e1729912e52db4e5994a0559517f7f3c1843e4e",
+      "status": "included"
+    },
+    {
+      "approvedKeyCount": 4,
+      "domain": "com.apple.menuextra.clock",
+      "exportedKeyCount": 4,
+      "output": "settings/menu-bar-clock.json",
+      "outputSha256": "6aca71d080e8295f15e775b22560e0503e0b7ed1c412b0ff6e6cbfdfba1f5ef7",
+      "pendingKeyCount": 3,
+      "policyDecision": "field-level positive allowlist",
+      "redactionCount": 0,
+      "reviewStatus": "approved",
+      "reviewed": "2026-08-09",
+      "sourceSha256": "4d334f680472de2dac1a73416ed523fd0ac791bf26e5315d95e96afea7df7d01",
+      "status": "included"
+    }
+  ],
+  "schemaVersion": 1
+}

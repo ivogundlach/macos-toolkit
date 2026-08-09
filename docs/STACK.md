@@ -8,18 +8,19 @@ without spelunking.
 **Audience:** a coding agent given access to this machine, or a friend reading
 over the design. It assumes competence but no prior context.
 
-**Authoritative source:** the Tool Status registry
-(`~/.local/state/tool-status-dashboard/registry.json`, 62 entries) is the
-canonical list of installed CLIs, and `~/Library/LaunchAgents/` is the canonical
-list of scheduled work. Everything below was read from those two places plus the
-live system on 2026-08-06. Where this document and the machine disagree, the
-machine is right — re-derive rather than trust.
+**Authoritative inventory:** `STACK.json` is the generated source of truth for
+installed applications, package-manager state, local commands, safe machine
+facts, and coverage gaps. `STACK_POLICY.json` is the source of truth for settings
+that are safe to publish. This document supplies relationships, rationale, and
+operational lessons that cannot be generated reliably. Where a count or version
+here disagrees with `STACK.json`, use the catalog.
 
 ---
 
 ## 0. Reading order
 
-If you only read three sections: [§1 Control plane](#1-the-agent-control-plane)
+Read `STACK.json` first when deciding what exists. If you then read only three
+sections here: [§1 Control plane](#1-the-agent-control-plane)
 tells you the rules you are operating under, [§5 Scheduled
 automation](#5-scheduled-automation) tells you what is running behind your back,
 and [§11 Landmines](#11-landmines) tells you what breaks if you touch it wrong.
@@ -164,7 +165,7 @@ All SwiftUI, all built with **Command Line Tools only — no Xcode**. Each has a
 | **Warm Corners** | `WarmCorners` | Hot-corners clone with a per-corner dwell delay; imports the App Store Hot Corners config |
 | **CopyPath** | `CopyPathFinder` | Finder Sync extension adding a top-level "Copy Path" |
 | **School / SchoolSync** | `School` | UAH course sync; EventKit access only via the `SchoolSync.app` bundle |
-| **Tax Simulator** | *(in Personal-Repo)* | Tax modelling |
+| **Tax Simulator** | *(in the private source archive)* | Tax modelling |
 | **AutoInstall DMG** | *(no repo — edit `main.scpt` in place)* | Droplet that mounts, installs, and ejects DMGs; serialized via a detached `worker.sh` |
 | **Knockoff** | `knockoff-local` | Safari extension, CLT-built app extension |
 
@@ -248,7 +249,9 @@ There is **no git** in the dashboard repo's fix path; rollback is via
 
 ## 5. Scheduled automation
 
-25 LaunchAgents plus one crontab entry. This is the complete list.
+Custom LaunchAgents plus one crontab entry. `STACK.json` is authoritative for
+current coverage; the trigger-free public publisher is intentionally not a
+scheduled job.
 
 ### Ivo's jobs
 
@@ -266,9 +269,8 @@ There is **no git** in the dashboard repo's fix path; rollback is via
 | `com.ivogundlach.transcript-distill` | 16:20 daily | Distils Claude + Codex transcripts into `~/.memory/raw/chat/distilled/`, injection- and secret-guarded, with recency decay and a stale gate |
 | `com.ivogundlach.memory-corpus-backup` | 17:30 daily | `~/.memory` → private GitHub repo `memory-corpus` |
 | `com.ivogundlach.memory-health-weekly` | Sun 18:15 | Index integrity, coverage, restorability, recall. Always exits 0. Every step watchdogged, because launchd has no TCC grant and `opendir` *blocks* |
-| `com.ivogundlach.personal-repo-sync` | 23:30 daily | Snapshot archive → `Personal-Repo` (see §7) |
+| `com.ivogundlach.personal-repo-sync` | 23:30 daily | Snapshot archive → private source archive (see §7) |
 | `com.ivogundlach.app-repo-sync` | 12:30 + 22:30 daily | Per-app commit and push (see §7) |
-| `com.ivogundlach.public-toolkit-publish` | 13:15 daily | Rebuilds the sanitized public export and pushes it only if the tree changed (see §7f). The one job here that publishes, so every gate fails toward *publish nothing* |
 | `com.ivogundlach.apple-mail-draft-runner` | hourly 08:00–22:00 | Drafts Mail replies. Deduped at *thread* level by reading Drafts `.emlx` files directly — Mail's index and AppleScript are both blind to drafts |
 | `com.ivogundlach.quit-on-close` | KeepAlive daemon | Quits apps when their last window closes. Counts windows via `CGWindowList`, **not** AX `kAXWindows` (which under-reports and causes false quits) |
 | `com.ivo.market.refresh` | every 900 s | Market background data refresh |
@@ -358,10 +360,10 @@ Three independent mechanisms, deliberately non-overlapping.
 
 ### 7a. Per-app repositories — `app-repo-sync` *(primary, since 2026-08-06)*
 
-Sixteen apps, each with its own **private** GitHub repo under `g2pxg4mff4-wq`,
-with real per-change history.
+Sixteen apps, each with its own **private** GitHub repository and real per-change
+history. Repository identities remain private because they add no restoration value.
 
-- **Bootstrap:** `app-repo-bootstrap` replayed history from the Personal-Repo
+- **Bootstrap:** `app-repo-bootstrap` replayed history from the private snapshot
   snapshot archive — one dated commit per archived snapshot, message
   `Snapshot YYYY-MM-DD` — into a scratch tree, then adopted that `.git` into the
   live working tree. It never rsyncs old snapshots over live files
@@ -393,11 +395,11 @@ reported as missing, it is simply never backed up per-change.
 
 ### 7b. Snapshot archive — `personal-repo-sync` *(backstop)*
 
-`g2pxg4mff4-wq/Personal-Repo`, nightly at 23:30. A daily full-tree snapshot of
-apps, scripts, skills, and automation source. It excludes `.git/`, so per-app
+The private source archive runs nightly at 23:30. It is a daily full-tree
+snapshot of apps, scripts, skills, and automation source. It excludes `.git/`, so per-app
 history is invisible to it and the two systems never interfere.
 
-`~/Projects/Personal-Repo` on disk is a **control surface only** — its working
+The local private-archive checkout is a **control surface only** — its working
 tree is routinely dirty and its last local commit is old. Every run uses a fresh
 shallow clone. Reading the local checkout to judge the backup's health is a
 category error (and exactly the "reading a proxy instead of real state" trap
@@ -435,13 +437,13 @@ Per-app: `CanIAffordThis`, `CopyPathFinder`, `ElectionSimulator`,
 `ForceCopyPaste`, `Kinetics`, `MacroSimulator`, `Market`, `NewTabLinks`,
 `NutrientTracker`, `School`, `ToolStatusDashboard`, `UsageQueue`, `Vitals`,
 `WarmCorners`, `YouTubeFirstContentTab`, `YouTubeHomeReload`.
-Archive: `Personal-Repo`, `memory-corpus`.
+Archive: private source snapshot and private memory backup repositories.
 Third-party mirrors: `CLI-Anything-local`, `CodexBar-local`, `knockoff-local`,
 `claude-video-local`.
 
 ### 7e. The exporter that builds the public candidate
 
-`Personal-Repo/scripts/build-public-toolkit.py` (47 KB) builds a *sanitized
+The private archive's `scripts/build-public-toolkit.py` builds a *sanitized
 public source candidate* from an immutable private snapshot. It is an exporter
 and nothing more — **it never publishes, and it never creates GitHub state.** It
 reads one clean checkout, copies only policy-classified UTF-8 text, performs
@@ -459,23 +461,22 @@ temp and cache paths. Output is a separate empty directory and stays a
 *candidate* until its manifest, secret scan, and component verification have been
 reviewed by a human.
 
-Templates live in `Personal-Repo/public/`: `README.md`, `LICENSE`,
-`CONTRIBUTING.md`, `SECURITY.md`, `export-policy.json`.
+Templates live in the private archive's `public/` directory: `README.md`, `LICENSE`,
+`CONTRIBUTING.md`, `SECURITY.md`, `export-policy.json`, and
+`stack-policy.json`.
 
 ### 7f. The public repository
 
-**`g2pxg4mff4-wq/macos-toolkit`** — public, 820 files, first published
+**`ivogundlach/macos-toolkit`** — public, first published
 2026-08-06. It is the sanitized export described above, and it is the *only*
 public repository; all 22 others remain private.
 
-`public-toolkit-publish` (LaunchAgent `com.ivogundlach.public-toolkit-publish`,
-daily 13:15) rebuilds the candidate from the current private snapshot and pushes
-it **only if the tree actually changed**, so an unchanged day is a no-op rather
-than a churned commit. It runs at 13:15 because it must follow the 12:30
-`app-repo-sync`, and because the overnight slot has a history of being missed
-while the Mac sleeps — a stale public repo is this job's real failure mode.
-`RunAtLoad` is deliberately `false`: every other job here is idempotent and
-cheap, but this one publishes.
+`public-toolkit-publish` rebuilds the candidate from the current private snapshot
+and pushes it only when invoked deliberately. The former 13:15 LaunchAgent
+trigger was removed and the service was disabled and unloaded on 2026-08-09.
+The retained plist is trigger-free and `RunAtLoad` is false, so it documents the
+manual command without creating an unattended publication path. An unchanged
+manual run remains a no-op rather than a churned commit.
 
 Publishing is the only irreversible action on this machine, so every gate fails
 toward *publish nothing*:
@@ -506,8 +507,8 @@ source rather than patched in the export:
 denylist. `positive_roots` in `public/export-policy.json` names thirteen roots
 (`apps`, `automation/codex`, `automation/local-bin`, `automation/memory-tools`,
 `automation/memory-tests`, and others); a file landing in one of them with an
-allowed suffix is published on the next 13:15 run without anyone deciding to
-publish it. That is the property to keep in mind when writing a new file: opting
+allowed suffix enters the next manually reviewed candidate. That is the property
+to keep in mind when writing a new file: opting
 *out* is the deliberate act, via `excluded_roots` plus `documented_exclusions`.
 
 The memory system is the intended shape of that split. `automation/memory-tools`
@@ -523,7 +524,7 @@ inline; the eval harness is public precisely because its gold set lives in
 Scripts that hold private repository identity are excluded and documented:
 `personal-repo-sync`, `public-toolkit-publish`, and the three `app-repo-*` files.
 Behind those hand-written exclusions sits a detector that **fails the build** on
-any `github.com/g2pxg4mff4-wq/…` reference other than `macos-toolkit` itself. The
+any private repository slug or URL while allowing the public toolkit itself. The
 exclusions are the intent; the detector is the backstop for the next file nobody
 remembers to exclude.
 

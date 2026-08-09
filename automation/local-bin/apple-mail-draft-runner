@@ -353,7 +353,15 @@ def run_once(limit: int, dry_run: bool) -> int:
     render_junk_review(junk)
     candidates = scan.get("candidates", [])
     if not dry_run and not junk.get("correspondents_available", True):
-        log("WARNING: Mail's Envelope Index was unreadable; junk deletion was skipped this run")
+        log(
+            "WARNING: both routes to the sent-mail allowlist failed; junk deletion was skipped this run "
+            f"({junk.get('correspondents_error') or 'no reason recorded'})"
+        )
+    elif not dry_run and junk.get("correspondents_source") == "mail-app-fallback":
+        log(
+            "NOTE: Envelope Index unreadable, used the Mail fallback for the sent-mail allowlist "
+            f"({junk.get('correspondents_error') or 'no reason recorded'})"
+        )
     log(
         f"junk deleted={len(junk.get('deleted_junk', []))} moved_to_inbox={len(junk.get('moved_to_inbox', []))} "
         f"left_in_junk={len(junk.get('left_in_junk', []))} "

@@ -1140,15 +1140,72 @@ PUBLIC_MAIL_DOMAINS = {
 }
 
 
+CORRESPONDENTS_ERROR: str | None = None
+CORRESPONDENTS_SOURCE: str | None = None
+
+# Same question as the Envelope Index query below — who has Ivo sent mail to — asked
+# through Mail itself. Reading Mail's database file needs a privacy grant this job
+# does not reliably have when macOS launches it on a schedule; talking to Mail uses
+# the automation permission the sorter already depends on to read and move messages.
+SENT_RECIPIENTS_APPLESCRIPT = r'''
+on run argv
+    set sep to ASCII character 31
+    set AppleScript's text item delimiters to sep
+    set collected to {}
+    tell application "Mail"
+        repeat with acct in accounts
+            set sentBox to missing value
+            try
+                set sentBox to mailbox "Sent Messages" of acct
+            end try
+            if sentBox is missing value then
+                try
+                    set sentBox to sent mailbox of acct
+                end try
+            end if
+            if sentBox is not missing value then
+                try
+                    set end of collected to (address of every recipient of every message of sentBox) as string
+                end try
+            end if
+        end repeat
+    end tell
+    return collected as string
+end run
+'''
+
+
+def sent_recipients_via_mail() -> set[str]:
+    output = run_osascript(SENT_RECIPIENTS_APPLESCRIPT, timeout=90)
+    return {
+        part.strip().lower()
+        for part in output.split("\x1f")
+        if "@" in part
+    }
+
+
 def known_correspondents() -> tuple[set[str], set[str]] | None:
     """Addresses and domains Ivo has actually sent mail to, from Mail's Envelope Index.
 
     Returns None when the index cannot be read. None means "unknown", not "none":
     callers must treat it as a reason to stop deleting rather than as an empty
     allowlist, or an unreadable database would silently widen deletion.
+
+    The reason for a failed read is recorded in CORRESPONDENTS_ERROR, because
+    "deletion was skipped" and "deletion was skipped because this process is not
+    allowed to read Mail's data" call for completely different repairs, and a bare
+    None hides the difference for as long as nobody happens to look.
+
+    Reading the index file needs a privacy grant that a scheduled launch does not
+    reliably carry, so a denied read falls back to asking Mail for the same thing.
+    Only when both routes fail is the answer genuinely unknown, and deletion stops.
     """
+    global CORRESPONDENTS_ERROR, CORRESPONDENTS_SOURCE
+    CORRESPONDENTS_ERROR = None
+    CORRESPONDENTS_SOURCE = None
     if not MAIL_DB.exists():
-        return None
+        CORRESPONDENTS_ERROR = f"envelope-index-missing:{MAIL_DB}"
+        return correspondents_via_mail_app()
     try:
         # mode=ro (not immutable=1) so the -wal is read; immutable would hand back
         # a pre-checkpoint snapshot and silently miss recent correspondents.
@@ -1166,13 +1223,39 @@ def known_correspondents() -> tuple[set[str], set[str]] | None:
             ).fetchall()
         finally:
             conn.close()
-    except Exception:
-        return None
-    addresses = {row[0].strip() for row in rows if row[0]}
+    except Exception as exc:
+        CORRESPONDENTS_ERROR = f"envelope-index-unreadable:{type(exc).__name__}:{exc}"
+        return correspondents_via_mail_app()
+    CORRESPONDENTS_SOURCE = "envelope-index"
+    return split_correspondents({row[0].strip() for row in rows if row[0]})
+
+
+def split_correspondents(addresses: set[str]) -> tuple[set[str], set[str]]:
+    addresses = {addr for addr in addresses if addr}
     domains = {
         addr.split("@", 1)[1] for addr in addresses if "@" in addr
     } - PUBLIC_MAIL_DOMAINS
     return addresses, domains
+
+
+def correspondents_via_mail_app() -> tuple[set[str], set[str]] | None:
+    """Second route to the same allowlist, used when the index read is refused.
+
+    An empty result is treated as a failure, not as "Ivo has never sent mail": an
+    empty allowlist would quietly widen deletion, which is the exact accident this
+    whole gate exists to prevent.
+    """
+    global CORRESPONDENTS_ERROR, CORRESPONDENTS_SOURCE
+    try:
+        addresses = sent_recipients_via_mail()
+    except Exception as exc:
+        CORRESPONDENTS_ERROR = f"{CORRESPONDENTS_ERROR or 'envelope-index-failed'}; mail-app-fallback-failed:{type(exc).__name__}:{exc}"
+        return None
+    if not addresses:
+        CORRESPONDENTS_ERROR = f"{CORRESPONDENTS_ERROR or 'envelope-index-failed'}; mail-app-fallback-returned-nothing"
+        return None
+    CORRESPONDENTS_SOURCE = "mail-app-fallback"
+    return split_correspondents(addresses)
 
 
 def junk_protect_reason(
@@ -1184,10 +1267,17 @@ def junk_protect_reason(
     and a sender he has written to proves he chose to contact them. Either one
     outranks every deletion rule: losing real mail is the expensive error, so
     protected messages are escalated to the Inbox for review instead.
+
+    Having written to an address is evidence about the *sender*, so it is spent the
+    moment the message turns out to be a mass mailing — otherwise one email to an
+    admissions desk promotes that university's whole newsletter into the Inbox.
+    Threading is evidence about *this message* and is never overridden.
     """
     for header in ("in-reply-to", "references"):
         if record.headers.get(header, "").strip():
             return f"protected-reply-to-sent-mail:{header}"
+    if bulk_mailing_reason(record):
+        return None
     if correspondents:
         addresses, domains = correspondents
         sender = (record.sender_address or "").strip().lower()
@@ -1202,23 +1292,128 @@ def junk_protect_reason(
 INSTITUTIONAL_SENDER_TLDS = (".edu", ".gov", ".mil", ".ac.uk", ".edu.au")
 APPLE_RELAY_DOMAINS = {"privaterelay.appleid.com"}
 
+# The school Ivo actually attends. Recruitment blasts from every other university
+# are marketing; a mass mailing from his own registrar can be a real deadline, so
+# this domain keeps its shield even when the message is an obvious mass mailing.
+ENROLLED_INSTITUTION_DOMAINS = ("uah.edu",)
 
-def junk_spare_reason(record: MessageRecord) -> str | None:
+# Headers a sender only sets when it is running a mass mailing: list plumbing plus
+# the per-campaign identifiers the major sending platforms stamp on every send.
+# AUTOMATION_HEADERS covers the list-* family; these are the campaign fingerprints.
+BULK_MAILING_HEADERS = (
+    "list-unsubscribe-post",
+    "list-help",
+    "x-csa-complaints",
+    "feedback-id",
+    "x-feedback-id",
+    "x-msfbl",
+    "x-mailgun-sid",
+    "x-sg-eid",
+    "x-ses-outgoing",
+    "x-sparkpost-id",
+    "x-mandrill-user",
+    "x-klaviyo-request-id",
+    "x-mailchimp-id",
+    "x-marketing-id",
+    "x-report-abuse",
+)
+
+# Subjects whose loss actually costs something: proof of purchase, account access,
+# a scheduled commitment. Marketing copy does not accidentally land in this list.
+TRANSACTIONAL_SUBJECT_PATTERNS = (
+    "verification code",
+    "one-time",
+    "passcode",
+    "receipt",
+    "invoice",
+    "statement",
+    "order #",
+    "your order",
+    "security alert",
+    "password",
+    "boarding pass",
+    "appointment",
+)
+
+
+def bulk_mailing_reason(record: MessageRecord) -> str | None:
+    """The sender's own headers declaring this a mass mailing rather than a letter.
+
+    This is positive evidence of marketing, not a relaxed spam verdict: a campaign
+    id or unsubscribe endpoint is something the sender attaches on purpose, to every
+    recipient. It is what separates "a domain Ivo once wrote to" from "a message
+    written to Ivo" — a university he emailed once still blasts him a newsletter.
+    """
+    for header in AUTOMATION_HEADERS + BULK_MAILING_HEADERS:
+        if record.headers.get(header, "").strip():
+            return f"bulk-mailing:{header}"
+    precedence = record.headers.get("precedence", "").strip().lower()
+    if precedence in {"bulk", "list", "junk"}:
+        return f"bulk-mailing:precedence-{precedence}"
+    return None
+
+
+def transactional_subject_reason(record: MessageRecord) -> str | None:
+    subject = (record.subject or "").lower()
+    for token in TRANSACTIONAL_SUBJECT_PATTERNS:
+        if token in subject:
+            return f"transactional-subject:{token.strip()}"
+    return None
+
+
+def sender_domain(record: MessageRecord) -> str:
+    sender = (record.sender_address or "").strip().lower()
+    return sender.split("@", 1)[1] if "@" in sender else ""
+
+
+def enrolled_institution_reason(record: MessageRecord) -> str | None:
+    domain = sender_domain(record)
+    for allowed in ENROLLED_INSTITUTION_DOMAINS:
+        if domain == allowed or domain.endswith("." + allowed):
+            return f"spared-enrolled-institution:{allowed}"
+    return None
+
+
+def junk_spare_reason(
+    record: MessageRecord, correspondents: tuple[set[str], set[str]] | None = None
+) -> str | None:
     """Evidence too weak to justify the Inbox, strong enough to forbid destruction.
 
     These senders are not correspondents, but the relationship is real enough that
     a spam verdict should not be final. They stay in Junk: visible if Ivo looks,
     never in the way, never lost.
+
+    A relationship shield protects a *sender*, and a mass mailing is not addressed
+    to anyone, so a campaign fingerprint cancels the weak shields. It cannot cancel
+    the two things worth keeping regardless: Ivo's own university, and a message
+    whose subject is a receipt, a login code, or an appointment from a sender he
+    has some real tie to.
     """
+    enrolled = enrolled_institution_reason(record)
+    if enrolled:
+        return enrolled
     sender = (record.sender_address or "").strip().lower()
-    domain = sender.split("@", 1)[1] if "@" in sender else ""
+    domain = sender_domain(record)
     if not domain:
         return None
-    if domain.endswith(INSTITUTIONAL_SENDER_TLDS):
-        return "spared-institutional-sender"
+    institutional = domain.endswith(INSTITUTIONAL_SENDER_TLDS)
     # A Hide My Email alias only exists because Ivo deliberately created one for
     # this sender, so the signup was intentional even when the mail is marketing.
-    if domain in APPLE_RELAY_DOMAINS or (domain == "icloud.com" and "_at_" in sender):
+    relay = domain in APPLE_RELAY_DOMAINS or (domain == "icloud.com" and "_at_" in sender)
+    known_address = sender in (correspondents[0] if correspondents else set())
+    bulk = bulk_mailing_reason(record)
+    if bulk:
+        transactional = transactional_subject_reason(record)
+        if transactional and (institutional or relay or known_address):
+            return f"spared-{transactional}"
+        if known_address:
+            # He wrote to this exact person or desk, so their bulk mail is at worst
+            # noise from a real account: keep it in Junk rather than destroy it.
+            return "spared-known-address-bulk"
+        return None
+    if institutional:
+        return "spared-institutional-sender"
+    if relay:
         return "spared-apple-private-relay"
     return None
 
@@ -1226,18 +1421,18 @@ def junk_spare_reason(record: MessageRecord) -> str | None:
 def junk_delete_reason(
     record: MessageRecord, correspondents: tuple[set[str], set[str]] | None = None
 ) -> str | None:
-    """Delete spam-flagged mail, but only after both evidence gates have passed.
+    """Delete once every evidence gate has failed to prove the message is real.
 
-    The spam header is a weak signal (iCloud stamps ~99% of Junk with it), so it
-    can only act on messages that survived the protect and spare checks. Those two
-    gates, not the header, are what keep real mail alive. Anything not flagged at
-    all is left in Junk rather than deleted or escalated.
+    Two independent things can now trigger deletion: the spam header, and the
+    sender's own campaign fingerprint. Neither decides anything on its own — both
+    act only on messages the protect and spare gates already declined to keep.
+    Mail that is neither flagged nor a declared mass mailing stays in Junk.
     """
     if junk_protect_reason(record, correspondents):
         return None
-    if junk_spare_reason(record):
+    if junk_spare_reason(record, correspondents):
         return None
-    return obvious_junk_reason(record)
+    return obvious_junk_reason(record) or bulk_mailing_reason(record)
 
 
 def parse_mail_date(headers: dict[str, str]) -> int:
@@ -1660,7 +1855,10 @@ def sort_junk(args: argparse.Namespace) -> None:
             if correspondents is None:
                 left_reason = "left-in-junk:correspondents-unavailable"
             else:
-                left_reason = junk_spare_reason(record) or "left-in-junk:not-spam-flagged"
+                left_reason = (
+                    junk_spare_reason(record, correspondents)
+                    or "left-in-junk:not-flagged-not-bulk"
+                )
             left_in_junk.append(review_item(record, left_reason))
             continue
         if reason:
@@ -1716,6 +1914,8 @@ def sort_junk(args: argparse.Namespace) -> None:
         "moved_to_inbox": moved_to_inbox,
         "left_in_junk": left_in_junk,
         "correspondents_available": correspondents is not None,
+        "correspondents_error": CORRESPONDENTS_ERROR,
+        "correspondents_source": CORRESPONDENTS_SOURCE,
         "action_errors": action_errors,
         "count": len(records),
         "dry_run": args.dry_run,
@@ -2848,6 +3048,33 @@ def self_test(args: argparse.Namespace) -> None:
         errors.append("advertisement without a spam verdict must stay in Junk, not be deleted")
     if junk_delete_reason(replace(ad_junk, headers={"x-spam-flag": "yes"})) != "spam-header:x-spam-flag":
         errors.append("spam-flagged advertisement deletion detection failed")
+
+    # The bulk-mailing gate. These four cases are the whole point of it: a mass
+    # mailing loses a sender-level shield, but never beats threading, never beats
+    # Ivo's own university, and never destroys a receipt or a login code.
+    campaign = {"list-unsubscribe": "<https://example.com/u>"}
+    known: tuple[set[str], set[str]] = (set(), {"auburn.edu"})
+    edu_blast = replace(
+        ad_junk, sender_address="skill@auburn.edu", subject="Do you have the SKILLs for college success?", headers=campaign
+    )
+    if junk_protect_reason(edu_blast, known) is not None:
+        errors.append("a mass mailing was treated as correspondence and escalated to the Inbox")
+    if junk_delete_reason(edu_blast, known) != "bulk-mailing:list-unsubscribe":
+        errors.append("a mass mailing from a merely-known domain was not deleted")
+    threaded_blast = replace(edu_blast, headers={**campaign, "in-reply-to": "<sent@example.com>"})
+    if junk_delete_reason(threaded_blast, known) is not None:
+        errors.append("a reply to Ivo's own thread was deleted because it carried list headers")
+    own_school = replace(edu_blast, sender_address="registrar@uah.edu", headers={**campaign, "x-spam-flag": "yes"})
+    if junk_delete_reason(own_school, known) is not None:
+        errors.append("mass mail from Ivo's own university was deleted")
+    receipt = replace(
+        edu_blast, sender_address="support@shop.example", subject="Your order #1234", headers=campaign
+    )
+    if junk_delete_reason(receipt, ({"support@shop.example"}, set())) is not None:
+        errors.append("a receipt from an address Ivo has written to was deleted")
+    if junk_delete_reason(replace(ad_junk, headers={"precedence": "bulk"})) != "bulk-mailing:precedence-bulk":
+        errors.append("precedence: bulk did not qualify a Junk message for deletion")
+
     normalized_junk_script = re.sub(r"\s+", " ", JUNK_READ_DELETE_APPLESCRIPT).lower()
     read_index = normalized_junk_script.find("set read status of m to true")
     delete_index = normalized_junk_script.find("delete m")

@@ -619,6 +619,10 @@
       "reason": "excluded root: apps/School"
     },
     {
+      "path": "apps/School/sync/uahsync/dashboard.py",
+      "reason": "excluded root: apps/School"
+    },
+    {
       "path": "apps/School/sync/uahsync/grades.py",
       "reason": "excluded root: apps/School"
     },
@@ -1035,11 +1039,19 @@
       "reason": "unknown path"
     },
     {
+      "path": "scripts/export-public-settings.py",
+      "reason": "unknown path"
+    },
+    {
       "path": "scripts/inventory-from-machine.py",
       "reason": "unknown path"
     },
     {
       "path": "scripts/sync-from-machine.sh",
+      "reason": "unknown path"
+    },
+    {
+      "path": "scripts/test-public-settings.py",
       "reason": "unknown path"
     },
     {

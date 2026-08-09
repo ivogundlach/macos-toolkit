@@ -1558,6 +1558,123 @@ def is_personal_app(bundle: Path, cache: dict[str, bool]) -> bool:
     return cache[key]
 
 
+def school_sync_records(rows: list[dict[str, Any]]) -> None:
+    """UAH school sync health.
+
+    The sync used to raise problems as macOS banners posted with `osascript`,
+    which macOS attributes to an unsigned generic script rather than to any app.
+    That is now removed: the sync only records alert state, and this dashboard is
+    where a school-sync problem becomes visible. If this check is wrong or
+    missing, a dead Canvas session goes unreported entirely.
+
+    Health is read from the exporter's OUTPUT (the snapshot the School app
+    displays), not from the sync's exit status — a run that succeeds at nothing
+    still exits 0.
+    """
+    sync_dir = HOME / "School" / "sync"
+    if not sync_dir.is_dir():
+        return  # the project is gone; nothing to report on
+
+    snapshot_path = HOME / ".local/state/school-dashboard/dashboard.json"
+    login_fix = fix_launch(
+        "Log in to Canvas",
+        "Opens the Canvas login in a browser. Ivo has to sign in himself — it "
+        "restores grades and turned-in status for the School app and the sync.",
+        [str(sync_dir / ".venv/bin/python"), "setup_session.py"],
+        cwd=str(sync_dir),
+    )
+
+    try:
+        snapshot = json.loads(snapshot_path.read_text())
+    except Exception as error:
+        rec(
+            rows, "School data snapshot", "Pipeline", "fail",
+            "The School app has no data to show",
+            f"{type(error).__name__}: {error}", str(snapshot_path),
+            fix=fix_manual(
+                "Rebuild the School snapshot",
+                "Read-only: re-reads Canvas and the saved course list, writes no "
+                "reminders or calendar events.",
+                [str(sync_dir / ".venv/bin/python"), str(sync_dir / "school_sync.py"), "export"],
+            ),
+            cause_code="pipeline.status_missing",
+        )
+        return
+
+    generated = snapshot.get("generated") or ""
+    age_hours = None
+    try:
+        parsed = dt.datetime.fromisoformat(generated)
+        age_hours = (dt.datetime.now(parsed.tzinfo) - parsed).total_seconds() / 3600
+    except ValueError:
+        pass
+
+    # The sync runs hourly; two missed cycles plus slack for a sleeping Mac.
+    stale_limit = float(snapshot.get("stale_after_hours") or 3)
+    if age_hours is None:
+        rec(rows, "School data snapshot", "Pipeline", "warn",
+            "The snapshot has no usable timestamp", clip(generated), str(snapshot_path))
+    elif age_hours > stale_limit:
+        rec(rows, "School data snapshot", "Pipeline", "warn",
+            f"School data is {age_hours:.0f}h old",
+            f"The hourly sync has not refreshed it since {generated[:16]}.",
+            str(snapshot_path),
+            cause_code="pipeline.stale")
+    else:
+        rec(rows, "School data snapshot", "Pipeline", "ok",
+            f"School data is current ({age_hours:.1f}h old)",
+            f"{len(snapshot.get('courses') or [])} courses, "
+            f"{len(snapshot.get('assignments') or [])} assignments",
+            str(snapshot_path))
+
+    health = snapshot.get("health") or {}
+    started = bool(health.get("started"))
+    start_date = health.get("sync_start_date") or ""
+
+    session = health.get("canvas_session") or {}
+    if session.get("ok"):
+        rec(rows, "School Canvas login", "Auth", "ok",
+            "The saved Canvas session is alive", "", str(sync_dir / "storage_state.json"))
+    else:
+        # Before the semester a dead session is a warning with a deadline; once
+        # the term is running it is breaking the sync now.
+        rec(rows, "School Canvas login", "Auth",
+            "fail" if started else "warn",
+            "The saved Canvas session has expired",
+            (f"Grades and turned-in status are unavailable until Ivo logs back in. "
+             f"School sync starts {start_date}." if not started else
+             "Grades and turned-in status are unavailable until Ivo logs back in."),
+            clip(str(session.get("error") or "")),
+            fix=login_fix,
+            cause_code="auth.session_expired",
+            notification_policy="immediate",
+            deadline_at=start_date or None,
+            needs_ivo=True)
+
+    feed = health.get("feed") or {}
+    rec(rows, "School assignment feed", "Pipeline",
+        "ok" if feed.get("ok") else "fail",
+        "The Canvas assignment feed is reachable" if feed.get("ok")
+        else "The Canvas assignment feed is failing",
+        clip(str(feed.get("error") or "")),
+        fix=None if feed.get("ok") else login_fix,
+        cause_code=None if feed.get("ok") else "pipeline.source_unreachable")
+
+    # Alerts whose entire subject is already a check above. Reporting both puts
+    # the same dead session on the board twice, which trains Ivo to skim.
+    covered_by_a_check = {"preflight_session", "session_dead", "ics_backbone"}
+    for alert in health.get("alerts") or []:
+        key = str(alert.get("key") or "alert")
+        if key in covered_by_a_check:
+            continue
+        rec(rows, f"School sync alert: {key}", "Background Job", "warn",
+            clip(str(alert.get("message") or key)),
+            f"Raised by the school sync; active since {alert.get('since') or 'unknown'}.",
+            str(sync_dir / "state.json"),
+            fix=login_fix if "session" in key else None,
+            cause_code="job.alert_active")
+
+
 def process_records(rows: list[dict[str, Any]]) -> None:
     rc, out = run(["ps", "-axo", "pid=,command="], timeout=8)
     if rc != 0:
@@ -2177,6 +2294,7 @@ def main() -> int:
     source_archive_coverage_record(rows)
     market_records(rows)
     semantic_index_records(rows)
+    school_sync_records(rows)
     app_records(rows)
     worker_log_records(rows)
     process_records(rows)

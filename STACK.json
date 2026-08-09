@@ -1,0 +1,1517 @@
+{
+  "applications": [
+    {
+      "acquisition": "mac-app-store",
+      "annotation": null,
+      "bundleIdentifier": "com.khanov.BlockerX",
+      "location": "/Applications",
+      "name": "1Blocker",
+      "observedFrom": "application Info.plist",
+      "version": "6.6"
+    },
+    {
+      "acquisition": "mac-app-store",
+      "annotation": null,
+      "bundleIdentifier": "com.adguard.safari.AdGuard",
+      "location": "/Applications",
+      "name": "AdGuard for Safari",
+      "observedFrom": "application Info.plist",
+      "version": "2.2.1"
+    },
+    {
+      "acquisition": "ivo-built",
+      "annotation": null,
+      "bundleIdentifier": "com.ivogundlach.Amethyst",
+      "location": "/Applications",
+      "name": "Amethyst",
+      "observedFrom": "application Info.plist",
+      "version": "0.24.3"
+    },
+    {
+      "acquisition": "unknown",
+      "annotation": null,
+      "bundleIdentifier": "com.google.antigravity",
+      "location": "/Applications",
+      "name": "Antigravity",
+      "observedFrom": "application Info.plist",
+      "version": "2.3.1"
+    },
+    {
+      "acquisition": "unknown",
+      "annotation": null,
+      "bundleIdentifier": "com.anythingllm",
+      "location": "/Applications",
+      "name": "AnythingLLM",
+      "observedFrom": "application Info.plist",
+      "version": "1.15.0"
+    },
+    {
+      "acquisition": "ivo-built",
+      "annotation": null,
+      "bundleIdentifier": "com.ivogundlach.autoinstalldmg",
+      "location": "/Applications",
+      "name": "AutoInstall DMG",
+      "observedFrom": "application Info.plist",
+      "version": null
+    },
+    {
+      "acquisition": "unknown",
+      "annotation": null,
+      "bundleIdentifier": "pro.betterdisplay.BetterDisplay",
+      "location": "/Applications",
+      "name": "BetterDisplay",
+      "observedFrom": "application Info.plist",
+      "version": "4.3.5"
+    },
+    {
+      "acquisition": "unknown",
+      "annotation": null,
+      "bundleIdentifier": "theboringteam.boringnotch",
+      "location": "/Applications",
+      "name": "boringNotch",
+      "observedFrom": "application Info.plist",
+      "version": "2.7.3"
+    },
+    {
+      "acquisition": "mac-app-store",
+      "annotation": null,
+      "bundleIdentifier": "de.brightintosh.app",
+      "location": "/Applications",
+      "name": "BrightIntosh",
+      "observedFrom": "application Info.plist",
+      "version": "6.0.8"
+    },
+    {
+      "acquisition": "unknown",
+      "annotation": null,
+      "bundleIdentifier": "net.domzilla.caffeine",
+      "location": "/Applications",
+      "name": "Caffeine",
+      "observedFrom": "application Info.plist",
+      "version": "1.6.4"
+    },
+    {
+      "acquisition": "unknown",
+      "annotation": null,
+      "bundleIdentifier": "com.openai.codex",
+      "location": "/Applications",
+      "name": "ChatGPT",
+      "observedFrom": "application Info.plist",
+      "version": "26.803.41515"
+    },
+    {
+      "acquisition": "unknown",
+      "annotation": null,
+      "bundleIdentifier": "com.anthropic.claudefordesktop",
+      "location": "/Applications",
+      "name": "Claude",
+      "observedFrom": "application Info.plist",
+      "version": "1.24012.9"
+    },
+    {
+      "acquisition": "ivo-built",
+      "annotation": null,
+      "bundleIdentifier": "com.anthropic.claude-code-url-handler",
+      "location": "~/Applications",
+      "name": "Claude Code URL Handler",
+      "observedFrom": "application Info.plist",
+      "version": "1.0"
+    },
+    {
+      "acquisition": "unknown",
+      "annotation": null,
+      "bundleIdentifier": "com.coconut-flavour.coconutBattery",
+      "location": "/Applications",
+      "name": "coconutBattery",
+      "observedFrom": "application Info.plist",
+      "version": "4.3.3"
+    },
+    {
+      "acquisition": "homebrew-cask",
+      "annotation": null,
+      "bundleIdentifier": "com.steipete.codexbar",
+      "location": "/Applications",
+      "name": "CodexBar",
+      "observedFrom": "application Info.plist",
+      "version": "0.48.0"
+    },
+    {
+      "acquisition": "unknown",
+      "annotation": null,
+      "bundleIdentifier": "com.getcoldturkey.blocker",
+      "location": "/Applications",
+      "name": "Cold Turkey Blocker",
+      "observedFrom": "application Info.plist",
+      "version": "4.9"
+    },
+    {
+      "acquisition": "mac-app-store",
+      "annotation": null,
+      "bundleIdentifier": "com.sindresorhus.Command-X",
+      "location": "/Applications",
+      "name": "Command X",
+      "observedFrom": "application Info.plist",
+      "version": "1.7.1"
+    },
+    {
+      "acquisition": "ivo-built",
+      "annotation": null,
+      "bundleIdentifier": "com.ivo.CopyPath",
+      "location": "/Applications",
+      "name": "CopyPath",
+      "observedFrom": "application Info.plist",
+      "version": "1.0"
+    },
+    {
+      "acquisition": "unknown",
+      "annotation": null,
+      "bundleIdentifier": "com.jacobfu.tabby",
+      "location": "/Applications",
+      "name": "Cotabby",
+      "observedFrom": "application Info.plist",
+      "version": "0.6.0-beta"
+    },
+    {
+      "acquisition": "unknown",
+      "annotation": null,
+      "bundleIdentifier": "app.cotypist.Cotypist",
+      "location": "/Applications",
+      "name": "Cotypist",
+      "observedFrom": "application Info.plist",
+      "version": "2026.3.1"
+    },
+    {
+      "acquisition": "unknown",
+      "annotation": null,
+      "bundleIdentifier": "com.hnc.Discord",
+      "location": "/Applications",
+      "name": "Discord",
+      "observedFrom": "application Info.plist",
+      "version": "0.0.394"
+    },
+    {
+      "acquisition": "unknown",
+      "annotation": null,
+      "bundleIdentifier": "com.ethanbills.DockDoor",
+      "location": "/Applications",
+      "name": "DockDoor",
+      "observedFrom": "application Info.plist",
+      "version": "1.39.5"
+    },
+    {
+      "acquisition": "unknown",
+      "annotation": null,
+      "bundleIdentifier": "com.jgraph.drawio.desktop",
+      "location": "/Applications",
+      "name": "draw.io",
+      "observedFrom": "application Info.plist",
+      "version": "30.2.4"
+    },
+    {
+      "acquisition": "unknown",
+      "annotation": null,
+      "bundleIdentifier": "org.tempel.findanyfile",
+      "location": "/Applications",
+      "name": "Find Any File",
+      "observedFrom": "application Info.plist",
+      "version": "2.5.5"
+    },
+    {
+      "acquisition": "unknown",
+      "annotation": null,
+      "bundleIdentifier": "dev.ivogundlach.ForceCopyPaste",
+      "location": "/Applications",
+      "name": "ForceCopyPaste",
+      "observedFrom": "application Info.plist",
+      "version": "1.0"
+    },
+    {
+      "acquisition": "unknown",
+      "annotation": null,
+      "bundleIdentifier": "com.google.GeminiMacOS",
+      "location": "/Applications",
+      "name": "Gemini",
+      "observedFrom": "application Info.plist",
+      "version": "1.92.1.684"
+    },
+    {
+      "acquisition": "unknown",
+      "annotation": null,
+      "bundleIdentifier": "com.google.Chrome",
+      "location": "/Applications",
+      "name": "Google Chrome",
+      "observedFrom": "application Info.plist",
+      "version": "151.0.7922.108"
+    },
+    {
+      "acquisition": "unknown",
+      "annotation": null,
+      "bundleIdentifier": "net.sourceforge.grandperspectiv",
+      "location": "/Applications",
+      "name": "GrandPerspective",
+      "observedFrom": "application Info.plist",
+      "version": "3.4.2"
+    },
+    {
+      "acquisition": "mac-app-store",
+      "annotation": null,
+      "bundleIdentifier": "com.anchorfree.hss-mac",
+      "location": "/Applications",
+      "name": "Hotspot Shield",
+      "observedFrom": "application Info.plist",
+      "version": "6.20.1"
+    },
+    {
+      "acquisition": "mac-app-store",
+      "annotation": null,
+      "bundleIdentifier": "se.oblador.Hush",
+      "location": "/Applications",
+      "name": "Hush",
+      "observedFrom": "application Info.plist",
+      "version": "1.0.19"
+    },
+    {
+      "acquisition": "unknown",
+      "annotation": null,
+      "bundleIdentifier": "com.knollsoft.Hyperkey",
+      "location": "/Applications",
+      "name": "Hyperkey",
+      "observedFrom": "application Info.plist",
+      "version": "1.56"
+    },
+    {
+      "acquisition": "unknown",
+      "annotation": null,
+      "bundleIdentifier": "com.dragonapp.ice",
+      "location": "/Applications",
+      "name": "Ice 2",
+      "observedFrom": "application Info.plist",
+      "version": "2.12.0"
+    },
+    {
+      "acquisition": "unknown",
+      "annotation": null,
+      "bundleIdentifier": "com.colliderli.iina",
+      "location": "/Applications",
+      "name": "IINA",
+      "observedFrom": "application Info.plist",
+      "version": "1.4.4"
+    },
+    {
+      "acquisition": "unknown",
+      "annotation": null,
+      "bundleIdentifier": "me.nabdev.iloader",
+      "location": "/Applications",
+      "name": "iloader",
+      "observedFrom": "application Info.plist",
+      "version": "2.2.6"
+    },
+    {
+      "acquisition": "unknown",
+      "annotation": null,
+      "bundleIdentifier": "net.pornel.ImageOptim",
+      "location": "/Applications",
+      "name": "ImageOptim",
+      "observedFrom": "application Info.plist",
+      "version": "1.9.3"
+    },
+    {
+      "acquisition": "mac-app-store",
+      "annotation": null,
+      "bundleIdentifier": "com.apple.iMovieApp",
+      "location": "/Applications",
+      "name": "iMovie",
+      "observedFrom": "application Info.plist",
+      "version": "10.4.4"
+    },
+    {
+      "acquisition": "unknown",
+      "annotation": null,
+      "bundleIdentifier": "com.mowglii.ItsycalApp",
+      "location": "/Applications",
+      "name": "Itsycal",
+      "observedFrom": "application Info.plist",
+      "version": "0.15.12"
+    },
+    {
+      "acquisition": "homebrew-cask",
+      "annotation": null,
+      "bundleIdentifier": "com.aone.keka",
+      "location": "/Applications",
+      "name": "Keka",
+      "observedFrom": "application Info.plist",
+      "version": "1.6.7"
+    },
+    {
+      "acquisition": "unknown",
+      "annotation": null,
+      "bundleIdentifier": "com.hegenberg.KeyboardCleanTool",
+      "location": "/Applications",
+      "name": "KeyboardCleanTool",
+      "observedFrom": "application Info.plist",
+      "version": "6"
+    },
+    {
+      "acquisition": "ivo-built",
+      "annotation": null,
+      "bundleIdentifier": "com.ivogundlach.Kinetics",
+      "location": "/Applications",
+      "name": "Kinetics",
+      "observedFrom": "application Info.plist",
+      "version": "0.1.5"
+    },
+    {
+      "acquisition": "mac-app-store",
+      "annotation": null,
+      "bundleIdentifier": "self.Kiwix",
+      "location": "/Applications",
+      "name": "Kiwix",
+      "observedFrom": "application Info.plist",
+      "version": "3.16.1"
+    },
+    {
+      "acquisition": "unknown",
+      "annotation": null,
+      "bundleIdentifier": "shopping.knockoff.Knockoff",
+      "location": "/Applications",
+      "name": "Knockoff",
+      "observedFrom": "application Info.plist",
+      "version": "0.3.0"
+    },
+    {
+      "acquisition": "unknown",
+      "annotation": null,
+      "bundleIdentifier": "com.max-langer.Latest",
+      "location": "/Applications",
+      "name": "Latest",
+      "observedFrom": "application Info.plist",
+      "version": "0.11"
+    },
+    {
+      "acquisition": "mac-app-store",
+      "annotation": null,
+      "bundleIdentifier": "de.nick-friedrich.Launchie",
+      "location": "/Applications",
+      "name": "Launchie",
+      "observedFrom": "application Info.plist",
+      "version": "1.5.6"
+    },
+    {
+      "acquisition": "unknown",
+      "annotation": null,
+      "bundleIdentifier": "org.localsend.localsendApp",
+      "location": "/Applications",
+      "name": "LocalSend",
+      "observedFrom": "application Info.plist",
+      "version": "1.17.0"
+    },
+    {
+      "acquisition": "unknown",
+      "annotation": null,
+      "bundleIdentifier": "org.p0deje.Maccy",
+      "location": "/Applications",
+      "name": "Maccy",
+      "observedFrom": "application Info.plist",
+      "version": "2.6.1"
+    },
+    {
+      "acquisition": "unknown",
+      "annotation": null,
+      "bundleIdentifier": "com.crystalidea.macsfancontrol",
+      "location": "/Applications",
+      "name": "Macs Fan Control",
+      "observedFrom": "application Info.plist",
+      "version": "1.5.21"
+    },
+    {
+      "acquisition": "ivo-built",
+      "annotation": null,
+      "bundleIdentifier": "com.ivo.mail-assistant",
+      "location": "/Applications",
+      "name": "MailAssistant",
+      "observedFrom": "application Info.plist",
+      "version": "1.0"
+    },
+    {
+      "acquisition": "ivo-built",
+      "annotation": null,
+      "bundleIdentifier": "com.ivo.market",
+      "location": "/Applications",
+      "name": "Market",
+      "observedFrom": "application Info.plist",
+      "version": "1.0"
+    },
+    {
+      "acquisition": "unknown",
+      "annotation": null,
+      "bundleIdentifier": "com.microsoft.Excel",
+      "location": "/Applications",
+      "name": "Microsoft Excel",
+      "observedFrom": "application Info.plist",
+      "version": "16.110"
+    },
+    {
+      "acquisition": "unknown",
+      "annotation": null,
+      "bundleIdentifier": "com.microsoft.teams2",
+      "location": "/Applications",
+      "name": "Microsoft Teams",
+      "observedFrom": "application Info.plist",
+      "version": "26149.1804.4788.5681"
+    },
+    {
+      "acquisition": "unknown",
+      "annotation": null,
+      "bundleIdentifier": "com.microsoft.Word",
+      "location": "/Applications",
+      "name": "Microsoft Word",
+      "observedFrom": "application Info.plist",
+      "version": "16.110"
+    },
+    {
+      "acquisition": "unknown",
+      "annotation": null,
+      "bundleIdentifier": "com.dong.mbp",
+      "location": "/Applications",
+      "name": "MovieBoxPro",
+      "observedFrom": "application Info.plist",
+      "version": "12.1"
+    },
+    {
+      "acquisition": "unknown",
+      "annotation": null,
+      "bundleIdentifier": "dev.ivogundlach.NewTabLinks",
+      "location": "/Applications",
+      "name": "NewTabLinks",
+      "observedFrom": "application Info.plist",
+      "version": "1.0"
+    },
+    {
+      "acquisition": "mac-app-store",
+      "annotation": null,
+      "bundleIdentifier": "nl.jeffreykuiken.NoirApp.mac",
+      "location": "/Applications",
+      "name": "Noir",
+      "observedFrom": "application Info.plist",
+      "version": "2026.1.8"
+    },
+    {
+      "acquisition": "ivo-built",
+      "annotation": null,
+      "bundleIdentifier": "com.ivo.nutrienttracker",
+      "location": "/Applications",
+      "name": "NutrientTracker",
+      "observedFrom": "application Info.plist",
+      "version": "1.0"
+    },
+    {
+      "acquisition": "mac-app-store",
+      "annotation": null,
+      "bundleIdentifier": "app.o3iptv.o3iptv",
+      "location": "/Applications",
+      "name": "o3IPTV.app",
+      "observedFrom": "application Info.plist",
+      "version": "3.1.25"
+    },
+    {
+      "acquisition": "unknown",
+      "annotation": null,
+      "bundleIdentifier": "app.omlx",
+      "location": "/Applications",
+      "name": "oMLX",
+      "observedFrom": "application Info.plist",
+      "version": "0.5.1"
+    },
+    {
+      "acquisition": "unknown",
+      "annotation": null,
+      "bundleIdentifier": "com.microsoft.OneDrive",
+      "location": "/Applications",
+      "name": "OneDrive",
+      "observedFrom": "application Info.plist",
+      "version": "26.098.0524"
+    },
+    {
+      "acquisition": "unknown",
+      "annotation": null,
+      "bundleIdentifier": "com.titanium.OnyX",
+      "location": "/Applications",
+      "name": "OnyX",
+      "observedFrom": "application Info.plist",
+      "version": "4.9.8"
+    },
+    {
+      "acquisition": "unknown",
+      "annotation": null,
+      "bundleIdentifier": "ai.opencode.desktop",
+      "location": "/Applications",
+      "name": "OpenCode",
+      "observedFrom": "application Info.plist",
+      "version": "1.18.15"
+    },
+    {
+      "acquisition": "mac-app-store",
+      "annotation": null,
+      "bundleIdentifier": "com.apple.iWork.Pages",
+      "location": "/Applications",
+      "name": "Pages",
+      "observedFrom": "application Info.plist",
+      "version": "14.5"
+    },
+    {
+      "acquisition": "mac-app-store",
+      "annotation": null,
+      "bundleIdentifier": "com.pdfeditor.pdfeditormac",
+      "location": "/Applications",
+      "name": "PDFgear",
+      "observedFrom": "application Info.plist",
+      "version": "2.26"
+    },
+    {
+      "acquisition": "unknown",
+      "annotation": null,
+      "bundleIdentifier": "altic.PeekX",
+      "location": "/Applications",
+      "name": "PeekX",
+      "observedFrom": "application Info.plist",
+      "version": "1.1"
+    },
+    {
+      "acquisition": "unknown",
+      "annotation": null,
+      "bundleIdentifier": "io.playcover.PlayCover",
+      "location": "/Applications",
+      "name": "PlayCover",
+      "observedFrom": "application Info.plist",
+      "version": "3.1.0"
+    },
+    {
+      "acquisition": "ivo-built",
+      "annotation": null,
+      "bundleIdentifier": "com.ivo.psephos",
+      "location": "/Applications",
+      "name": "Psephos",
+      "observedFrom": "application Info.plist",
+      "version": "0.1"
+    },
+    {
+      "acquisition": "mac-app-store",
+      "annotation": null,
+      "bundleIdentifier": "com.sindresorhus.Pure-Paste",
+      "location": "/Applications",
+      "name": "Pure Paste",
+      "observedFrom": "application Info.plist",
+      "version": "1.14.4"
+    },
+    {
+      "acquisition": "unknown",
+      "annotation": null,
+      "bundleIdentifier": "com.raycast.macos",
+      "location": "/Applications",
+      "name": "Raycast",
+      "observedFrom": "application Info.plist",
+      "version": "1.104.24"
+    },
+    {
+      "acquisition": "ivo-built",
+      "annotation": null,
+      "bundleIdentifier": "com.ivogundlach.runway",
+      "location": "/Applications",
+      "name": "Runway",
+      "observedFrom": "application Info.plist",
+      "version": "1.0"
+    },
+    {
+      "acquisition": "ivo-built",
+      "annotation": null,
+      "bundleIdentifier": "com.ivogundlach.school-dashboard",
+      "location": "/Applications",
+      "name": "School",
+      "observedFrom": "application Info.plist",
+      "version": "1.0"
+    },
+    {
+      "acquisition": "mac-app-store",
+      "annotation": null,
+      "bundleIdentifier": "com.sindresorhus.Shareful",
+      "location": "/Applications",
+      "name": "Shareful",
+      "observedFrom": "application Info.plist",
+      "version": "1.12.0"
+    },
+    {
+      "acquisition": "unknown",
+      "annotation": null,
+      "bundleIdentifier": null,
+      "location": "/Applications",
+      "name": "Sid Meier's Civilization VI",
+      "observedFrom": "application Info.plist",
+      "version": null
+    },
+    {
+      "acquisition": "ivo-built",
+      "annotation": null,
+      "bundleIdentifier": "com.ivo.smartwake.discord-watcher",
+      "location": "/Applications",
+      "name": "Smart Wake Discord Watcher",
+      "observedFrom": "application Info.plist",
+      "version": "1.0"
+    },
+    {
+      "acquisition": "unknown",
+      "annotation": null,
+      "bundleIdentifier": "app.spokenly",
+      "location": "/Applications",
+      "name": "Spokenly",
+      "observedFrom": "application Info.plist",
+      "version": "2.27.13"
+    },
+    {
+      "acquisition": "mac-app-store",
+      "annotation": null,
+      "bundleIdentifier": "app.ajay.sponsor.macos",
+      "location": "/Applications",
+      "name": "SponsorBlock",
+      "observedFrom": "application Info.plist",
+      "version": "5.4.13"
+    },
+    {
+      "acquisition": "unknown",
+      "annotation": null,
+      "bundleIdentifier": "com.valvesoftware.steam",
+      "location": "/Applications",
+      "name": "Steam",
+      "observedFrom": "application Info.plist",
+      "version": "5.1"
+    },
+    {
+      "acquisition": "unknown",
+      "annotation": null,
+      "bundleIdentifier": "com.t3tools.t3code",
+      "location": "/Applications",
+      "name": "T3 Code (Nightly)",
+      "observedFrom": "application Info.plist",
+      "version": "0.0.33-nightly.20260809.1041"
+    },
+    {
+      "acquisition": "mac-app-store",
+      "annotation": null,
+      "bundleIdentifier": "io.tailscale.ipn.macos",
+      "location": "/Applications",
+      "name": "Tailscale",
+      "observedFrom": "application Info.plist",
+      "version": "1.98.10"
+    },
+    {
+      "acquisition": "ivo-built",
+      "annotation": null,
+      "bundleIdentifier": "com.ivogundlach.MacroSimulator",
+      "location": "/Applications",
+      "name": "Tax Simulator",
+      "observedFrom": "application Info.plist",
+      "version": "1.0"
+    },
+    {
+      "acquisition": "mac-app-store",
+      "annotation": null,
+      "bundleIdentifier": "com.valerijs.boguckis.store.TextSniper",
+      "location": "/Applications",
+      "name": "TextSniper",
+      "observedFrom": "application Info.plist",
+      "version": "1.12.2"
+    },
+    {
+      "acquisition": "unknown",
+      "annotation": null,
+      "bundleIdentifier": "com.bresink.system.tinkertool",
+      "location": "/Applications",
+      "name": "TinkerTool",
+      "observedFrom": "application Info.plist",
+      "version": "11.3"
+    },
+    {
+      "acquisition": "ivo-built",
+      "annotation": null,
+      "bundleIdentifier": "com.ivogundlach.tool-status-dashboard",
+      "location": "/Applications",
+      "name": "Tool Dashboard",
+      "observedFrom": "application Info.plist",
+      "version": "1.3"
+    },
+    {
+      "acquisition": "unknown",
+      "annotation": null,
+      "bundleIdentifier": "com.tradingview.tradingviewapp.desktop",
+      "location": "/Applications",
+      "name": "TradingView",
+      "observedFrom": "application Info.plist",
+      "version": "3.1.0"
+    },
+    {
+      "acquisition": "unknown",
+      "annotation": null,
+      "bundleIdentifier": "org.m0k.transmission",
+      "location": "/Applications",
+      "name": "Transmission",
+      "observedFrom": "application Info.plist",
+      "version": "4.1.3"
+    },
+    {
+      "acquisition": "mac-app-store",
+      "annotation": null,
+      "bundleIdentifier": "com.unsplash.Wallpapers",
+      "location": "/Applications",
+      "name": "Unsplash Wallpapers",
+      "observedFrom": "application Info.plist",
+      "version": "2025.02.1"
+    },
+    {
+      "acquisition": "ivo-built",
+      "annotation": null,
+      "bundleIdentifier": "com.ivogundlach.usagequeue",
+      "location": "/Applications",
+      "name": "UsageQueue",
+      "observedFrom": "application Info.plist",
+      "version": "1.0"
+    },
+    {
+      "acquisition": "ivo-built",
+      "annotation": null,
+      "bundleIdentifier": "com.ivogundlach.Vitals",
+      "location": "/Applications",
+      "name": "Vitals",
+      "observedFrom": "application Info.plist",
+      "version": "1.0"
+    },
+    {
+      "acquisition": "ivo-built",
+      "annotation": null,
+      "bundleIdentifier": "com.ivogundlach.WarmCorners",
+      "location": "/Applications",
+      "name": "Warm Corners",
+      "observedFrom": "application Info.plist",
+      "version": "1.0"
+    },
+    {
+      "acquisition": "unknown",
+      "annotation": null,
+      "bundleIdentifier": "dev.warp.Warp-Stable",
+      "location": "/Applications",
+      "name": "Warp",
+      "observedFrom": "application Info.plist",
+      "version": "0.2026.08.05.09.03.01"
+    },
+    {
+      "acquisition": "mac-app-store",
+      "annotation": null,
+      "bundleIdentifier": "com.wetransfer.osx.app",
+      "location": "/Applications",
+      "name": "WeTransfer",
+      "observedFrom": "application Info.plist",
+      "version": "2.2.15"
+    },
+    {
+      "acquisition": "unknown",
+      "annotation": null,
+      "bundleIdentifier": "uk.whatcable.whatcable",
+      "location": "/Applications",
+      "name": "WhatCable",
+      "observedFrom": "application Info.plist",
+      "version": "1.3.0"
+    },
+    {
+      "acquisition": "unknown",
+      "annotation": null,
+      "bundleIdentifier": "com.apple.dt.Xcode",
+      "location": "/Applications",
+      "name": "Xcode-beta",
+      "observedFrom": "application Info.plist",
+      "version": "27.0"
+    },
+    {
+      "acquisition": "ivo-built",
+      "annotation": null,
+      "bundleIdentifier": "com.ivogundlach.youtube-first-content-tab",
+      "location": "/Applications",
+      "name": "YouTube Defaults",
+      "observedFrom": "application Info.plist",
+      "version": "1.5.4"
+    },
+    {
+      "acquisition": "unknown",
+      "annotation": null,
+      "bundleIdentifier": "dev.ivogundlach.YouTubeHomeReload",
+      "location": "/Applications",
+      "name": "YouTubeHomeReload",
+      "observedFrom": "application Info.plist",
+      "version": "1.0"
+    },
+    {
+      "acquisition": "unknown",
+      "annotation": null,
+      "bundleIdentifier": "us.zoom.xos",
+      "location": "/Applications",
+      "name": "zoom.us",
+      "observedFrom": "application Info.plist",
+      "version": "6.7.7 (76486)"
+    }
+  ],
+  "commandLineTools": [
+    {
+      "name": "agent",
+      "provenance": "~/.local/bin",
+      "status": "safely_summarized"
+    },
+    {
+      "name": "agy",
+      "provenance": "~/.local/bin",
+      "status": "safely_summarized"
+    },
+    {
+      "name": "app-repo-bootstrap",
+      "provenance": "~/.local/bin",
+      "status": "safely_summarized"
+    },
+    {
+      "name": "app-repo-lib.sh",
+      "provenance": "~/.local/bin",
+      "status": "safely_summarized"
+    },
+    {
+      "name": "app-repo-sync",
+      "provenance": "~/.local/bin",
+      "status": "safely_summarized"
+    },
+    {
+      "name": "apple-mail-draft-assistant",
+      "provenance": "~/.local/bin",
+      "status": "included"
+    },
+    {
+      "name": "apple-mail-draft-runner",
+      "provenance": "~/.local/bin",
+      "status": "included"
+    },
+    {
+      "name": "apple-mail-rowid-body",
+      "provenance": "~/.local/bin",
+      "status": "included"
+    },
+    {
+      "name": "apple-mail-trash-hide-email-audit",
+      "provenance": "~/.local/bin",
+      "status": "included"
+    },
+    {
+      "name": "arxiv-pp-cli",
+      "provenance": "~/.local/bin",
+      "status": "safely_summarized"
+    },
+    {
+      "name": "claude",
+      "provenance": "~/.local/bin",
+      "status": "safely_summarized"
+    },
+    {
+      "name": "claude-high-fidelity",
+      "provenance": "~/.local/bin",
+      "status": "included"
+    },
+    {
+      "name": "claude-window-keeper",
+      "provenance": "~/.local/bin",
+      "status": "included"
+    },
+    {
+      "name": "cli-hub",
+      "provenance": "~/.local/bin",
+      "status": "safely_summarized"
+    },
+    {
+      "name": "codex",
+      "provenance": "~/.local/bin",
+      "status": "safely_summarized"
+    },
+    {
+      "name": "codex-auto-reset",
+      "provenance": "~/.local/bin",
+      "status": "included"
+    },
+    {
+      "name": "codex-code-mode-host",
+      "provenance": "~/.local/bin",
+      "status": "safely_summarized"
+    },
+    {
+      "name": "codex-skill-audit",
+      "provenance": "~/.local/bin",
+      "status": "safely_summarized"
+    },
+    {
+      "name": "codex-sync-verify",
+      "provenance": "~/.local/bin",
+      "status": "included"
+    },
+    {
+      "name": "codex-to-claude-sync",
+      "provenance": "~/.local/bin",
+      "status": "included"
+    },
+    {
+      "name": "copy-safari-url",
+      "provenance": "~/.local/bin",
+      "status": "included"
+    },
+    {
+      "name": "cursor-agent",
+      "provenance": "~/.local/bin",
+      "status": "safely_summarized"
+    },
+    {
+      "name": "cyber-skill-triage",
+      "provenance": "~/.local/bin",
+      "status": "included"
+    },
+    {
+      "name": "digg-pp-cli",
+      "provenance": "~/.local/bin",
+      "status": "safely_summarized"
+    },
+    {
+      "name": "env",
+      "provenance": "~/.local/bin",
+      "status": "safely_summarized"
+    },
+    {
+      "name": "env.fish",
+      "provenance": "~/.local/bin",
+      "status": "safely_summarized"
+    },
+    {
+      "name": "exa-search",
+      "provenance": "~/.local/bin",
+      "status": "safely_summarized"
+    },
+    {
+      "name": "grok",
+      "provenance": "~/.local/bin",
+      "status": "safely_summarized"
+    },
+    {
+      "name": "improve-system-log",
+      "provenance": "~/.local/bin",
+      "status": "included"
+    },
+    {
+      "name": "kiwix-manage",
+      "provenance": "~/.local/bin",
+      "status": "safely_summarized"
+    },
+    {
+      "name": "kiwix-search",
+      "provenance": "~/.local/bin",
+      "status": "safely_summarized"
+    },
+    {
+      "name": "kiwix-serve",
+      "provenance": "~/.local/bin",
+      "status": "safely_summarized"
+    },
+    {
+      "name": "last30days",
+      "provenance": "~/.local/bin",
+      "status": "included"
+    },
+    {
+      "name": "luna-implement",
+      "provenance": "~/.local/bin",
+      "status": "included"
+    },
+    {
+      "name": "mac-process-audit",
+      "provenance": "~/.local/bin",
+      "status": "included"
+    },
+    {
+      "name": "mail-assistant-app-build",
+      "provenance": "~/.local/bin",
+      "status": "safely_summarized"
+    },
+    {
+      "name": "market-cron",
+      "provenance": "~/.local/bin",
+      "status": "included"
+    },
+    {
+      "name": "market-refresh",
+      "provenance": "~/.local/bin",
+      "status": "included"
+    },
+    {
+      "name": "memory-backup-verify",
+      "provenance": "~/.local/bin",
+      "status": "safely_summarized"
+    },
+    {
+      "name": "memory-corpus-backup",
+      "provenance": "~/.local/bin",
+      "status": "included"
+    },
+    {
+      "name": "memory-coverage-drift",
+      "provenance": "~/.local/bin",
+      "status": "safely_summarized"
+    },
+    {
+      "name": "memory-health-weekly",
+      "provenance": "~/.local/bin",
+      "status": "safely_summarized"
+    },
+    {
+      "name": "memory-index-check",
+      "provenance": "~/.local/bin",
+      "status": "safely_summarized"
+    },
+    {
+      "name": "memory-prune",
+      "provenance": "~/.local/bin",
+      "status": "safely_summarized"
+    },
+    {
+      "name": "memory-query-daemon",
+      "provenance": "~/.local/bin",
+      "status": "safely_summarized"
+    },
+    {
+      "name": "memory-retrieval-eval",
+      "provenance": "~/.local/bin",
+      "status": "safely_summarized"
+    },
+    {
+      "name": "memory-search",
+      "provenance": "~/.local/bin",
+      "status": "safely_summarized"
+    },
+    {
+      "name": "memory-secret-scan",
+      "provenance": "~/.local/bin",
+      "status": "safely_summarized"
+    },
+    {
+      "name": "memory-selftest",
+      "provenance": "~/.local/bin",
+      "status": "safely_summarized"
+    },
+    {
+      "name": "memory-semantic-build",
+      "provenance": "~/.local/bin",
+      "status": "safely_summarized"
+    },
+    {
+      "name": "memory-semantic-query",
+      "provenance": "~/.local/bin",
+      "status": "safely_summarized"
+    },
+    {
+      "name": "memory-transcript-distill",
+      "provenance": "~/.local/bin",
+      "status": "included"
+    },
+    {
+      "name": "memory-vector-build",
+      "provenance": "~/.local/bin",
+      "status": "safely_summarized"
+    },
+    {
+      "name": "ocx",
+      "provenance": "~/.local/bin",
+      "status": "included"
+    },
+    {
+      "name": "omlx",
+      "provenance": "~/.local/bin",
+      "status": "safely_summarized"
+    },
+    {
+      "name": "opencodex",
+      "provenance": "~/.local/bin",
+      "status": "included"
+    },
+    {
+      "name": "personal-repo-sync",
+      "provenance": "~/.local/bin",
+      "status": "included"
+    },
+    {
+      "name": "process-cleanup-sudo-20260623.sh",
+      "provenance": "~/.local/bin",
+      "status": "included"
+    },
+    {
+      "name": "public-toolkit-publish",
+      "provenance": "~/.local/bin",
+      "status": "safely_summarized"
+    },
+    {
+      "name": "queue-when-usage",
+      "provenance": "~/.local/bin",
+      "status": "included"
+    },
+    {
+      "name": "quit-on-close",
+      "provenance": "~/.local/bin",
+      "status": "safely_summarized"
+    },
+    {
+      "name": "refresh-app-icons",
+      "provenance": "~/.local/bin",
+      "status": "included"
+    },
+    {
+      "name": "reviewer",
+      "provenance": "~/.local/bin",
+      "status": "included"
+    },
+    {
+      "name": "school-mail",
+      "provenance": "~/.local/bin",
+      "status": "included"
+    },
+    {
+      "name": "school-sync",
+      "provenance": "~/.local/bin",
+      "status": "included"
+    },
+    {
+      "name": "semantic-agy-notify",
+      "provenance": "~/.local/bin",
+      "status": "included"
+    },
+    {
+      "name": "semantic-agy-reauth",
+      "provenance": "~/.local/bin",
+      "status": "included"
+    },
+    {
+      "name": "semantic-corpus",
+      "provenance": "~/.local/bin",
+      "status": "included"
+    },
+    {
+      "name": "semantic-index-retry",
+      "provenance": "~/.local/bin",
+      "status": "included"
+    },
+    {
+      "name": "semantic-index-status",
+      "provenance": "~/.local/bin",
+      "status": "included"
+    },
+    {
+      "name": "signing-audit",
+      "provenance": "~/.local/bin",
+      "status": "safely_summarized"
+    },
+    {
+      "name": "skill-drift-check",
+      "provenance": "~/.local/bin",
+      "status": "included"
+    },
+    {
+      "name": "smart-wake",
+      "provenance": "~/.local/bin",
+      "status": "included"
+    },
+    {
+      "name": "studykit",
+      "provenance": "~/.local/bin",
+      "status": "included"
+    },
+    {
+      "name": "swift-smoke",
+      "provenance": "~/.local/bin",
+      "status": "included"
+    },
+    {
+      "name": "techmeme-pp-cli",
+      "provenance": "~/.local/bin",
+      "status": "safely_summarized"
+    },
+    {
+      "name": "tool-status-background-scan",
+      "provenance": "~/.local/bin",
+      "status": "included"
+    },
+    {
+      "name": "tool-status-notify",
+      "provenance": "~/.local/bin",
+      "status": "included"
+    },
+    {
+      "name": "tool-status-register",
+      "provenance": "~/.local/bin",
+      "status": "included"
+    },
+    {
+      "name": "tool-status-repair-worker",
+      "provenance": "~/.local/bin",
+      "status": "included"
+    },
+    {
+      "name": "uv",
+      "provenance": "~/.local/bin",
+      "status": "safely_summarized"
+    },
+    {
+      "name": "uvx",
+      "provenance": "~/.local/bin",
+      "status": "safely_summarized"
+    },
+    {
+      "name": "vitals-findings",
+      "provenance": "~/.local/bin",
+      "status": "included"
+    }
+  ],
+  "coverage": [
+    {
+      "observed": 95,
+      "reason": "names and safe bundle metadata are published",
+      "status": "included",
+      "surface": "gui-applications"
+    },
+    {
+      "reason": "package names only; taps and repository URLs are excluded",
+      "status": "included",
+      "surface": "homebrew-formulae"
+    },
+    {
+      "reason": "cask names only",
+      "status": "included",
+      "surface": "homebrew-casks"
+    },
+    {
+      "reason": "public app identifiers and names only",
+      "status": "included",
+      "surface": "mac-app-store"
+    },
+    {
+      "observed": 83,
+      "reason": "tool names only; paths and arguments are excluded",
+      "status": "included",
+      "surface": "command-line-tools"
+    },
+    {
+      "reason": "sanitized source is exported through the positive allowlist",
+      "status": "included",
+      "surface": "ivo-owned-source"
+    },
+    {
+      "reason": "allowlisted source plus sanitized metadata; environment values are excluded",
+      "status": "included",
+      "surface": "launch-agents-and-daemons"
+    },
+    {
+      "reason": "coverage is counted privately; public names require explicit review",
+      "status": "safely_summarized",
+      "surface": "login-items"
+    },
+    {
+      "reason": "source cannot be exported through the current background-safe CLI",
+      "status": "pending_review",
+      "surface": "shortcuts"
+    },
+    {
+      "reason": "four reviewed source files are exported",
+      "status": "included",
+      "surface": "automator-services"
+    },
+    {
+      "reason": "only keys and value shapes approved by STACK_POLICY.json are exported",
+      "status": "included",
+      "surface": "macos-preferences"
+    },
+    {
+      "reason": "each application domain requires a field-level review before export",
+      "status": "pending_review",
+      "surface": "application-preferences"
+    },
+    {
+      "reason": "extension inventories can expose profiles and require a separate safe collector",
+      "status": "pending_review",
+      "surface": "browser-extensions"
+    },
+    {
+      "reason": "tools are inventoried; histories, sessions, and environment values are excluded",
+      "status": "safely_summarized",
+      "surface": "shell-and-terminal"
+    },
+    {
+      "reason": "only operating system version and CPU architecture are published",
+      "status": "safely_summarized",
+      "surface": "hardware"
+    },
+    {
+      "reason": "mail, messages, notes, calendars, school data, memory corpus, histories, and cloud contents stay private",
+      "status": "excluded",
+      "surface": "personal-data"
+    },
+    {
+      "reason": "tokens, cookies, keys, signing identities, and license values stay private",
+      "status": "excluded",
+      "surface": "credentials-and-licenses"
+    },
+    {
+      "reason": "logs, caches, databases, indexes, sessions, and generated binaries stay private",
+      "status": "excluded",
+      "surface": "runtime-state"
+    }
+  ],
+  "coverageStates": [
+    "included",
+    "safely_summarized",
+    "excluded",
+    "unavailable",
+    "pending_review"
+  ],
+  "generatedDate": "2026-08-09",
+  "machine": {
+    "architecture": "arm64",
+    "excludedFields": [
+      "computer name",
+      "host name",
+      "hardware model",
+      "serial number",
+      "UUID",
+      "network interfaces"
+    ],
+    "operatingSystem": "macOS",
+    "version": "27.0"
+  },
+  "packages": {
+    "homebrewCasks": {
+      "items": [
+        "aionui",
+        "codexbar",
+        "drawio",
+        "gcloud-cli",
+        "keka",
+        "marked-app",
+        "markedit",
+        "tailscale-app",
+        "thaw@beta"
+      ],
+      "provenance": "brew list --cask",
+      "status": "included"
+    },
+    "homebrewFormulae": {
+      "items": [
+        "apfel",
+        "duti",
+        "gh",
+        "git",
+        "gitleaks",
+        "go",
+        "graphviz",
+        "lightpanda-io/browser/lightpanda",
+        "mas",
+        "node",
+        "poppler",
+        "python@3.11",
+        "python@3.12",
+        "python@3.13",
+        "rust",
+        "swiftlint",
+        "tailscale",
+        "terminal-notifier",
+        "yt-dlp"
+      ],
+      "provenance": "brew leaves",
+      "status": "included"
+    },
+    "macAppStore": {
+      "items": [
+        {
+          "id": "1365531024",
+          "name": "1Blocker"
+        },
+        {
+          "id": "1440147259",
+          "name": "AdGuard for Safari"
+        },
+        {
+          "id": "6452471855",
+          "name": "BrightIntosh"
+        },
+        {
+          "id": "6448461551",
+          "name": "Command X"
+        },
+        {
+          "id": "771076721",
+          "name": "Hotspot Shield"
+        },
+        {
+          "id": "1544743900",
+          "name": "Hush"
+        },
+        {
+          "id": "408981434",
+          "name": "iMovie"
+        },
+        {
+          "id": "997079563",
+          "name": "Kiwix"
+        },
+        {
+          "id": "6752657468",
+          "name": "Launchie"
+        },
+        {
+          "id": "1592917505",
+          "name": "Noir"
+        },
+        {
+          "id": "6767335903",
+          "name": "o3IPTV.app"
+        },
+        {
+          "id": "409201541",
+          "name": "Pages"
+        },
+        {
+          "id": "6469021132",
+          "name": "PDFgear"
+        },
+        {
+          "id": "1611378436",
+          "name": "Pure Paste"
+        },
+        {
+          "id": "1522267256",
+          "name": "Shareful"
+        },
+        {
+          "id": "1475387142",
+          "name": "Tailscale"
+        },
+        {
+          "id": "1528890965",
+          "name": "TextSniper"
+        },
+        {
+          "id": "1284863847",
+          "name": "Unsplash Wallpapers"
+        },
+        {
+          "id": "1114922065",
+          "name": "WeTransfer"
+        }
+      ],
+      "provenance": "mas list",
+      "status": "included"
+    }
+  },
+  "provenanceRule": "Observed facts name their local command or metadata source; null means unknown, never inferred.",
+  "schemaVersion": 1
+}

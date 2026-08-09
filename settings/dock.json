@@ -1,0 +1,23 @@
+{
+  "domain": "com.apple.dock",
+  "reviewed": "2026-08-09",
+  "schemaVersion": 1,
+  "values": {
+    "autohide": true,
+    "autohide-delay": 0.0,
+    "autohide-time-modifier": 0.5,
+    "largesize": 77.0,
+    "magnification": false,
+    "mru-spaces": false,
+    "orientation": "bottom",
+    "tilesize": 67.0,
+    "wvous-bl-corner": 1,
+    "wvous-bl-modifier": 0,
+    "wvous-br-corner": 1,
+    "wvous-br-modifier": 0,
+    "wvous-tl-corner": 1,
+    "wvous-tl-modifier": 0,
+    "wvous-tr-corner": 1,
+    "wvous-tr-modifier": 0
+  }
+}

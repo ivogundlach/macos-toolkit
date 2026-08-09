@@ -1,0 +1,11 @@
+{
+  "domain": "com.apple.menuextra.clock",
+  "reviewed": "2026-08-09",
+  "schemaVersion": 1,
+  "values": {
+    "ShowAMPM": false,
+    "ShowDate": 0,
+    "ShowDayOfWeek": true,
+    "ShowSeconds": true
+  }
+}

@@ -5,6 +5,20 @@ personal text, indexes, embeddings, backups, history, cookies, and runtime
 state are absent. The included memory-tool source documents interfaces and
 sanitized examples only; it does not contain Ivo's memories.
 
+## Stack catalog and settings
+
+`STACK.json` is the entry point for agents. It records installed applications,
+package names, local commands, safe macOS facts, provenance, and a closed
+coverage matrix. It does not infer an application's purpose when the machine
+does not provide evidence; unknown annotations remain null.
+
+`STACK_POLICY.json` is the exact public-settings contract. Each approved key has
+a required value type and, for strings and numbers, an allowed set or range.
+`settings/MANIFEST.json` reports exported and still-pending key counts by domain.
+Preference files are parsed locally but never copied wholesale. A new or changed
+value outside its approved shape stops the export instead of being redacted
+opportunistically.
+
 ## Memory layout
 
 Install the included source into a location you control, for example

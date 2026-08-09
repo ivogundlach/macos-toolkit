@@ -39,6 +39,39 @@ when discovery is genuinely required or the platform prevents dynamic schedule
 updates. Keep a poller local and cheap; perform network or model work only in the
 actual execution window.
 
+## Give a Permission-Holding Job a Durable Identity
+
+macOS attaches a privacy grant to a program's code signature, not to its path.
+Any job that reads or controls protected data — Mail, Calendar, Reminders,
+Contacts, Photos, Messages, Safari or browser profiles, Screen Time, anything
+under a Full Disk Access path, Accessibility, Screen Recording, or Apple Events
+to another app — therefore needs a signing identity that outlives its own
+rebuilds. Decide this when the job is designed, not after a grant disappears.
+
+| Job form | What the grant is keyed to | Result |
+|---|---|---|
+| Bare script run by launchd or cron | the interpreter, which the OS may swap on any update | grant cannot be relied on; breaks with no warning and no error text |
+| Ad-hoc signed binary or bundle (`Signature=adhoc`) | the exact compiled bytes | every rebuild silently revokes the grant |
+| Signed with the `Ivo Market Dev` keychain certificate | `identifier "<bundle id>" and certificate leaf = H"<cert hash>"` | survives rebuilds and OS updates; granted once, stays granted |
+
+Wrap such a job in a minimal `LSUIElement` app bundle whose executable is a real
+Mach-O stub that re-execs the working script from `Contents/Resources/`, sign the
+bundle with the certificate, and point the scheduler at the stub. Keep the script
+itself in `Resources/`: a script beside the executable in `MacOS/` counts as
+unsigned nested code and fails strict verification. Confirm the identity with
+`codesign -d -r-` — the designated requirement must name the certificate, not a
+code hash. `/Users/YOUR_USERNAME/.local/bin/mail-assistant-app-build` is the
+working reference implementation.
+
+Before requesting a grant at all, check whether the job can reach the same data
+through a permission it already holds — asking Mail over Apple Events for a list
+rather than reading Mail's database file, for example. A route that needs no new
+grant cannot be revoked by an OS update, and it costs Ivo no System Settings
+step. Prefer that; sign for durability when a grant is genuinely unavoidable.
+
+Never respond to a denied grant by weakening the job's safety logic. Report the
+denial, name the exact error, and fix the identity or the route.
+
 </mechanism-selection>
 
 <workflow>
@@ -176,7 +209,10 @@ LaunchAgent state instead of relying on a hard-coded mechanism.
    the real job and inspect its exit state plus artifacts. For cron, run once in
    a cron-like minimal environment and verify at least one real scheduled tick.
 4. Check permissions and TCC from the scheduled context. Do not infer them from
-   the interactive shell.
+   the interactive shell: an interactive run inherits the terminal's grant, so it
+   proves nothing about the scheduled one. When a grant is denied, capture the
+   real error rather than a generic "unavailable" — a swallowed exception turns a
+   revoked permission into an invisible no-op that can run for days.
 5. Verify failure and recovery reporting through Tool Status Dashboard when a
    safe synthetic path exists; do not generate a user-visible test alert merely
    to claim coverage.

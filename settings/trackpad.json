@@ -1,0 +1,18 @@
+{
+  "domain": "com.apple.AppleMultitouchTrackpad",
+  "reviewed": "2026-08-09",
+  "schemaVersion": 1,
+  "values": {
+    "Clicking": true,
+    "TrackpadCornerSecondaryClick": 2,
+    "TrackpadFourFingerHorizSwipeGesture": 2,
+    "TrackpadFourFingerVertSwipeGesture": 2,
+    "TrackpadMomentumScroll": true,
+    "TrackpadPinch": 1,
+    "TrackpadRightClick": false,
+    "TrackpadRotate": 1,
+    "TrackpadScroll": true,
+    "TrackpadThreeFingerDrag": true,
+    "TrackpadTwoFingerDoubleTapGesture": 1
+  }
+}

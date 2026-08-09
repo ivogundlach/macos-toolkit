@@ -1,0 +1,54 @@
+{
+  "paths": [
+    {
+      "path": "settings/MANIFEST.json",
+      "policyDecision": "approved field-level settings export",
+      "redactionCount": 0,
+      "reviewStatus": "approved",
+      "sha256": "48862b0188923be2229f40693122d0d7fe49c17601636773d41d4cd18bc3226e"
+    },
+    {
+      "path": "settings/dock.json",
+      "policyDecision": "approved field-level settings export",
+      "redactionCount": 0,
+      "reviewStatus": "approved",
+      "sha256": "a68572b6621533c420989d4a9447f5eb933273fb612a197042bbf24bbdf56d54"
+    },
+    {
+      "path": "settings/finder.json",
+      "policyDecision": "approved field-level settings export",
+      "redactionCount": 0,
+      "reviewStatus": "approved",
+      "sha256": "90ad7ac80e98f794e72ca73f473afbd96237ec848974ab0f48dfa175d18814ec"
+    },
+    {
+      "path": "settings/macos-global.json",
+      "policyDecision": "approved field-level settings export",
+      "redactionCount": 0,
+      "reviewStatus": "approved",
+      "sha256": "0dbb0bc9b93236a5f9711f3f4f385e5d5366d5c35806f5aab0a85fa6b7f56f7b"
+    },
+    {
+      "path": "settings/menu-bar-clock.json",
+      "policyDecision": "approved field-level settings export",
+      "redactionCount": 0,
+      "reviewStatus": "approved",
+      "sha256": "6aca71d080e8295f15e775b22560e0503e0b7ed1c412b0ff6e6cbfdfba1f5ef7"
+    },
+    {
+      "path": "settings/trackpad.json",
+      "policyDecision": "approved field-level settings export",
+      "redactionCount": 0,
+      "reviewStatus": "approved",
+      "sha256": "ea33be862f35c9524d888da9d16d529e98928fb486ea46a6820269d44dd9928b"
+    },
+    {
+      "path": "settings/window-manager.json",
+      "policyDecision": "approved field-level settings export",
+      "redactionCount": 0,
+      "reviewStatus": "approved",
+      "sha256": "adea86deba683d60388099985806978007ac306fe794ae85fac90ccf7df5f791"
+    }
+  ],
+  "schemaVersion": 1
+}

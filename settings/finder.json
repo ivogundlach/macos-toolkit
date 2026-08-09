@@ -1,0 +1,21 @@
+{
+  "domain": "com.apple.finder",
+  "reviewed": "2026-08-09",
+  "schemaVersion": 1,
+  "values": {
+    "FXArrangeGroupViewBy": "Name",
+    "FXDefaultSearchScope": "SCcf",
+    "FXEnableExtensionChangeWarning": false,
+    "FXPreferredGroupBy": "None",
+    "FXPreferredViewStyle": "Nlsv",
+    "FXRemoveOldTrashItems": true,
+    "ShowExternalHardDrivesOnDesktop": true,
+    "ShowHardDrivesOnDesktop": false,
+    "ShowMountedServersOnDesktop": false,
+    "ShowPathbar": true,
+    "ShowRecentTags": false,
+    "ShowRemovableMediaOnDesktop": true,
+    "ShowSidebar": true,
+    "ShowStatusBar": true
+  }
+}

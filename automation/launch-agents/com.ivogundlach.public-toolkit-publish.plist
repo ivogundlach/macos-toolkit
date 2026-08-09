@@ -9,20 +9,8 @@
         <string>/bin/bash</string>
         <string>/Users/YOUR_USERNAME/.local/bin/public-toolkit-publish</string>
     </array>
-    <!-- 13:15, shortly after the 12:30 app-repo-sync, so the export is built from
-         a snapshot that already includes the day's committed work. Midday rather
-         than overnight because the 23:30 slot has a history of being missed while
-         the Mac sleeps, and a stale public repo is the failure mode here. -->
-    <key>StartCalendarInterval</key>
-    <dict>
-        <key>Hour</key>
-        <integer>13</integer>
-        <key>Minute</key>
-        <integer>15</integer>
-    </dict>
-    <!-- Deliberately false. Every other job here is idempotent and cheap, but
-         this one publishes; it should run on a schedule a human can predict,
-         not on every login. -->
+    <!-- Intentionally trigger-free. Public publication is on demand only;
+         invoke public-toolkit-publish manually after reviewing the candidate. -->
     <key>RunAtLoad</key>
     <false/>
     <key>StandardOutPath</key>

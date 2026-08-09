@@ -1,0 +1,13 @@
+{
+  "domain": "com.apple.WindowManager",
+  "reviewed": "2026-08-09",
+  "schemaVersion": 1,
+  "values": {
+    "AutoHide": false,
+    "EnableStandardClickToShowDesktop": false,
+    "EnableTiledWindowMargins": false,
+    "GloballyEnabled": false,
+    "HideDesktop": true,
+    "StageManagerHideWidgets": true
+  }
+}
