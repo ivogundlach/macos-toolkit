@@ -76,6 +76,8 @@ enum DockAnimationApplyError: LocalizedError {
 
 enum DockAnimationPreferences {
     static func readLiveValues() -> Result<DockAnimationValues, DockAnimationReadError> {
+        CFPreferencesAppSynchronize(KineticsConstants.DockAnimation.preferencesDomain as CFString)
+
         guard let defaults = UserDefaults(suiteName: KineticsConstants.DockAnimation.preferencesDomain) else {
             return .failure(.preferencesUnavailable)
         }
