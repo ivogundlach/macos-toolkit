@@ -72,17 +72,6 @@ Use this template for COMPARISON queries. Read `references/voice-contract.md` be
 ## The emerging stack
 
 {One paragraph. Name the combination pattern the community is converging on and cite specific sources. If the data does not support an emerging-stack observation, write: "No emerging stack pattern has crystallized in the research window yet."}
-
----
-✅ All agents reported back!
-{engine footer copied verbatim}
-
----
-I've compared {TOPIC_A} vs {TOPIC_B} [vs {TOPIC_C}] using the latest community data. Some things you could ask:
-- Deep dive into {Entity 1} alone with /last30days {Entity 1}
-- Deep dive into {Entity 2} alone with /last30days {Entity 2}
-- Focus on {specific dimension} from the Head-to-Head table
-- Look at a different time period with --days=7 or --days=90
 ```
 
 ## Do Not
@@ -93,4 +82,5 @@ I've compared {TOPIC_A} vs {TOPIC_B} [vs {TOPIC_C}] using the latest community d
 - Do not fabricate a `## Notable Stats` block.
 - Do not add any `##` headers beyond the comparison allowlist in `references/voice-contract.md`.
 - Do not add a trailing sources block.
-
+- Do not append engine statistics, source counts, top voices, raw-result paths,
+  generic expertise claims, or follow-up invitations.

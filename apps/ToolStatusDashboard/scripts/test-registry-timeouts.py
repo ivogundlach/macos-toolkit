@@ -171,10 +171,10 @@ def main() -> int:
         ]
         # Pinned so a new success path cannot be added without someone confirming
         # it names an outcome. The v5 issue-authority lane adds two explicit
-        # trusted-health resolution paths to the ten pre-existing outcomes, and
-        # the "needs_ivo" drain adds the thirteenth: a row recording a past event
-        # that no agent can repair leaves the queue instead of retrying forever.
-        assert len(success_calls) == 13
+        # trusted-health resolution paths to the ten pre-existing outcomes. In
+        # v6 a genuine needs-Ivo row creates a decision instead of being falsely
+        # attributed as a successful repair.
+        assert len(success_calls) == 12
         assert all(len(node.args) == 5 for node in success_calls), "a success call lacks explicit outcome"
 
     print("registry timeout checks passed")

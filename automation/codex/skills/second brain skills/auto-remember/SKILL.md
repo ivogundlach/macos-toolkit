@@ -4,10 +4,12 @@ description: >-
   Use whenever the conversation produces anything plausibly durable — Ivo states a
   preference, identity fact, decision, workflow, project context, standing instruction,
   or source reference; Ivo corrects the agent or repeats a request; the agent discovers a
-  non-obvious environment, tool, account, or setup fact during work; or onboarding-style
-  questions get answered. Capture liberally: if unsure whether something is durable,
-  capture it. Skip only for secrets, pure task chatter, and things Ivo says not to
-  remember. When a newly observed agent-caused correction is reusable and has an
+  non-obvious environment, tool, account, or setup fact during work; work exposes
+  repeated friction, a tool failure or degradation, a workaround, recovery, outcome,
+  rejected option, or verification gap; or onboarding-style questions get answered.
+  Capture useful evidence aggressively but atomically: if unsure whether it could improve
+  future work, capture it. Skip only for secrets, unsupported guesses, pure task chatter,
+  and things Ivo says not to remember. When a newly observed reusable correction or failure has an
   identifiable owning rule, skill, or reference, hand the captured record to
   `improve-system` once; do not wait for Ivo to say improve-system.
 ---
@@ -59,11 +61,14 @@ Always capture:
 - requests Ivo has now made more than once
 - non-obvious environment, tool, account, path, or setup facts the agent discovered while working (label as inference or file-derived per Source Status)
 - rejected options and the reason, when a choice was made
+- Ivo's reasoning when it explains a durable decision, boundary, or tradeoff
+- repeated friction, misleading errors, degraded results, retries, and the verified recovery or workaround
+- completed outcomes, remaining verification gaps, and unexpected behavior that could change future work
 
 Do not capture:
 
 - secrets, credentials, tokens, session IDs, raw private keys, or passwords
-- one-off task chatter, transient command output, or temporary status
+- one-off task chatter, bulky command output, or temporary status that teaches no reusable lesson
 - guesses as facts
 - long copyrighted source text beyond short excerpts needed for provenance
 - anything Ivo explicitly says not to remember
@@ -72,10 +77,12 @@ Do not capture:
 
 <system-reinforcement>
 
-`auto-remember` is the single detector and orchestrator for newly observed corrections. When all of
-these criteria hold—an observed agent-caused failure or correction, plausible recurrence, an
-identifiable owning rule/skill/reference, and a durable corrective instruction—capture the memory
-evidence and hand the already-captured record to `improve-system` once; memory-only is incomplete.
+`auto-remember` is the single detector and orchestrator for newly observed corrections and
+system-improvement evidence. Capture one atomic, source-backed observation rather than copying a
+tool log. Separate what was observed from any inferred cause. When all of these criteria hold—an
+observed reusable failure or correction, an identifiable owning rule/skill/reference, and a durable
+corrective instruction—capture the memory evidence and hand the already-captured record to
+`improve-system` once; memory-only is incomplete.
 Use existing evidence and logs, and never reenact a harmful UI, data, or external failure. For a
 one-off or transient issue, or when no owner is identifiable, capture memory only.
 

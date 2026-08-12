@@ -1,5 +1,5 @@
 #!/bin/sh
 # Wrapper: run the study-kit generator in its own venv (has pypdf).
 # Usage: studykit <file> [--title "…"] [--model "agy -p"]
-exec /Users/YOUR_USERNAME/School/studykit/.venv/bin/python \
-     /Users/YOUR_USERNAME/School/studykit/studykit.py "$@"
+exec /Users/YOUR_USERNAME/Projects/School/studykit/.venv/bin/python \
+     /Users/YOUR_USERNAME/Projects/School/studykit/studykit.py "$@"

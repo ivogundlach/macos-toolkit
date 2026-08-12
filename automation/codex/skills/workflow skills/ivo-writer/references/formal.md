@@ -11,6 +11,7 @@ Use this reference for personal drafts, notes, essays, application writing, post
 - Connect specific ideas with logical transitions rather than generic transition words.
 - Integrate evidence into the reasoning. Do not write `As seen in...` or `This highlights...` as empty bridges.
 - Preserve Ivo's real supplied memories, private experiences, local analogies, mixed feelings, and defensible first-person judgments when relevant.
+- For personal or application writing, apply the direct, specific, grounded voice benchmark in `style-controls.md`; use heightened cadence only when Ivo's current passage supports it.
 - Never invent an experience, source, quotation, motive, date, number, or outcome to make prose sound more human.
 - Express defensible opinions with declarative confidence. Do not add reflexive hedging merely to sound balanced.
 - Keep objective facts, genuine uncertainty, and source status accurate. Assertive cadence does not convert an uncertain claim into an established fact.

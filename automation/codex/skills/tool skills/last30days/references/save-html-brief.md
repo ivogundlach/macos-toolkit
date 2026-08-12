@@ -21,7 +21,7 @@ The contract has two modes:
 
 ## When to fire this flow
 
-- For normal-report-plus-HTML mode: after you have already emitted the full chat response: badge, "What I learned:" (or comparison title), bold-lead-in paragraphs with citations, KEY PATTERNS list, engine footer pass-through, invitation block.
+- For normal-report-plus-HTML mode: after you have prepared the full chat response: badge, "What I learned:" (or comparison title), bold-lead-in paragraphs with citations, and KEY PATTERNS list.
 - For HTML-as-deliverable mode: after you have drafted the synthesis that will go into the HTML, before emitting the final chat response.
 - BEFORE the WAIT FOR USER'S RESPONSE pause.
 - ONLY if the user asked. Do NOT save HTML when the user didn't ask for it.
@@ -32,8 +32,7 @@ The contract has two modes:
 # 1. Write your synthesis prose VERBATIM to a temp file. The synthesis is the
 #    "What I learned:" prose label, the bold-lead-in paragraphs with their
 #    inline citations, and the "KEY PATTERNS from the research:" numbered list.
-#    Do NOT include the badge or the engine footer in the temp file - the engine
-#    adds those when it renders the HTML.
+#    Do NOT include the badge or internal engine statistics in the temp file.
 #    - HTML-as-deliverable mode: use the exact synthesis draft you prepared for
 #      the artifact. Do not paste it to chat first.
 #    - Normal-report-plus-HTML mode: use the exact synthesis text you already
@@ -62,7 +61,7 @@ SYNTHESIS_EOF
 #    REPLAY THE SAME SCOPE FLAGS as your original run (--plan, --hiring-signals,
 #    resolved --x-handle/--subreddits/etc). On a same-topic follow-up, the
 #    engine reuses the structured last-report cache at
-#    ~/.config/last30days/last-report.json to build badge metadata and footer
+#    ~/.config/last30days/last-report.json to build badge metadata
 #    without re-running source fetchers. That cache is intentionally short-lived
 #    (default: one hour; tune with LAST30DAYS_REPORT_CACHE_TTL_SECONDS, or set
 #    it to 0 to disable reuse). If the cache is stale, missing, or for a
@@ -88,7 +87,7 @@ fi
 #    where SCOPE_FLAGS is the same array you passed the first time, e.g.
 #    SCOPE_FLAGS=(--hiring-signals --plan "$QUERY_PLAN_FILE" --x-handle=acme).
 #    For a scoped --hiring-signals brief, --hiring-signals MUST be here too so
-#    the footer reflects the jobs-scoped board, not a generic crawl.
+#    the artifact reflects the jobs-scoped board, not a generic crawl.
 
 # 3. Finish with the artifact handoff described below. Do not print the saved
 #    path from the shell block; the chat handoff is the single user-visible
@@ -160,7 +159,7 @@ If the user chooses open, open the HTML file when the host can safely open local
 
 ### Normal report plus HTML copy
 
-When the user asked for a normal `/last30days` report and also asked for an HTML copy, keep the full chat synthesis and append this artifact block after the invitation:
+When the user asked for a normal `/last30days` report and also asked for an HTML copy, keep the full chat synthesis and append this artifact block after it:
 
 ```text
 📎 Shareable brief saved to <absolute HTML path>
@@ -181,10 +180,9 @@ The engine's `--emit=html` renderer combines:
 - A single inline metadata line (`{date range} · {active sources}`) below the badge
 - Your synthesis verbatim, with prose labels promoted to `<h2>` and bold lead-ins preserved
 - All `[name](url)` citations rendered as `<a>` tags
-- The engine footer (`✅ All agents reported back!` tree) preserved verbatim in monospace
 - A colophon with the topic and a re-run hint
 
-The renderer strips engine-internal noise that doesn't belong in a shareable artifact: the `# last30days vX.Y.Z: TOPIC` debug file header, the model-facing `> Safety note:` blockquote, and the `I'm now an expert on X` invitation block. Data quality warnings (degraded run, thin evidence, etc.) stay in the engine's stderr logs - they never leak into the share-ready file.
+The renderer strips engine-internal noise that doesn't belong in a shareable artifact: the `# last30days vX.Y.Z: TOPIC` debug file header, the model-facing `> Safety note:` blockquote, statistics trees, raw paths, and generic invitations. Data quality warnings (degraded run, thin evidence, etc.) stay in the engine's stderr logs - they never leak into the share-ready file.
 
 ## Comparison mode
 
@@ -201,7 +199,7 @@ The engine will try to reuse `~/.config/last30days/last-report.json` for that se
 ## What NOT to do
 
 - Do NOT save HTML if the user didn't ask. The sparse mode (no synthesis) produces a thin file; not useful as a shareable.
-- Do NOT add content to the temp file beyond your synthesis prose. The badge / footer / colophon come from the engine.
+- Do NOT add content to the temp file beyond your synthesis prose. The badge and colophon come from the engine.
 - Do NOT change the file path convention. `${LAST30DAYS_HTML_DIR:-/Users/YOUR_USERNAME/Downloads}/${SLUG}-brief.html` is the canonical location for user-facing HTML exports.
 - Do NOT silently overwrite an existing file. The `--emit=html` output is written via a shell redirect (`>| "$HTML_PATH"`), which OVERWRITES the collision-guarded path — use `>|` not `>` because `set -o noclobber` refuses plain `>` when the file already exists. The collision guard in step 2 handles same-topic re-runs: if `{slug}-brief.html` already exists it date-suffixes to `{slug}-brief-YYYY-MM-DD.html`. Always report whichever path the redirect actually used in the chat handoff.
 - Do NOT include the data quality warning text in the temp file or in your final chat line. Warnings are an engine-stderr concern, not an artifact concern.

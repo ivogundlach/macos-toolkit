@@ -71,14 +71,13 @@ TOOL_STATE_DIRS = {
 # them would duplicate the original and adding them as roots is explicitly wrong
 # (AGENTS.md: never edit generated skill mirrors).
 #
-# ~/.cursor is the same class one level up: a tool's own directory, holding the
-# assistant instructions codex-to-claude-sync writes there. Fifteen of them read
+# ~/.cursor is the same class one level up: a tool's own directory holding
+# generated assistant instructions. Fifteen of them read
 # as prose to any file-extension test, so the scan reported the corpus as missing
 # 15 notes that were never Ivo's to begin with — a false gap nobody could close,
 # because the honest answer was "ignore this", and the only way to say that was
 # to edit this file. That is what IGNORE_FILE is for.
 MIRROR_DIRS = {
-    str(HOME / ".claude/skills"),
     str(HOME / ".gemini/skills"),
     str(HOME / ".cursor"),
 }

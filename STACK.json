@@ -16,7 +16,7 @@
       "location": "/Applications",
       "name": "AdGuard for Safari",
       "observedFrom": "application Info.plist",
-      "version": "2.2.1"
+      "version": "2.3.0"
     },
     {
       "acquisition": "ivo-built",
@@ -34,7 +34,7 @@
       "location": "/Applications",
       "name": "Antigravity",
       "observedFrom": "application Info.plist",
-      "version": "2.3.1"
+      "version": "2.7.1"
     },
     {
       "acquisition": "unknown",
@@ -97,7 +97,7 @@
       "location": "/Applications",
       "name": "ChatGPT",
       "observedFrom": "application Info.plist",
-      "version": "26.803.41515"
+      "version": "26.803.61601"
     },
     {
       "acquisition": "unknown",
@@ -133,7 +133,7 @@
       "location": "/Applications",
       "name": "CodexBar",
       "observedFrom": "application Info.plist",
-      "version": "0.48.0"
+      "version": "0.49.2"
     },
     {
       "acquisition": "unknown",
@@ -169,7 +169,7 @@
       "location": "/Applications",
       "name": "Cotabby",
       "observedFrom": "application Info.plist",
-      "version": "0.6.0-beta"
+      "version": "0.6.2-beta"
     },
     {
       "acquisition": "unknown",
@@ -286,7 +286,7 @@
       "location": "/Applications",
       "name": "Ice 2",
       "observedFrom": "application Info.plist",
-      "version": "2.12.0"
+      "version": "2.14.1"
     },
     {
       "acquisition": "unknown",
@@ -412,7 +412,7 @@
       "location": "/Applications",
       "name": "Maccy",
       "observedFrom": "application Info.plist",
-      "version": "2.6.1"
+      "version": "2.7.0"
     },
     {
       "acquisition": "unknown",
@@ -691,7 +691,7 @@
       "location": "/Applications",
       "name": "T3 Code (Nightly)",
       "observedFrom": "application Info.plist",
-      "version": "0.0.33-nightly.20260809.1041"
+      "version": "0.0.34-nightly.20260811.1064"
     },
     {
       "acquisition": "mac-app-store",
@@ -908,12 +908,7 @@
       "status": "safely_summarized"
     },
     {
-      "name": "claude",
-      "provenance": "~/.local/bin",
-      "status": "safely_summarized"
-    },
-    {
-      "name": "claude-high-fidelity",
+      "name": "backup-coverage-audit",
       "provenance": "~/.local/bin",
       "status": "included"
     },
@@ -943,17 +938,17 @@
       "status": "safely_summarized"
     },
     {
+      "name": "codex-mirror-sync",
+      "provenance": "~/.local/bin",
+      "status": "safely_summarized"
+    },
+    {
       "name": "codex-skill-audit",
       "provenance": "~/.local/bin",
       "status": "safely_summarized"
     },
     {
       "name": "codex-sync-verify",
-      "provenance": "~/.local/bin",
-      "status": "included"
-    },
-    {
-      "name": "codex-to-claude-sync",
       "provenance": "~/.local/bin",
       "status": "included"
     },
@@ -1035,7 +1030,7 @@
     {
       "name": "mail-assistant-app-build",
       "provenance": "~/.local/bin",
-      "status": "safely_summarized"
+      "status": "included"
     },
     {
       "name": "market-cron",
@@ -1210,7 +1205,7 @@
     {
       "name": "signing-audit",
       "provenance": "~/.local/bin",
-      "status": "safely_summarized"
+      "status": "included"
     },
     {
       "name": "skill-drift-check",
@@ -1271,6 +1266,16 @@
       "name": "vitals-findings",
       "provenance": "~/.local/bin",
       "status": "included"
+    },
+    {
+      "name": "weekly-system-improvement",
+      "provenance": "~/.local/bin",
+      "status": "safely_summarized"
+    },
+    {
+      "name": "weekly-system-improvement-health",
+      "provenance": "~/.local/bin",
+      "status": "safely_summarized"
     }
   ],
   "coverage": [
@@ -1296,7 +1301,7 @@
       "surface": "mac-app-store"
     },
     {
-      "observed": 83,
+      "observed": 84,
       "reason": "tool names only; paths and arguments are excluded",
       "status": "included",
       "surface": "command-line-tools"
@@ -1374,7 +1379,7 @@
     "unavailable",
     "pending_review"
   ],
-  "generatedDate": "2026-08-09",
+  "generatedDate": "2026-08-12",
   "machine": {
     "architecture": "arm64",
     "excludedFields": [

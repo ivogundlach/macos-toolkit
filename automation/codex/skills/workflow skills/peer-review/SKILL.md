@@ -73,9 +73,9 @@ If there are no material findings, say so plainly. End with the checks performed
 
 ## Independent Plan and Result Review
 
-When independent review is requested or required by `AGENTS.md`, use the bundled read-only runner. It selects the opposite harness by default: Codex invokes Claude Code through the high-fidelity policy at Opus `medium` reasoning; Claude Code invokes Codex GPT-5.6 Sol at `medium` reasoning. Neither path retries — a reviewer failure surfaces as a failure. `PEER_REVIEWER=codex|claude` may override selection.
+When independent review is requested or required by `AGENTS.md`, use the bundled read-only runner. It invokes one fresh, separate-context `codex exec` review with user rules and user configuration ignored. The nested reviewer receives only the fixed review envelope and the hidden packet; its command sandbox is read-only and offline. Do not retry.
 
-Before using active-context critique after any non-explicit automatic Claude review path fails at selection, launch, execution, or verdict validation, reuse the same hidden packet and invoke the runner exactly once with `PEER_REVIEWER=codex` to obtain a separate-context, read-only `codex exec` adversarial review. Treat either valid terminal recommendation (`PROCEED` or `REVISE`) as a completed review, disclose that Codex was used as fallback and that reviewer diversity was reduced, and do not invoke Codex twice when it was already selected. Only if the separate Codex invocation also fails may the active agent use an internal critique where `AGENTS.md` permits it, with both failed review routes disclosed. Never silently substitute a reviewer, and never override an explicitly requested reviewer.
+Treat an oversized packet, missing client, launch failure, timeout, invalid terminal recommendation, or empty/truncated result as a reviewer failure. Disclose the exact failure immediately, then perform a clearly labeled internal critique as the reduced-independence backup required by `AGENTS.md`. Never silently substitute or describe the active agent's critique as independent.
 
 Prepare one hidden review packet containing the actual artifact, Ivo's original request and clarifications, relevant constraints, and available verification evidence. Do not include the main agent's conclusions or suspected findings. Run the appropriate mode:
 

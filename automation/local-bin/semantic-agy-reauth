@@ -55,7 +55,7 @@ agy_auth_state() {
   if agy_probe_log_has_logout "$marker"; then rm -f "$out" "$marker"; echo logged_out; return 0; fi
   rm -f "$out" "$marker"
   # No logout URL, but no clean answer either — corroborate liveness cheaply.
-  if ( PATH="$NO_BROWSER_BIN:$PATH" BROWSER=/usr/bin/false agy models </dev/null 2>/dev/null | grep -qiE 'Gemini|Claude|GPT' ); then
+  if ( PATH="$NO_BROWSER_BIN:$PATH" BROWSER=/usr/bin/false agy models </dev/null 2>/dev/null | grep -qiE 'Gemini|GPT' ); then
     echo ok
   else
     echo transient

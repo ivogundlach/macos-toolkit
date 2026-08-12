@@ -144,7 +144,7 @@ archive.  Generated mirrors are not canonical source and should be excluded.
   through the worker's reviewed-large-deletion override after the exact
   deletion manifest has received the review required by global instructions.
 - Recurring authority is limited to source-snapshot commits and normal pushes
-  to the existing private `the configured destination/source archive` `main` branch. It never
+  to the existing private `ivogundlach/source archive` `main` branch. It never
   authorizes a new repository, branch, release, pull request, visibility or
   permission change, history rewrite, or third-party write.
 - Do not pull into a dirty tree. Fetch and inspect first; integrate only when

@@ -54,6 +54,11 @@ rebuilds. Decide this when the job is designed, not after a grant disappears.
 | Ad-hoc signed binary or bundle (`Signature=adhoc`) | the exact compiled bytes | every rebuild silently revokes the grant |
 | Signed with the `Ivo Market Dev` keychain certificate | `identifier "<bundle id>" and certificate leaf = H"<cert hash>"` | survives rebuilds and OS updates; granted once, stays granted |
 
+Every app Ivo owns is certificate-signed, not only permission-holding jobs; that
+standing directive and the build-script half of it live in `vibe-coding`'s
+`references/swiftui-macos.md`. `signing-audit` checks the whole fleet and is
+registered with Tool Status Dashboard, so a regression reports itself.
+
 Wrap such a job in a minimal `LSUIElement` app bundle whose executable is a real
 Mach-O stub that re-execs the working script from `Contents/Resources/`, sign the
 bundle with the certificate, and point the scheduler at the stub. Keep the script
@@ -115,6 +120,12 @@ existing component owns the task.
 - Resolve and record the executable actually used by the scheduler. For bundled
   or frequently updated CLIs, verify the scheduled path and version rather than
   trusting an old `~/.local/bin` copy.
+- Editing a project's source is not deploying it. Tool Status Dashboard runs
+  `/Applications/Tool Dashboard.app/Contents/Resources/tool-status-scan.py`, a
+  copy made by `build.sh`; a fix left in `~/Projects/.../scripts/` is tested,
+  committed, and completely inert. After changing anything a scheduled job runs,
+  diff the deployed copy against the source and run the project's build before
+  claiming the fix is live.
 
 Machine-specific constraint: background cron and LaunchAgent processes on this
 Mac cannot replace the user crontab, even when the same command works
@@ -136,6 +147,24 @@ Keep last-attempt and last-success distinct. Trust final exit status and output
 artifacts over transient stderr. Never mark a time window complete merely
 because work was deferred. Carry missed work forward when the job contract
 requires catch-up.
+
+A job's own record of failure must be able to raise an alarm, not only to clear
+one. Tool Status Dashboard originally consulted a job's status file one way — to
+rescue a job whose launchd exit code no longer reflected reality — so a job that
+recorded its own failure while the system saw a clean exit stayed green
+permanently. `personal-repo-sync` sat there on 2026-08-09 with
+`last_result=failed` and no incident, no repair request and no notification: the
+source archive was down and the dashboard was clean. When adding a job that keeps
+an authoritative status file, wire it into **both** directions
+(`SELF_REPORTED_STATUS` and `SELF_REPORTED_FAILURE`), and match only explicit
+failure states — these jobs also write `deferred` and `partial`, which are not
+failures and must stay silent.
+
+Ivo does not read logs or watch dashboards. Anything that depends on a person
+noticing is not a fix; a defect is only patched when a check fails loudly on its
+own. Prefer a standing registered check over a note in a report, and prefer one
+that reads the real artifact over one that reads a list, a status flag, or an
+exit code.
 
 Judge health from the job's real contract: output artifact, state transition,
 last successful completion, and relevant logs. A loaded process, provider usage
@@ -167,7 +196,18 @@ a failure.
   `tool-status-register add <binary> [--check exists|version|help]`. Default
   `version` runs `<binary> --version` each scan (5s timeout); use `help` when
   the tool lacks `--version`; use `exists` for wrappers where any execution has
-  side effects. Registered (`addedBy: agent`) entries fail loudly through the
+  side effects.
+- Registering a binary makes the scan **execute** it every five minutes. A script
+  that ignores unknown arguments and falls through to its real work therefore runs
+  its real work every five minutes, truncated by the 5s timeout. This destroyed
+  `mail-assistant-app-build` on 2026-08-08: registered with `--check version`, no
+  `--version` branch, so each scan deleted and rebuilt the app bundle and the
+  timeout killed it mid-build, leaving an unsigned shell with no runner script and
+  a dead hourly job. Before registering anything that builds, deploys, deletes, or
+  syncs, run `<binary> --version` and confirm it returns without side effects.
+  Prefer giving the script a real read-only `--version` branch that reports the
+  health of what it produced, over downgrading the entry to `exists`: the check
+  then verifies the artifact rather than the script's mere presence. Registered (`addedBy: agent`) entries fail loudly through the
   incident → autonomous repair → escalation path when the binary vanishes or
   the health check fails.
 - The background scan also auto-registers every executable in `~/.local/bin`

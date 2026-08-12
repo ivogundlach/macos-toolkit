@@ -55,6 +55,8 @@ cp "$BIN" "$APP/Contents/MacOS/ToolStatusDashboard"
 cp "$ROOT/Info.plist" "$APP/Contents/Info.plist"
 cp "$ROOT/scripts/tool-status-scan.py" "$APP/Contents/Resources/tool-status-scan.py"
 cp "$ROOT/scripts/gws-auth-login.py" "$APP/Contents/Resources/gws-auth-login.py"
+cp "$ROOT/scripts/canvas-auth-login.py" "$APP/Contents/Resources/canvas-auth-login.py"
+cp "$ROOT/scripts/launchagent-enable.py" "$APP/Contents/Resources/launchagent-enable.py"
 cp "$ROOT/scripts/tool-status-background-scan.py" "$APP/Contents/Resources/tool-status-background-scan.py"
 cp "$ROOT/scripts/tool-status-repair-worker.py" "$APP/Contents/Resources/tool-status-repair-worker.py"
 cp "$ROOT/scripts/tool-status-repair-result.schema.json" "$APP/Contents/Resources/tool-status-repair-result.schema.json"
@@ -68,6 +70,8 @@ cp "$ROOT/Icon/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
 chmod +x "$APP/Contents/MacOS/ToolStatusDashboard" \
   "$APP/Contents/Resources/tool-status-scan.py" \
   "$APP/Contents/Resources/gws-auth-login.py" \
+  "$APP/Contents/Resources/canvas-auth-login.py" \
+  "$APP/Contents/Resources/launchagent-enable.py" \
   "$APP/Contents/Resources/tool-status-background-scan.py" \
   "$APP/Contents/Resources/tool-status-repair-worker.py"
 
@@ -98,6 +102,12 @@ rm -rf "/Applications/Tool Status Dashboard.app"
   -f "/Applications/Tool Dashboard.app"
 
 mkdir -p "$HOME/.local/bin" "$HOME/.local/state/tool-status-dashboard" "$HOME/Library/LaunchAgents"
+DEPLOYMENT_MARKER="$HOME/.local/state/tool-status-dashboard/deployment-in-progress.json"
+printf '{"pid":%d,"startedAt":"%s"}\n' "$$" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" > "$DEPLOYMENT_MARKER.tmp"
+chmod 600 "$DEPLOYMENT_MARKER.tmp"
+mv "$DEPLOYMENT_MARKER.tmp" "$DEPLOYMENT_MARKER"
+cleanup_deployment_marker() { rm -f "$DEPLOYMENT_MARKER" "$DEPLOYMENT_MARKER.tmp"; }
+trap cleanup_deployment_marker EXIT
 install -m 755 "$ROOT/scripts/tool-status-background-scan-wrapper.sh" "$HOME/.local/bin/tool-status-background-scan"
 install -m 755 "$ROOT/scripts/tool-status-repair-worker-wrapper.sh" "$HOME/.local/bin/tool-status-repair-worker"
 install -m 755 "$ROOT/scripts/tool-status-register" "$HOME/.local/bin/tool-status-register"
@@ -115,4 +125,6 @@ elif ! launchctl print "gui/$(id -u)/com.ivogundlach.tool-status-dashboard.repai
   launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/com.ivogundlach.tool-status-dashboard.repair.plist"
 fi
 
+cleanup_deployment_marker
+trap - EXIT
 echo "Built and installed: /Applications/Tool Dashboard.app"

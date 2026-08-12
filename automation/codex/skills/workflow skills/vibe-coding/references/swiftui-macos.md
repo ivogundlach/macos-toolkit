@@ -40,7 +40,32 @@ runtime-only SwiftUI icons do not satisfy this requirement. For simple native ar
 deterministic AppKit/Core Graphics generator may render the source PNGs that are then compiled into
 the baked icon asset. Follow `design-taste` for naming, metaphor, and visual-quality requirements.
 
-Follow the project's signing requirements. Ad-hoc signing with `codesign --force --sign - "AppName.app"` is acceptable for a simple local app only when no stable identity or entitlement-dependent feature requires otherwise.
+## Always Sign With a Certificate, Never Ad-Hoc
+
+Every app Ivo owns is signed with the `Ivo Market Dev` keychain certificate, and every
+build script that produces one signs it that way. This is a standing directive from
+Ivo (2026-08-09), not a per-project choice: he must never have to re-grant a
+permission because something was rebuilt.
+
+macOS keys a privacy grant to the app's *designated requirement*. Signing with the
+certificate produces `identifier "<id>" and certificate leaf = H"..."`, which any
+later rebuild still satisfies. Ad-hoc signing (`--sign -`) and unsigned bundles
+produce a `cdhash` requirement keyed to the exact compiled bytes, so every rebuild
+silently looks like a different app and its permissions vanish with no error text.
+Safari extensions signed with the Apple Development certificate are equally durable
+and must keep that identity — any certificate gives the durable shape.
+
+- Sign with `codesign --force --sign "Ivo Market Dev" --timestamp=none <app>`, and in
+  Xcode builds with `CODE_SIGN_IDENTITY="Ivo Market Dev"` plus `CODE_SIGN_STYLE=Manual`.
+- Signing the installed app is only half the fix. Patch the project's build script
+  too, or the next rebuild reverts it. Fall back to ad-hoc only when the certificate
+  is genuinely absent, and print a loud warning when that happens.
+- Confirm with `codesign -d -r-`: the designated requirement must name a certificate,
+  not a cdhash. `signing-audit` checks the whole fleet at once and is registered with
+  Tool Status Dashboard, so a regression surfaces on its own.
+- A script inside `Contents/MacOS/` may count as unsigned nested code and fail
+  `codesign --verify --deep --strict`. Keep helper scripts in `Contents/Resources/`
+  and have a compiled stub re-exec them.
 
 ## Preserve Permission Grants
 

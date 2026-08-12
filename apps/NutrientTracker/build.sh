@@ -71,8 +71,18 @@ cat > "$APPDIR/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 
-echo "› Ad-hoc code signing…"
-codesign --force --deep --sign - "$APPDIR" 2>/dev/null || echo "  (codesign skipped)"
+# Sign with the "Ivo Market Dev" certificate, never ad-hoc. macOS keys a privacy
+# grant to the signature: a certificate signature stays valid across rebuilds, an
+# ad-hoc one is keyed to the exact bytes, so every rebuild silently revokes whatever
+# the app had been allowed to do. Check the fleet with `signing-audit`.
+echo "› Code signing…"
+if security find-identity -v -p codesigning | grep -q "Ivo Market Dev"; then
+  codesign --force --deep --sign "Ivo Market Dev" --timestamp=none "$APPDIR"
+else
+  echo "  WARNING: 'Ivo Market Dev' certificate not found; falling back to ad-hoc." >&2
+  echo "  Permissions granted to this app will break on the next rebuild." >&2
+  codesign --force --deep --sign - "$APPDIR" 2>/dev/null || echo "  (codesign skipped)"
+fi
 
 if [[ "$INSTALL" -eq 1 ]]; then
   echo "› Installing to /Applications…"

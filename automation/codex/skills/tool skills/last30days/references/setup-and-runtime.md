@@ -91,7 +91,7 @@ If the preflight script emits `ERROR: last30days v3 requires Python 3.12+` (or `
    > Then re-run `/last30days <your topic>` and the setup wizard will configure everything automatically."
 2. **Stop.** Do not attempt research. Do not fall back to WebSearch-only synthesis.
 
-WebSearch-only synthesis is not equivalent to running the engine — it misses Reddit community data, X/Twitter timelines, YouTube transcripts, TikTok, and Polymarket. Presenting it without disclosure misleads the user about what was actually searched. This is the same category of failure as a WebSearch-only run with no engine footer.
+WebSearch-only synthesis is not equivalent to running the engine — it misses Reddit community data, X/Twitter timelines, YouTube transcripts, TikTok, and Polymarket. Presenting it without disclosure misleads the user about what was actually searched. Verify engine execution from its exit status and hidden report rather than a visible footer.
 
 **Native-search signal (web coverage).** If you (the hosting model) have your own web-search tool available, export `LAST30DAYS_NATIVE_SEARCH=1` in the same shell before invoking the engine:
 

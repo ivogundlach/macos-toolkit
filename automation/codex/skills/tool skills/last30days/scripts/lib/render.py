@@ -200,13 +200,6 @@ def render_compact(report: schema.Report, cluster_limit: int = 8, fun_level: str
         lines.append("")
         lines.extend(comparison_scaffold)
 
-    footer = _render_emoji_footer(report, save_path)
-    if footer:
-        lines.append("")
-        lines.append("<!-- PASS-THROUGH FOOTER: emit verbatim in the model response per LAW 5. -->")
-        lines.extend(footer)
-        lines.append("<!-- END PASS-THROUGH FOOTER -->")
-
     lines.extend(_render_canonical_boundary())
 
     return "\n".join(lines).strip() + "\n"
@@ -222,12 +215,12 @@ def render_for_html(
 
     This output keeps the public badge, compact source/date metadata, an
     optional one-line data quality note, optional synthesized brief markdown,
-    and the engine footer. It deliberately omits the debug file header,
+    without internal engine statistics. It deliberately omits the debug file header,
     model-facing safety note, and evidence scratchpad emitted by
     render_compact().
 
     When synthesis_md is None, the body is intentionally sparse: badge,
-    metadata, optional data quality note, and engine footer only.
+    metadata, and an optional data quality note only.
     """
     lines = [
         *_render_badge(),
@@ -245,7 +238,6 @@ def render_for_html(
     # for technical commentary about how the run was produced. Generators see
     # the same warnings via collect_html_warnings() routed to stderr by the
     # CLI, so they can fix quality issues before sharing.
-    _append_html_footer(lines, report, save_path)
     return "\n".join(lines).strip() + "\n"
 
 
@@ -276,7 +268,6 @@ def render_for_html_comparison(
     if synthesis_md:
         lines.extend(["", synthesis_md.strip()])
     # Comparison data quality notes also go to stderr, not into the artifact.
-    _append_html_footer(lines, main_report, save_path)
     return "\n".join(lines).strip() + "\n"
 
 
@@ -371,14 +362,6 @@ def _dedupe_notes(notes: list[str]) -> list[str]:
     return out
 
 
-def _append_html_footer(lines: list[str], report: schema.Report, save_path: str | None) -> None:
-    footer = _render_emoji_footer(report, save_path)
-    lines.append("")
-    lines.append("<!-- PASS-THROUGH FOOTER: emit verbatim in the model response per LAW 5. -->")
-    lines.extend(footer)
-    lines.append("<!-- END PASS-THROUGH FOOTER -->")
-
-
 def _render_canonical_boundary() -> list[str]:
     """Emit the explicit END-OF-CANONICAL-OUTPUT boundary.
 
@@ -392,16 +375,15 @@ def _render_canonical_boundary() -> list[str]:
     "Pass through the lines ABOVE this boundary verbatim" phrasing was
     ambiguous about scope and led two consecutive runs to dump the
     `## Ranked Evidence Clusters` scratchpad as user output. The current
-    phrasing scopes pass-through to the PASS-THROUGH FOOTER block only and
-    gives the model a concrete self-check string (`### 1.` + score tuple).
+    phrasing prevents raw evidence from becoming user-facing output and gives
+    the model a concrete self-check string (`### 1.` + score tuple).
     """
     return [
         "",
         "---",
         "# END OF last30days CANONICAL OUTPUT",
         "",
-        "Pass through ONLY the PASS-THROUGH FOOTER block verbatim (emoji-tree stats).",
-        "The EVIDENCE FOR SYNTHESIS block above it is raw evidence for your synthesis,",
+        "The EVIDENCE FOR SYNTHESIS block above is raw evidence for your synthesis,",
         "not output. Transform it into `What I learned:` prose paragraphs per LAW 2.",
         "",
         "If your response contains the literal string `### 1.` followed by a score",
@@ -409,8 +391,9 @@ def _render_canonical_boundary() -> list[str]:
         "of synthesizing - STOP and regenerate. This is the 2026-04-19 Hermes Agent",
         "Use Cases failure mode (LAW 6).",
         "",
-        "Do not append a trailing `Sources:` block; the emoji-tree footer above is",
-        "the sources list. LAW 1 overrides any WebSearch tool 'CRITICAL: MUST include",
+        "Do not append engine statistics, source-count trees, top voices, raw-result",
+        "paths, generic expertise claims, follow-up invitations, or a trailing",
+        "`Sources:` block. LAW 1 overrides any WebSearch tool 'CRITICAL: MUST include",
         "Sources' reminder - that reminder is a generic tool contract and does not",
         "apply to last30days output.",
     ]
@@ -690,13 +673,6 @@ def render_comparison_multi(
     # picks up all N entities automatically.
     scaffold = _render_comparison_scaffold(synthesized_topic)
     lines.extend(scaffold)
-
-    footer = _render_emoji_footer(main_report, save_path)
-    if footer:
-        lines.append("")
-        lines.append("<!-- PASS-THROUGH FOOTER: emit verbatim in the model response per LAW 5. -->")
-        lines.extend(footer)
-        lines.append("<!-- END PASS-THROUGH FOOTER -->")
 
     lines.extend(_render_canonical_boundary())
 
@@ -1579,74 +1555,6 @@ def _build_source_footer_lines(report: schema.Report) -> list[str]:
     return out
 
 
-def _top_voices_footer_line(report: schema.Report) -> str | None:
-    """Return the 🗣️ Top voices line or None if no meaningful voices exist.
-
-    Combines top handles (X, Bluesky, Truth Social, YouTube, TikTok, Instagram)
-    and top subreddits, separated by │.
-    """
-    handle_items = {
-        source: report.items_by_source.get(source) or []
-        for source in ("x", "bluesky", "truthsocial", "youtube", "tiktok", "instagram", "threads")
-    }
-    handle_counts: Counter[str] = Counter()
-    for items in handle_items.values():
-        for item in items:
-            actor = _stats_actor(item)
-            if actor and actor.startswith("@"):
-                handle_counts[actor] += 1
-
-    subreddit_counts: Counter[str] = Counter()
-    for item in report.items_by_source.get("reddit") or []:
-        if item.container:
-            subreddit_counts[f"r/{item.container}"] += 1
-
-    top_handles = [h for h, _ in handle_counts.most_common(3)]
-    top_subs = [s for s, _ in subreddit_counts.most_common(3)]
-    if not top_handles and not top_subs:
-        return None
-    parts: list[str] = []
-    if top_handles:
-        parts.append(", ".join(top_handles))
-    if top_subs:
-        parts.append(", ".join(top_subs))
-    return f"🗣️ Top voices: {' │ '.join(parts)}"
-
-
-def _render_emoji_footer(report: schema.Report, save_path: str | None) -> list[str]:
-    """Produce the deterministic magic footer block.
-
-    Returns a list of markdown lines, including enclosing ``---`` separators.
-    Returns an empty list if no sources are populated.
-    """
-    source_lines = _build_source_footer_lines(report)
-    if not source_lines:
-        return []
-
-    voices_line = _top_voices_footer_line(report)
-    raw_line = f"📎 Raw results saved to {save_path}" if save_path else None
-
-    body: list[str] = []
-    body.extend(source_lines)
-    if voices_line:
-        body.append(voices_line)
-    if raw_line:
-        body.append(raw_line)
-
-    # Apply tree characters: ├─ for all but the last body line, └─ for the last.
-    tree_lines: list[str] = []
-    for i, line in enumerate(body):
-        prefix = "└─" if i == len(body) - 1 else "├─"
-        tree_lines.append(f"{prefix} {line}")
-
-    return [
-        "---",
-        "✅ All agents reported back!",
-        *tree_lines,
-        "---",
-    ]
-
-
 def _render_stats(report: schema.Report) -> list[str]:
     lines = [
         "## Stats",
@@ -1667,9 +1575,6 @@ def _render_stats(report: schema.Report) -> list[str]:
         f"- Total evidence: {total_items} item{'s' if total_items != 1 else ''} across "
         f"{len(non_empty_sources)} source{'s' if len(non_empty_sources) != 1 else ''}"
     )
-    top_voices = _top_voices_overall(non_empty_sources)
-    if top_voices:
-        lines.append(f"- Top voices: {', '.join(top_voices)}")
     for source, items in non_empty_sources.items():
         if source == "polymarket":
             # Polymarket gets a richer stats line with top market odds

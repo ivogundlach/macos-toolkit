@@ -2,7 +2,7 @@
 # UAH School Sync wrapper.
 # sync / import-semester run through SchoolSync.app so EventKit permissions
 # always attach to the same TCC identity; other commands run directly.
-SYNC=/Users/YOUR_USERNAME/School/sync
+SYNC=/Users/YOUR_USERNAME/Projects/School/sync
 case "$1" in
   sync|import-semester|verify|selftest)
     open -W -a "$SYNC/SchoolSync.app" --args "$@"

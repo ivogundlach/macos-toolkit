@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Targeted v3 checks for Luna authority, research, and decision gates."""
+"""Targeted v8 checks for Luna authority, evidence gating, and decision gates."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ import json
 import os
 import subprocess
 import tempfile
+import time
 from pathlib import Path
 
 
@@ -34,6 +35,7 @@ def main() -> int:
         state.mkdir(parents=True)
         source = project / "repair.py"
         source.write_text("VALUE = 'broken'\n", encoding="utf-8")
+
         contract = project / "tests/test_contract.py"
         contract.parent.mkdir()
         contract.write_text("assert EXPECTED_VALUE == 'fixed'\n", encoding="utf-8")
@@ -44,12 +46,173 @@ def main() -> int:
         worker = load_worker(home, state)
         assert worker.MODEL == "gpt-5.6-luna"
         assert worker.REASONING == "max"
-        assert worker.REPAIR_POLICY_VERSION == 5
+        assert worker.REPAIR_POLICY_VERSION == 9
+
+        wake_item = {
+            "id": "Background Job:ExampleTool Evidence Wake", "name": "ExampleTool Runtime",
+            "category": "Background Job", "state": "fail", "causeCode": "fixture.failure",
+            "causeParams": {}, "needsIvo": False, "fix": None,
+        }
+        wake_job = {
+            "id": wake_item["id"], "fingerprint": "evidence-wake", "item": wake_item,
+            "repairPolicyVersion": 9, "lunaAttemptState": "exhausted", "lunaExhausted": True,
+            "nextAttemptAt": worker.iso(worker.now() + worker.dt.timedelta(days=1)),
+        }
+        wake_job["lunaAttemptEvidenceDigest"] = worker.repair_evidence_digest(
+            wake_job, wake_item, worker.actual_manifest([project]),
+        )
+        wake_path = worker.QUEUE / "evidence-wake.json"
+        worker.atomic_json(wake_path, wake_job)
+        source.write_text("VALUE = 'new-evidence'\n", encoding="utf-8")
+        original_network = worker.network_available
+        worker.network_available = lambda: False
+        try:
+            worker.process_job(wake_path, wake_job, {"items": [wake_item]})
+        finally:
+            worker.network_available = original_network
+        woke = worker.load_json(wake_path, {})
+        assert woke.get("lunaAttemptState") is None
+        assert woke.get("lunaExhausted") is False
+        assert worker.parse_time(woke.get("nextAttemptAt")) < worker.now() + worker.dt.timedelta(hours=1)
+        assert "luna-evidence-materially-changed" in worker.HISTORY.read_text(encoding="utf-8")
+        wake_path.unlink()
+        source.write_text("VALUE = 'broken'\n", encoding="utf-8")
+
+        invocation_job = {
+            "id": "Background Job:Invocation Parity", "fingerprint": "invocation-parity",
+            "item": {"id": "Background Job:Invocation Parity", "name": "Invocation Parity",
+                     "category": "Background Job", "state": "fail", "causeCode": "fixture.failure"},
+        }
+        invocation_candidate = root / "invocation-candidate"
+        invocation_candidate.mkdir()
+        invocation_output = root / "invocation-output.json"
+        luna_argv, _, _ = worker.repair_invocation(
+            invocation_job, invocation_candidate, [], True, "same scope", "", invocation_output,
+        )
+        legacy_tier_argv, _, _ = worker.repair_invocation(
+            {**invocation_job, "internalAgentTier": "sol"},
+            invocation_candidate, [], True, "same scope", "", invocation_output,
+        )
+        def normalized_agent_argv(argv):
+            value = list(argv)
+            value[value.index("--model") + 1] = "<MODEL>"
+            effort_index = next(index for index, part in enumerate(value) if part.startswith('model_reasoning_effort='))
+            value[effort_index] = 'model_reasoning_effort="<REASONING>"'
+            value[-1] = value[-1].replace("gpt-5.6-luna", "<MODEL>").replace("gpt-5.6-sol", "<MODEL>")
+            value[-1] = value[-1].replace("max reasoning", "<REASONING> reasoning").replace("medium reasoning", "<REASONING> reasoning")
+            return value
+        assert normalized_agent_argv(luna_argv) == normalized_agent_argv(legacy_tier_argv)
+        assert legacy_tier_argv[legacy_tier_argv.index("--model") + 1] == "gpt-5.6-luna"
+        assert 'model_reasoning_effort="max"' in legacy_tier_argv
+        assert "sandbox_workspace_write.network_access=false" in legacy_tier_argv
+        assert 'approval_policy="never"' in legacy_tier_argv
+
+        evidence_one = worker.repair_evidence_digest(
+            invocation_job,
+            {**invocation_job["item"], "checkedAt": "2026-08-10T01:00:00Z",
+             "causeParams": {"failure_count": 1, "target": "same"}},
+            {str(source): {"hash": worker.file_hash(source), "size": source.stat().st_size}},
+        )
+        evidence_same = worker.repair_evidence_digest(
+            invocation_job,
+            {**invocation_job["item"], "checkedAt": "2026-08-10T02:00:00Z",
+             "causeParams": {"failure_count": 99, "target": "same"}},
+            {str(source): {"hash": worker.file_hash(source), "size": source.stat().st_size}},
+        )
+        assert evidence_one == evidence_same, "scan timestamps or counters changed material evidence"
+        evidence_new_error = worker.repair_evidence_digest(
+            invocation_job,
+            {**invocation_job["item"], "detail": "A materially different account restriction appeared."},
+            {str(source): {"hash": worker.file_hash(source), "size": source.stat().st_size}},
+        )
+        assert evidence_new_error != evidence_one, "changed error evidence did not unlock a new Luna attempt"
+        source.write_text("VALUE = 'materially-changed'\n", encoding="utf-8")
+        evidence_changed = worker.repair_evidence_digest(
+            invocation_job, invocation_job["item"],
+            {str(source): {"hash": worker.file_hash(source), "size": source.stat().st_size}},
+        )
+        assert evidence_changed != evidence_one, "a source change did not unlock a new Luna attempt"
+        source.write_text("VALUE = 'broken'\n", encoding="utf-8")
 
         resolved, _ = worker.owner_scope({
             "name": "ExampleTool Runtime", "category": "Background Job",
         })
         assert project in resolved, resolved
+
+        protected_resolved, _ = worker.owner_scope({
+            "name": "ExampleTool Runtime", "category": "Auth", "causeCode": "auth.refresh.failed",
+        })
+        assert project in protected_resolved, "an auth topic incorrectly removed explicit owner-code authority"
+
+        launch_program = project / "bin/example-agent"
+        launch_program.parent.mkdir()
+        launch_program.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        launch_program.chmod(0o755)
+        launch_agents = home / "Library/LaunchAgents"
+        launch_agents.mkdir(parents=True)
+        label = "com.ivo.example-agent"
+        (launch_agents / f"{label}.plist").write_bytes(worker.plistlib.dumps({
+            "Label": label, "ProgramArguments": [str(launch_program)],
+        }))
+        launch_scope, _ = worker.owner_scope({
+            "id": f"LaunchAgent:{label}", "name": "Protected Login Refresh", "category": "Auth",
+            "causeCode": "auth.refresh.failed",
+        })
+        assert any(root == launch_program or (root.is_dir() and launch_program.is_relative_to(root)) for root in launch_scope)
+        assert launch_agents / f"{label}.plist" not in launch_scope, "LaunchAgent configuration became writable"
+        assert Path("/bin/bash") not in launch_scope, "a system interpreter became writable owner scope"
+        nonprotected_launch_scope, _ = worker.owner_scope({
+            "id": f"LaunchAgent:{label}", "name": "Example Agent", "category": "LaunchAgent",
+            "causeCode": "launchagent.failed", "evidence": str(launch_agents / f"{label}.plist"),
+        })
+        assert launch_agents / f"{label}.plist" not in nonprotected_launch_scope
+
+        # A stale heartbeat must never force-kill a scan that is already running.
+        scanner_plist = launch_agents / "com.ivogundlach.tool-status-dashboard.scan.plist"
+        scanner_plist.write_text("fixture", encoding="utf-8")
+        worker.atomic_json(worker.HEARTBEAT, {
+            "completedAt": worker.iso(worker.now() - worker.dt.timedelta(hours=1)),
+        })
+        heartbeat_commands = []
+        original_run = worker.run
+        try:
+            def heartbeat_run(command, timeout=30, **_kwargs):
+                heartbeat_commands.append(command)
+                if command[:2] == ["/bin/launchctl", "print"]:
+                    return 0, "state = running\n"
+                return 0, ""
+            worker.run = heartbeat_run
+            worker.check_scanner_heartbeat()
+        finally:
+            worker.run = original_run
+        assert any(command[:2] == ["/bin/launchctl", "print"] for command in heartbeat_commands)
+        assert not any(command[:2] == ["/bin/launchctl", "kickstart"] for command in heartbeat_commands)
+        assert not any("-k" in command for command in heartbeat_commands)
+
+        # A timeout kills descendants as well as the direct probe, so no child
+        # can keep the captured output pipe open past the advertised bound.
+        timeout_helper = root / "timeout-helper.py"
+        timeout_pid = root / "timeout-child.pid"
+        timeout_helper.write_text(
+            "import pathlib,subprocess,sys\n"
+            "p=subprocess.Popen(['/bin/sleep','30'])\n"
+            "pathlib.Path(sys.argv[1]).write_text(str(p.pid))\n"
+            "p.wait()\n",
+            encoding="utf-8",
+        )
+        started = time.monotonic()
+        timeout_rc, _ = worker.run(["/usr/bin/python3", str(timeout_helper), str(timeout_pid)], timeout=1)
+        assert timeout_rc == 124
+        assert time.monotonic() - started < 5, "timeout waited on an orphaned descendant"
+        child_pid = int(timeout_pid.read_text())
+        for _ in range(20):
+            try:
+                os.kill(child_pid, 0)
+            except ProcessLookupError:
+                break
+            time.sleep(0.05)
+        else:
+            raise AssertionError("timed-out descendant remained alive")
 
         # v4 accepts exact existing project files proposed by Luna, but never a
         # generic home-directory class or a symlink escape.
@@ -796,9 +959,9 @@ def main() -> int:
         }}
         assert not worker.decision_matches_request(auth_decision, tampered_auth_plan)[0]
 
-        # Feedback creates a new approvable revision while preserving the same
-        # generation nonce and conversation context; create_request must not roll
-        # that revision back to the prior card.
+        # Model-declared decision impact is not a human boundary. A revised
+        # generic case stays internal and exhausts this Luna evidence without replacing the
+        # historical request or emitting another approval.
         feedback_job = {
             "id": "Background Job:Feedback Fixture", "fingerprint": "feedback",
             "generation": "d" * 32, "revision": 2,
@@ -816,13 +979,16 @@ def main() -> int:
         worker.atomic_json(feedback_path, feedback_job)
         worker.create_request(
             feedback_path, feedback_job,
-            {"status": "needs_approval", "summary": "The revised review is ready.", "root_cause": "The worker needs your choice.", "proposed_fix": "Review the revised repair once.", "requested_action": None},
+            {"status": "needs_approval", "summary": "The revised review is ready.", "root_cause": "The worker needs your choice.", "proposed_fix": "Review the revised repair once.", "decision_impact": "overrides_decision", "requested_action": None},
             "review required", "Review the revised repair",
         )
         refreshed = worker.load_requests()[0]
-        assert refreshed["revision"] == 2, refreshed
-        assert refreshed["generation"] == feedback_job["generation"]
-        assert refreshed["conversation"] and refreshed["conversation"][0]["role"] == "user"
+        assert refreshed["revision"] == 1, refreshed
+        queued_feedback = worker.load_json(feedback_path, {})
+        assert queued_feedback["revision"] == 2
+        assert queued_feedback["lunaExhausted"] is True
+        assert "internalAgentTier" not in queued_feedback
+        assert queued_feedback["conversation"] and queued_feedback["conversation"][0]["role"] == "user"
 
         # v5 authority is objective-bound, not path/command-bound: changing a
         # staged diagnostic candidate does not change the approval descriptor,
@@ -1223,13 +1389,16 @@ def main() -> int:
             feedback_v2_path, feedback_v2_job,
             {"status": "needs_approval", "summary": "Revised review is ready.",
              "root_cause": "The revised strategy is ready.", "proposed_fix": "Approve the revised local repair.",
-             "requested_action": None},
+             "decision_impact": "overrides_decision", "requested_action": None},
             "revised approval", "Review the revised repair",
         )
         feedback_v2 = next(value for value in worker.load_requests() if value.get("incidentID") == feedback_v1_job["id"])
-        assert feedback_v2["revision"] == 2
-        assert feedback_v2["authorityDigest"] != feedback_v1_request["authorityDigest"]
-        assert feedback_v2["status"] == "pending"
+        assert feedback_v2["revision"] == 1
+        assert feedback_v2["status"] == "reconsidering"
+        internal_feedback_job = worker.load_json(feedback_v2_path, {})
+        assert internal_feedback_job["revision"] == 2
+        assert internal_feedback_job["lunaExhausted"] is True
+        assert "internalAgentTier" not in internal_feedback_job
         worker.atomic_json(worker.DECISIONS / "feedback-before-old-approval.json", {
             "schemaVersion": 5, "requestID": feedback_v1_request["id"],
             "incidentID": feedback_v1_request["incidentID"], "generation": feedback_v1_request["generation"],
@@ -1237,16 +1406,178 @@ def main() -> int:
             "decision": "approve", "createdAt": worker.iso(),
         })
         worker.process_decisions()
-        assert next(value for value in worker.load_requests() if value.get("incidentID") == feedback_v1_job["id"])["status"] == "pending"
-        worker.atomic_json(worker.DECISIONS / "feedback-before-new-approval.json", {
-            "schemaVersion": 5, "requestID": feedback_v2["id"],
-            "incidentID": feedback_v2["incidentID"], "generation": feedback_v2["generation"],
-            "revision": feedback_v2["revision"], "authorityDigest": feedback_v2["authorityDigest"],
-            "decision": "approve", "createdAt": worker.iso(),
-        })
-        worker.process_decisions()
-        feedback_approved_job = worker.load_json(worker.QUEUE / f"{worker.repair_key(feedback_v2_job)}.json", {})
-        assert feedback_approved_job.get("issueAuthorityGrant", {}).get("status") == "active"
+        assert next(value for value in worker.load_requests() if value.get("incidentID") == feedback_v1_job["id"])["status"] == "reconsidering"
+        assert not worker.load_json(feedback_v2_path, {}).get("issueAuthorityGrant")
+
+        # Policy v9 hides and requeues obsolete generic approvals, including an
+        # idle active grant, without touching genuine human-only requests.
+        migration_job = {
+            "id": "Background Job:Generic Migration", "fingerprint": "generic-migration",
+            "generation": "9" * 32, "revision": 1, "repairPolicyVersion": 6,
+            "item": {"id": "Background Job:Generic Migration", "name": "Generic Migration",
+                     "category": "Background Job", "state": "fail",
+                     "causeCode": "fixture.failure", "causeParams": {}},
+        }
+        migration_descriptor = worker.issue_authority_descriptor(migration_job)
+        migration_request = {
+            "schemaVersion": 5, "id": "generic-migration-request",
+            "incidentID": migration_job["id"], "fingerprint": migration_job["fingerprint"],
+            "generation": migration_job["generation"], "revision": 1,
+            "pendingKey": worker.repair_key(migration_job),
+            "authorityDescriptor": migration_descriptor,
+            "authorityDigest": worker.issue_authority_digest(migration_descriptor),
+            "authorityStatus": "pending", "grantID": None, "status": "pending",
+            "candidateProvenance": {"diagnosticOnly": True}, "createdAt": worker.iso(),
+        }
+        migration_grant = worker.create_issue_authority_grant(migration_job, migration_request)
+        migration_request["grantID"] = migration_grant["grantID"]
+        migration_request["authorityStatus"] = "active"
+        migration_request["status"] = "reconsidering"
+        migration_job["issueAuthorityGrant"] = migration_grant
+        worker.atomic_json(worker.PENDING / f"{worker.repair_key(migration_job)}.json", migration_job)
+        worker.atomic_json(worker.REQUESTS, worker.load_requests() + [migration_request])
+        worker.migrate_generic_requests_to_internal()
+        migrated_request = next(value for value in worker.load_requests() if value.get("id") == migration_request["id"])
+        assert migrated_request["status"] == "internal"
+        assert migrated_request["authorityStatus"] == "internal"
+        assert worker.load_issue_grants()[migration_grant["grantID"]]["status"] == "superseded"
+        migrated_job_path = worker.QUEUE / f"{worker.repair_key(migration_job)}.json"
+        migrated_job = worker.load_json(migrated_job_path, {})
+        assert migrated_job["repairPolicyVersion"] == 9
+        assert "internalAgentTier" not in migrated_job
+        assert not (worker.PENDING / f"{worker.repair_key(migration_job)}.json").exists()
+        worker.migrate_generic_requests_to_internal()
+        assert sum(value.get("id") == migration_request["id"] for value in worker.load_requests()) == 1
+
+        human_job = {
+            **migration_job, "id": "Background Job:Human Review",
+            "fingerprint": "human-review", "generation": "8" * 32,
+            "repairPolicyVersion": 6,
+            "item": {**migration_job["item"], "id": "Background Job:Human Review",
+                     "name": "Human Review", "needsIvo": True},
+        }
+        human_request = {
+            **migration_request, "id": "human-review-request",
+            "incidentID": human_job["id"], "fingerprint": human_job["fingerprint"],
+            "generation": human_job["generation"], "pendingKey": worker.repair_key(human_job),
+            "authorityStatus": "human-only", "grantID": None, "status": "pending",
+        }
+        human_pending = worker.PENDING / f"{worker.repair_key(human_job)}.json"
+        worker.atomic_json(human_pending, human_job)
+        worker.atomic_json(worker.REQUESTS, worker.load_requests() + [human_request])
+        worker.migrate_generic_requests_to_internal()
+        worker.reconsider_legacy_pending()
+        preserved_human = next(value for value in worker.load_requests() if value.get("id") == human_request["id"])
+        assert preserved_human["status"] == "pending"
+        assert preserved_human["authorityStatus"] == "human-only"
+        assert worker.load_json(human_pending, {})["repairPolicyVersion"] == 9
+
+        # No adversarial model field can manufacture scanner-owned human facts.
+        # Each representative internal failure must stay queued at Sol and must
+        # not add a request, even when the model uses card-looking field names.
+        model_only_results = [
+            {"status": "failed"},
+            {"status": "needs_approval"},
+            {"status": "needs_approval", "hard_stop": {"reason": "model says stop", "human_action": "click"}},
+            {"status": "needs_approval", "decision_impact": "overrides_decision"},
+            {"status": "needs_approval", "requested_action": {"kind": "command", "description": "run", "risk": "none", "command": ["/usr/bin/touch", str(root / "never-touch")]}},
+            {"status": "repaired", "changed_paths": []},
+            {"status": "needs_approval", "proposed_paths": [str(root / "missing-scope")]},
+            {"status": "needs_approval", "decision_impact": "uncertain", "verification": ["failed"]},
+            {"status": "needs_approval", "needsIvo": True, "fix": {"kind": "launch"}},
+            {"status": "needs_approval", "totally_unknown": {"nested": {"NEEDS_IVO ": True, "FiX": {"kind": "launch"}}}},
+        ]
+        request_count = len(worker.load_requests())
+        for index, model_result in enumerate(model_only_results):
+            adversarial_job = {
+                **migration_job, "id": f"Background Job:Adversarial Model {index}",
+                "fingerprint": f"adversarial-{index}", "generation": f"{index:x}" * 32,
+                "repairPolicyVersion": 9,
+                "item": {**migration_job["item"], "id": f"Background Job:Adversarial Model {index}",
+                         "name": f"Adversarial Model {index}", "needsIvo": False, "fix": None},
+            }
+            adversarial_path = worker.QUEUE / f"adversarial-{index}.json"
+            worker.atomic_json(adversarial_path, adversarial_job)
+            worker.create_request(adversarial_path, adversarial_job, model_result, "model-only failure", "must stay silent")
+            saved_adversarial = worker.load_json(adversarial_path, {})
+            assert saved_adversarial["lunaExhausted"] is True
+            assert "internalAgentTier" not in saved_adversarial
+        assert len(worker.load_requests()) == request_count
+        assert not (root / "never-touch").exists()
+
+        # Every explicit non-generic authority category survives both migration
+        # passes unchanged.
+        protected_ids = []
+        for index, authority_status in enumerate(("auth-exact", "human-only", "exact-candidate")):
+            protected_job = {
+                **human_job, "id": f"Background Job:Protected {authority_status}",
+                "fingerprint": f"protected-{authority_status}", "generation": f"p{index}" * 16,
+            }
+            protected_request = {
+                **human_request, "id": f"protected-request-{authority_status}",
+                "incidentID": protected_job["id"], "fingerprint": protected_job["fingerprint"],
+                "generation": protected_job["generation"], "pendingKey": worker.repair_key(protected_job),
+                "authorityStatus": authority_status, "status": "pending",
+            }
+            worker.atomic_json(worker.PENDING / f"{worker.repair_key(protected_job)}.json", protected_job)
+            worker.atomic_json(worker.REQUESTS, worker.load_requests() + [protected_request])
+            protected_ids.append(protected_request["id"])
+        worker.migrate_generic_requests_to_internal()
+        worker.reconsider_legacy_pending()
+        protected_saved = {value.get("id"): value for value in worker.load_requests()}
+        for request_id in protected_ids:
+            assert protected_saved[request_id]["status"] == "pending"
+
+        # A live lease fences migration. The request is marked for a later pass,
+        # while the grant and its lease remain byte-for-byte authoritative.
+        leased_job = {
+            **migration_job, "id": "Background Job:Leased Migration",
+            "fingerprint": "leased-migration", "generation": "7" * 32,
+        }
+        leased_descriptor = worker.issue_authority_descriptor(leased_job)
+        leased_request = {
+            **migration_request, "id": "leased-migration-request",
+            "incidentID": leased_job["id"], "fingerprint": leased_job["fingerprint"],
+            "generation": leased_job["generation"], "pendingKey": worker.repair_key(leased_job),
+            "authorityDescriptor": leased_descriptor,
+            "authorityDigest": worker.issue_authority_digest(leased_descriptor),
+            "status": "approved", "authorityStatus": "active", "grantID": None,
+        }
+        leased_grant = worker.create_issue_authority_grant(leased_job, leased_request)
+        leased_request["grantID"] = leased_grant["grantID"]
+        leased_job["issueAuthorityGrant"] = leased_grant
+        leased_pending = worker.PENDING / f"{worker.repair_key(leased_job)}.json"
+        worker.atomic_json(leased_pending, leased_job)
+        worker.atomic_json(worker.REQUESTS, worker.load_requests() + [leased_request])
+        lease_path = worker.REPAIR_LEASES / f"{leased_grant['grantID']}.json"
+        lease = {
+            "fencingToken": "test-fence", "ownerPID": os.getpid(),
+            "expiresAt": worker.iso(worker.now() + worker.dt.timedelta(minutes=5)), "child": None,
+        }
+        worker.atomic_json(lease_path, lease)
+        worker.migrate_generic_requests_to_internal()
+        leased_saved = next(value for value in worker.load_requests() if value.get("id") == leased_request["id"])
+        assert leased_saved["migrateAfterAttempt"] is True
+        assert worker.load_issue_grants()[leased_grant["grantID"]]["status"] == "active"
+        assert worker.load_json(lease_path, {}) == lease
+        lease_path.unlink()
+
+        # Unknown is non-resolving, and an exhausted Luna attempt enters the
+        # one-day quiet health-poll interval without changing models after reload.
+        unknown_job = {**migration_job, "id": "Background Job:Unknown", "item": {
+            **migration_job["item"], "id": "Background Job:Unknown", "state": "fail",
+        }}
+        unknown_payload = {"items": [{**unknown_job["item"], "state": "unknown"}]}
+        assert not worker.target_healthy(unknown_payload, unknown_job)
+        quiet_path = worker.QUEUE / "quiet-luna.json"
+        quiet_job = {**unknown_job, "internalAgentTier": "sol", "solAttempts": 2, "attempts": 3}
+        worker.defer_job(quiet_path, quiet_job, "third Sol outcome without verified health")
+        quiet_saved = worker.load_json(quiet_path, {})
+        assert "internalAgentTier" not in quiet_saved
+        assert "solAttempts" not in quiet_saved
+        assert quiet_saved["lunaExhausted"] is True
+        assert (worker.parse_time(quiet_saved["nextAttemptAt"]) - worker.now()).total_seconds() > 23 * 3600
+        assert worker.repair_agent(worker.load_json(quiet_path, {})) == ("gpt-5.6-luna", "max")
 
         valid_decision = {"schemaVersion": 5, "requestID": approval_request["id"], "incidentID": approval_request["incidentID"],
                           "generation": approval_request["generation"], "revision": approval_request["revision"],

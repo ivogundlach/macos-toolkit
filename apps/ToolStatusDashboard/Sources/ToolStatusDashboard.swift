@@ -746,18 +746,7 @@ final class DashboardModel: ObservableObject {
         self.liveAuth = liveAuth
 
         DispatchQueue.global(qos: .userInitiated).async {
-            guard let scanLock = Self.acquireScanLock() else {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
-                    self.isLoading = false
-                    self.refresh(liveAuth: liveAuth)
-                }
-                return
-            }
             let result = Self.runScanner(liveAuth: liveAuth)
-            if case .success(let payload) = result {
-                Self.saveCache(Self.withScannerHeartbeat(payload))
-            }
-            Self.releaseScanLock(scanLock)
             DispatchQueue.main.async {
                 self.isLoading = false
                 switch result {
@@ -803,6 +792,9 @@ final class DashboardModel: ObservableObject {
         repairRequestTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
             self?.loadRepairRequests()
             self?.loadActivity()
+            if self?.isLoading == false {
+                self?.loadCache(markCached: false)
+            }
         }
         #endif
     }
@@ -892,6 +884,15 @@ final class DashboardModel: ObservableObject {
         #endif
     }
 
+    func approveRepairRequest(_ request: RepairRequest) {
+        if request.authorityStatus == "auth-exact",
+           let incidentID = request.incidentID,
+           let item = items.first(where: { $0.id == incidentID && $0.fix?.kind == "launch" }) {
+            launchLogin(for: item)
+        }
+        submitRepairDecision(request, decision: "approve")
+    }
+
     // MARK: Fix runner
 
     // A "launch" fix is an interactive login the app can't complete for the user
@@ -917,6 +918,10 @@ final class DashboardModel: ObservableObject {
         body += "echo \(shellQuoted("— \(fix.label) —"))\n"
         body += command.map(shellQuoted).joined(separator: " ") + "\n"
         body += "status=$?\n"
+        body += "if [ \"$status\" -eq 0 ]; then\n"
+        body += "  \(shellQuoted(NSHomeDirectory() + "/.local/bin/tool-status-background-scan")) --live-auth\n"
+        body += "  status=$?\n"
+        body += "fi\n"
         body += "if [ \"$status\" -ne 0 ]; then\n"
         body += "  echo\n"
         body += "  echo \"The sign-in command failed (exit $status).\"\n"
@@ -950,7 +955,7 @@ final class DashboardModel: ObservableObject {
             try process.run()
             fixResults[item.id] = FixResult(
                 status: .success,
-                output: "Opened the sign-in in Terminal — finish logging in there, then hit Refresh."
+                output: "Opened the sign-in in Terminal. The dashboard will verify and refresh automatically when it finishes."
             )
         } catch {
             fixResults[item.id] = FixResult(status: .failure, output: "Could not open the login: \(error.localizedDescription)")
@@ -1182,10 +1187,10 @@ final class DashboardModel: ObservableObject {
     // MARK: Scanner
 
     private static func scannerURL() -> URL {
-        if let bundled = Bundle.main.url(forResource: "tool-status-scan", withExtension: "py") {
+        if let bundled = Bundle.main.url(forResource: "tool-status-background-scan", withExtension: "py") {
             return bundled
         }
-        return URL(fileURLWithPath: "/Users/YOUR_USERNAME/Projects/ToolStatusDashboard/scripts/tool-status-scan.py")
+        return URL(fileURLWithPath: "/Users/YOUR_USERNAME/Projects/ToolStatusDashboard/scripts/tool-status-background-scan.py")
     }
 
     private static func runScanner(liveAuth: Bool) -> Result<ScanPayload, Error> {
@@ -1208,7 +1213,6 @@ final class DashboardModel: ObservableObject {
         // forever -- which is exactly how the background scan came to be starved
         // for hours and every card in the window froze. The payload crossed 64KB
         // in normal use, so this is the default path, not an edge case.
-        var outData = Data()
         var errData = Data()
         let drain = DispatchGroup()
         let outQueue = DispatchQueue(label: "dev.ivogundlach.toolstatus.scanner.stdout")
@@ -1217,7 +1221,7 @@ final class DashboardModel: ObservableObject {
         do {
             try process.run()
             outQueue.async(group: drain) {
-                outData = output.fileHandleForReading.readDataToEndOfFile()
+                _ = output.fileHandleForReading.readDataToEndOfFile()
             }
             errQueue.async(group: drain) {
                 errData = error.fileHandleForReading.readDataToEndOfFile()
@@ -1239,12 +1243,16 @@ final class DashboardModel: ObservableObject {
             }
             process.waitUntilExit()
             _ = drain.wait(timeout: .now() + 10)
-            let data = outData
             if process.terminationStatus != 0 {
                 let err = String(data: errData, encoding: .utf8) ?? ""
                 throw NSError(domain: "ToolStatusDashboard", code: Int(process.terminationStatus), userInfo: [NSLocalizedDescriptionKey: err.isEmpty ? "Scanner failed." : err])
             }
-            let payload = try JSONDecoder().decode(ScanPayload.self, from: data)
+            guard let payload = Self.loadCachedPayload() else {
+                throw NSError(
+                    domain: "ToolStatusDashboard", code: -2,
+                    userInfo: [NSLocalizedDescriptionKey: "The authoritative scan finished without publishing a readable dashboard result."]
+                )
+            }
             return .success(payload)
         } catch {
             return .failure(error)
@@ -2530,14 +2538,14 @@ struct RepairApprovalCard: View {
 
                 HStack(spacing: 8) {
                     if isAwaitingApproval {
-                        Button(request.authorityStatus == "auth-exact" ? "Approve sign-in" : "Approve full repair") { model.submitRepairDecision(request, decision: "approve") }
+                        Button("Approve") { model.approveRepairRequest(request) }
                             .buttonStyle(.borderedProminent)
                             .tint(Status.color("ok"))
                     }
-                    Button("Send feedback") { model.submitRepairDecision(request, decision: "thoughts") }
+                    Button("Add Thoughts") { model.submitRepairDecision(request, decision: "thoughts") }
                         .buttonStyle(.bordered)
                         .disabled(!hasThoughts)
-                    Button(isActiveAuthority ? "Stop repair" : "Not now") {
+                    Button(isActiveAuthority ? "Stop Repair" : "Dismiss") {
                         model.submitRepairDecision(request, decision: isActiveAuthority ? "stop" : "dismiss")
                     }
                         .buttonStyle(.bordered)

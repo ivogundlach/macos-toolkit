@@ -10,29 +10,12 @@ export PATH="$HOME/.local/bin:/opt/homebrew/bin:$PATH"
 export NO_COLOR=1
 export TERM=dumb
 
-# Prefer the opposite reviewer from the active driver. An explicit override is
-# useful for deterministic reruns and for shells outside either agent.
-REVIEWER="${PEER_REVIEWER:-}"
-if [ -z "$REVIEWER" ]; then
-  if [ -n "${CLAUDECODE:-}" ]; then
-    REVIEWER="codex"
-  elif [ -n "${CODEX_THREAD_ID:-}" ]; then
-    REVIEWER="claude"
-  else
-    REVIEWER="codex"
-  fi
-fi
+REVIEWER="codex"
+MAX_PACKET_BYTES=262144
+REVIEW_TIMEOUT_SECONDS=120
 
-case "$REVIEWER" in
-  codex|claude) ;;
-  *)
-    echo "PEER_REVIEWER must be 'codex' or 'claude', got: $REVIEWER" >&2
-    exit 2
-    ;;
-esac
-
-if ! command -v "$REVIEWER" >/dev/null 2>&1; then
-  echo "Reviewer '$REVIEWER' not found. Use the builder's internal red-team fallback." >&2
+if ! command -v codex >/dev/null 2>&1; then
+  echo "Codex reviewer not found. Disclose this failure and use the internal-review fallback." >&2
   exit 127
 fi
 
@@ -50,6 +33,11 @@ fi
 if [ ! -f "$TARGET" ]; then
   echo "Target file not found: $TARGET" >&2
   exit 2
+fi
+TARGET_BYTES="$(stat -f%z "$TARGET")"
+if [ "$TARGET_BYTES" -gt "$MAX_PACKET_BYTES" ]; then
+  echo "Review packet is ${TARGET_BYTES} bytes; limit is ${MAX_PACKET_BYTES}. Disclose this failure and use the internal-review fallback." >&2
+  exit 6
 fi
 TARGET_DIR="$(cd "$(dirname "$TARGET")" && pwd -P)"
 TARGET_NAME="$(basename "$TARGET")"
@@ -131,23 +119,15 @@ EOF
 esac
 
 run_reviewer() {
-  if [ "$REVIEWER" = "claude" ]; then
-    (cd "$TMP_WORKDIR" && env -u ANTHROPIC_API_KEY claude-high-fidelity \
-      --safe-mode \
-      --tools "" \
-      --permission-mode plan \
-      --no-session-persistence \
-      --output-format text \
-      <"$TMP_PROMPT" >"$TMP_OUT" 2>"$TMP_ERR")
-    return
-  fi
-
-  (cd "$TMP_WORKDIR" && codex exec \
+  (cd "$TMP_WORKDIR" && perl -e 'alarm shift; exec @ARGV' "$REVIEW_TIMEOUT_SECONDS" codex exec \
     --model gpt-5.6-sol \
     -c model_reasoning_effort="medium" \
+      -c sandbox_workspace_write.network_access=false \
       --sandbox read-only \
       --ephemeral \
       --skip-git-repo-check \
+      --ignore-rules \
+      --ignore-user-config \
       --color never \
       --output-last-message "$TMP_OUT" \
       - <"$TMP_PROMPT" >/dev/null 2>"$TMP_ERR")

@@ -1,0 +1,6 @@
+#!/bin/bash
+set -euo pipefail
+
+export PATH="/Users/YOUR_USERNAME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+export MEMORY_ROOT="${MEMORY_ROOT:-/Users/YOUR_USERNAME/.memory}"
+exec /usr/bin/python3 "/Users/YOUR_USERNAME/.memory/tools/weekly_system_improvement.py" "$@"

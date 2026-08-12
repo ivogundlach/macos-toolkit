@@ -64,7 +64,6 @@ bounded() {
 log "start"
 # Cheapest check first, and the only one that reads what actually enters context
 # every session: a dangling index line keeps asserting facts from a deleted note.
-bounded  60 index     python3 "$TOOLS/memory-index-check"
 bounded 180 coverage  python3 "$TOOLS/memory-coverage-drift"
 bounded 300 restore   "$TOOLS/memory-backup-verify"
 # Before retrieval, for the same reason coverage runs before retrieval: a recall

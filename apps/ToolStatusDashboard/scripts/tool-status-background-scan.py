@@ -34,11 +34,13 @@ LOCK = STATE / "scan.lock"
 # 300s refresh timer. A single non-blocking attempt here lets the two 300s
 # cycles phase-lock, starving this scan for hours while the app is open, so
 # wait out a GUI scan rather than skipping the whole cycle.
-LOCK_WAIT_SECONDS = max(0, int(os.environ.get("TOOL_STATUS_LOCK_WAIT_SECONDS", "90")))
+LOCK_WAIT_SECONDS = max(0, int(os.environ.get("TOOL_STATUS_LOCK_WAIT_SECONDS", "300")))
+SCAN_TIMEOUT_SECONDS = max(150, int(os.environ.get("TOOL_STATUS_SCAN_TIMEOUT_SECONDS", "300")))
 INCIDENTS_LOCK = STATE / "incidents.lock"
 INCIDENTS = STATE / "incidents.json"
 OUTBOX = STATE / "notification-outbox.json"
 REPAIR_QUEUE = STATE / "repair-queue"
+REPAIR_PENDING = STATE / "repair-pending"
 REQUESTS = STATE / "repair-requests.json"
 DECISIONS = STATE / "decision-log.jsonl"
 HEARTBEAT = STATE / "last-success.json"
@@ -179,13 +181,16 @@ def scanner_failure_item(cause: str, headline: str = "The background status scan
     }
 
 
-def scan() -> tuple[dict[str, Any], bool, int]:
+def scan(live_auth: bool = False) -> tuple[dict[str, Any], bool, int]:
     previous = load_json(CACHE, {})
     try:
+        command = ["/usr/bin/python3", str(SCANNER)]
+        if live_auth:
+            command.append("--live-auth")
         result = subprocess.run(
-            ["/usr/bin/python3", str(SCANNER)], text=True,
+            command, text=True,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            timeout=120, check=False,
+            timeout=SCAN_TIMEOUT_SECONDS, check=False,
         )
         if result.returncode != 0:
             raise RuntimeError(result.stderr.strip() or f"scanner exited {result.returncode}")
@@ -201,6 +206,7 @@ def scan() -> tuple[dict[str, Any], bool, int]:
         return payload, True, 0
     except (OSError, RuntimeError, ValueError, json.JSONDecodeError, subprocess.TimeoutExpired) as error:
         message = f"{type(error).__name__}: {error}"
+        print(message, file=sys.stderr)
         items = list(previous.get("items", [])) if isinstance(previous, dict) else []
         items = [item for item in items if item.get("id") != "Background Job:Tool Status Dashboard Scanner"]
         items.append(scanner_failure_item(message))
@@ -312,18 +318,48 @@ def standing_request(item_id: str) -> dict[str, Any] | None:
     return None
 
 
+def latest_request(item_id: str, fingerprint: str) -> dict[str, Any] | None:
+    data = load_json(REQUESTS, [])
+    if not isinstance(data, list):
+        return None
+    matching = [
+        request for request in data
+        if isinstance(request, dict)
+        and request.get("incidentID") == item_id
+        and request.get("fingerprint") == fingerprint
+    ]
+    return matching[-1] if matching else None
+
+
+def active_repair_exists(item_id: str, fingerprint: str) -> bool:
+    if standing_request(item_id) is not None:
+        return True
+    key = hashlib.sha256(f"{item_id}|{fingerprint}".encode("utf-8")).hexdigest()[:24]
+    return (REPAIR_QUEUE / f"{key}.json").exists() or (REPAIR_PENDING / f"{key}.json").exists()
+
+
 def should_queue_repair(item: dict[str, Any], incident: dict[str, Any]) -> tuple[bool, str]:
     current = now()
     deadline = parse_time(item.get("deadlineAt"))
     if deadline and current >= deadline and not incident.get("deadlineNotified", False):
         return True, "deadline-crossed"
-    # Never hand the model an incident it provably cannot fix. A credential problem
-    # is resolved only by Ivo signing in: owner_scope() already withholds ALL write
-    # authority from Auth incidents, so Terra could at best burn a full run to
-    # restate "needs login". These route straight to a one-click sign-in card.
+    # Interactive authentication and other genuinely user-owned actions skip Luna,
+    # but still enter the repair queue so the worker can create exactly one plain-
+    # English action card and push. A future deadline keeps a pre-term login warning
+    # visible in the app without notifying early.
     fix = item.get("fix") or {}
     if fix.get("kind") == "launch" or item.get("category") == "Auth" or item.get("needsIvo"):
-        return False, "needs-ivo-not-agent"
+        if deadline and current < deadline:
+            return False, "human-action-awaiting-deadline"
+        policy = item.get("notificationPolicy") or "consecutive"
+        threshold_met = policy == "immediate" or int(incident.get("failureCount", 0)) >= 2
+        if not threshold_met:
+            return False, "waiting-for-second-human-action-failure"
+        if standing_request(str(item.get("id") or "")) is not None:
+            return False, "human-action-already-waiting"
+        if incident.get("repairQueued", False):
+            return False, "human-action-already-queued"
+        return True, "human-action-required"
     standing = standing_request(str(item.get("id") or ""))
     if standing is not None:
         # Nothing new to learn while Ivo already has an open card for this incident.
@@ -391,6 +427,20 @@ def update_incidents(
             existing["healthyCount"] = 0
             existing["lastSeenAt"] = iso()
 
+        if existing.get("repairQueued") and not active_repair_exists(item_id, fingerprint):
+            prior_request = latest_request(item_id, fingerprint)
+            if (prior_request or {}).get("status") not in {"denied", "dismissed", "revoked"}:
+                # A terminal repair record must not strand a still-failing item.
+                # Live and deferred work always has a queue/pending file; if both
+                # disappeared, the old flag is orphaned and Luna must try again.
+                existing["repairQueued"] = False
+                existing["notified"] = False
+                existing.pop("repairQueuedAt", None)
+                append_decision({
+                    "at": iso(), "tool": item_id, "fingerprint": fingerprint,
+                    "decision": "orphaned-repair-flag-cleared",
+                })
+
         if not initialized:
             decision = "baseline-seeded"
             send = False
@@ -457,6 +507,11 @@ def enqueue_repairs(queued: list[dict[str, Any]], state: dict[str, Any]) -> None
 
 
 def main() -> int:
+    arguments = sys.argv[1:]
+    if any(value != "--live-auth" for value in arguments):
+        print("usage: tool-status-background-scan.py [--live-auth]", file=sys.stderr)
+        return 2
+    live_auth = "--live-auth" in arguments
     lock = acquire_lock()
     if lock is None:
         # Exiting 0 here made contention indistinguishable from a healthy run:
@@ -490,7 +545,7 @@ def main() -> int:
             incidents_lock.close()
         return 1
     try:
-        payload, scan_ok, scan_rc = scan()
+        payload, scan_ok, scan_rc = scan(live_auth=live_auth)
         atomic_json(CACHE, payload)
         if scan_ok:
             reconcile_registry(payload)

@@ -29,7 +29,7 @@ Create Apple Mail drafts silently in the background. Preserve sender account, re
 - Use `local-read-connectors` to find Apple Mail metadata and read message bodies when needed.
 - Use `ivo-writer` for the human-facing reply text.
 - Use `computer-use` only for the explicitly authorized foreground attachment fallback below.
-- Use `codex-claude-sync-check` only after this skill itself is edited and mirrors need verification.
+- Use `codex-mirror-sync-check` only after this skill itself is edited and mirrors need verification.
 
 ## Hard Rules
 

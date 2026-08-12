@@ -174,7 +174,7 @@ _agy_models_ok() {     # fast (~3s), inference-free liveness check: rc0 + lists 
   ( sleep 40; kill -KILL "$p" 2>/dev/null ) >/dev/null 2>&1 & w=$!
   wait "$p" 2>/dev/null; rc=$?
   kill "$w" 2>/dev/null; wait "$w" 2>/dev/null
-  { [ "$rc" -eq 0 ] && grep -qiE 'Gemini|Claude|GPT' "$out" 2>/dev/null; }; rc=$?
+  { [ "$rc" -eq 0 ] && grep -qiE 'Gemini|GPT' "$out" 2>/dev/null; }; rc=$?
   rm -f "$out"; return "$rc"
 }
 agy_auth_state() {

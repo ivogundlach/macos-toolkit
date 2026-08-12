@@ -1,0 +1,4 @@
+interface:
+  display_name: "Codex Mirror Sync Check"
+  short_description: "Verify Codex skill mirror sync"
+  default_prompt: "Use $codex-mirror-sync-check to verify my Codex skill mirrors are in sync."

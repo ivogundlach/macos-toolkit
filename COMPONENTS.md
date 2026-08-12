@@ -2,6 +2,7 @@
 
 Each entry names public source only; install verification remains component-specific.
 
+- **AutoInstallDMG** (`autoinstalldmg`) — macOS application; source at `apps/AutoInstallDMG`; MIT; provenance: Ivo/agent-authored for Ivo; source export checked; clean-machine install not verified.
 - **CanIAffordThis** (`caniaffordthis`) — macOS application; source at `apps/CanIAffordThis`; MIT; provenance: Ivo/agent-authored for Ivo; source export checked; clean-machine install not verified.
 - **codex** (`codex`) — macOS automation; source at `automation/codex`; MIT plus component notices; provenance: component-original; source export checked; clean-machine install not verified.
 - **CopyPathFinder** (`copypathfinder`) — macOS application; source at `apps/CopyPathFinder`; MIT; provenance: Ivo/agent-authored for Ivo; source export checked; clean-machine install not verified.
@@ -22,6 +23,7 @@ Each entry names public source only; install verification remains component-spec
 - **NutrientTracker** (`nutrienttracker`) — macOS application; source at `apps/NutrientTracker`; MIT; provenance: Ivo/agent-authored for Ivo; source export checked; clean-machine install not verified.
 - **quit-on-close** (`quit-on-close`) — macOS automation; source at `automation/quit-on-close`; MIT; provenance: Ivo/agent-authored for Ivo; source export checked; clean-machine install not verified.
 - **raycast** (`raycast`) — macOS automation; source at `automation/raycast`; MIT; provenance: Ivo/agent-authored for Ivo; source export checked; clean-machine install not verified.
+- **SchoolDashboard** (`schooldashboard`) — macOS application; source at `apps/SchoolDashboard`; MIT; provenance: Ivo/agent-authored for Ivo; source export checked; clean-machine install not verified.
 - **smart-wake** (`smart-wake`) — macOS automation; source at `automation/smart-wake`; MIT; provenance: Ivo/agent-authored for Ivo; source export checked; clean-machine install not verified.
 - **ToolStatusDashboard** (`toolstatusdashboard`) — macOS application; source at `apps/ToolStatusDashboard`; MIT; provenance: Ivo/agent-authored for Ivo; source export checked; clean-machine install not verified.
 - **UsageQueue** (`usagequeue`) — macOS application; source at `apps/UsageQueue`; MIT; provenance: Ivo/agent-authored for Ivo; source export checked; clean-machine install not verified.
@@ -37,6 +39,8 @@ Policy exclusions are listed by path and reason; source contents and secret valu
 - `.gitignore` — unknown path.
 - `.gitleaksignore` — excluded file: .gitleaksignore.
 - `README.md` — unknown path.
+- `apps/AutoInstallDMG/resources/Assets.car` — compiled Apple asset catalog copied from the installed app; the reviewable AppleScript and worker source remain exportable, but generated binary resources are not public source.
+- `apps/AutoInstallDMG/resources/droplet.icns` — excluded suffix: .icns.
 - `apps/CanIAffordThis/public/favicon.svg` — excluded suffix: .svg.
 - `apps/CanIAffordThis/public/file.svg` — excluded suffix: .svg.
 - `apps/CanIAffordThis/public/globe.svg` — excluded suffix: .svg.
@@ -144,6 +148,19 @@ Policy exclusions are listed by path and reason; source contents and secret valu
 - `apps/School/sync/uahsync/semester.py` — excluded root: apps/School.
 - `apps/School/sync/uahsync/state.py` — excluded root: apps/School.
 - `apps/School/sync/uahsync/store.py` — excluded root: apps/School.
+- `apps/SchoolDashboard/Icon/AppIcon-1024.png` — excluded suffix: .png.
+- `apps/SchoolDashboard/Icon/AppIcon.icns` — excluded suffix: .icns.
+- `apps/SchoolDashboard/Icon/AppIcon.iconset/icon_128x128.png` — compiled bundle directory: AppIcon.iconset.
+- `apps/SchoolDashboard/Icon/AppIcon.iconset/icon_128x128@2x.png` — compiled bundle directory: AppIcon.iconset.
+- `apps/SchoolDashboard/Icon/AppIcon.iconset/icon_16x16.png` — compiled bundle directory: AppIcon.iconset.
+- `apps/SchoolDashboard/Icon/AppIcon.iconset/icon_16x16@2x.png` — compiled bundle directory: AppIcon.iconset.
+- `apps/SchoolDashboard/Icon/AppIcon.iconset/icon_256x256.png` — compiled bundle directory: AppIcon.iconset.
+- `apps/SchoolDashboard/Icon/AppIcon.iconset/icon_256x256@2x.png` — compiled bundle directory: AppIcon.iconset.
+- `apps/SchoolDashboard/Icon/AppIcon.iconset/icon_32x32.png` — compiled bundle directory: AppIcon.iconset.
+- `apps/SchoolDashboard/Icon/AppIcon.iconset/icon_32x32@2x.png` — compiled bundle directory: AppIcon.iconset.
+- `apps/SchoolDashboard/Icon/AppIcon.iconset/icon_512x512.png` — compiled bundle directory: AppIcon.iconset.
+- `apps/SchoolDashboard/Icon/AppIcon.iconset/icon_512x512@2x.png` — compiled bundle directory: AppIcon.iconset.
+- `apps/SchoolDashboard/Icon/AppIcon.svg` — excluded suffix: .svg.
 - `apps/ToolStatusDashboard/Icon/AppIcon-1024.png` — excluded suffix: .png.
 - `apps/ToolStatusDashboard/Icon/AppIcon.icns` — excluded suffix: .icns.
 - `apps/ToolStatusDashboard/Icon/AppIcon.iconset/icon_128x128.png` — compiled bundle directory: AppIcon.iconset.
@@ -227,11 +244,18 @@ Policy exclusions are listed by path and reason; source contents and secret valu
 - `automation/codex/skills/workflow skills/web-research/scripts/deep_report_selftest.py` — generated/private report or inventory.
 - `automation/codex/skills/workflow skills/web-research/scripts/render_deep_report.py` — generated/private report or inventory.
 - `automation/codex/skills/workflow skills/web-research/scripts/selftest.py` — excluded root: automation/codex/skills/workflow skills/web-research/scripts/selftest.py.
+- `automation/dormant-launch-agents/com.ivogundlach.claude-window-keeper.plist` — unknown path.
+- `automation/dormant-local-bin/claude-window-keeper` — unknown path.
 - `automation/local-bin/app-repo-bootstrap` — hardcodes the private per-app repository fleet's owner and archive remote.
 - `automation/local-bin/app-repo-lib.sh` — hardcodes the private per-app repository fleet's owner and archive remote.
 - `automation/local-bin/app-repo-sync` — hardcodes the private per-app repository fleet's owner and archive remote.
+- `automation/local-bin/backup-coverage-audit` — private backup-maintenance command with machine-specific archive and repository checks; excluded until Ivo explicitly chooses to publish it.
+- `automation/local-bin/env` — installer-generated local shell environment helper rather than an Ivo-authored portable command.
+- `automation/local-bin/env.fish` — installer-generated Fish shell environment helper rather than an Ivo-authored portable command.
+- `automation/local-bin/mail-assistant-app-build` — private local build and permission-maintenance command; excluded until Ivo explicitly chooses to publish it.
 - `automation/local-bin/personal-repo-sync` — private-only maintenance synchronizer with repository identity and external-write authority.
 - `automation/local-bin/public-toolkit-publish` — hardcodes the private archive's clone URL; publishing it would link the private repository, which the public README states this export does not do.
+- `automation/local-bin/signing-audit` — private machine signing and certificate audit command; excluded until Ivo explicitly chooses to publish it.
 - `automation/memory-tests/test_redaction.py` — intentionally synthetic secret fixtures are retained only in the private archive.
 - `automation/memory-tools/memory-secret-scan` — credential-named file.
 - `docs/COMPONENT_COVERAGE.md` — unknown path.

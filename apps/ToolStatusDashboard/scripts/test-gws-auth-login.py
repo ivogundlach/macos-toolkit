@@ -24,9 +24,8 @@ def executable(path: Path, content: str) -> Path:
     return path
 
 
-def run_helper(gws: Path, opener: Path, timeout: float = 2.0) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        [
+def run_helper(gws: Path, opener: Path, timeout: float = 2.0, reset: bool = False) -> subprocess.CompletedProcess[str]:
+    command = [
             "/usr/bin/python3",
             str(HELPER),
             "--gws-bin",
@@ -35,7 +34,11 @@ def run_helper(gws: Path, opener: Path, timeout: float = 2.0) -> subprocess.Comp
             str(opener),
             "--url-timeout",
             str(timeout),
-        ],
+        ]
+    if reset:
+        command.append("--reset-existing")
+    return subprocess.run(
+        command,
         text=True,
         capture_output=True,
         timeout=5,
@@ -72,6 +75,8 @@ def main() -> int:
             tmp / "good-gws",
             "#!/usr/bin/python3\n"
             "import sys\n"
+            "if sys.argv[1:4] == ['drive', 'about', 'get']:\n"
+            "    raise SystemExit(0)\n"
             f"assert sys.argv[1:] == ['auth', 'login', '--scopes', {expected!r}]\n"
             "print('Open this URL in your browser to authenticate:', flush=True)\n"
             "print('  https://accounts.google.com/o/oauth2/auth?test=1', flush=True)\n"
@@ -99,6 +104,33 @@ def main() -> int:
         assert opened.read_text(encoding="utf-8") == (
             "https://accounts.google.com/o/oauth2/auth?test=1"
         )
+
+        opened.unlink()
+        reset_log = tmp / "reset-log.txt"
+        reset_gws = executable(
+            tmp / "reset-gws",
+            "#!/usr/bin/python3\n"
+            "import os, sys\n"
+            "from pathlib import Path\n"
+            "log=Path(os.environ['RESET_LOG'])\n"
+            "with log.open('a', encoding='utf-8') as handle: handle.write(' '.join(sys.argv[1:]) + '\\n')\n"
+            "if sys.argv[1:3] == ['auth', 'logout']: raise SystemExit(0)\n"
+            "if sys.argv[1:4] == ['drive', 'about', 'get']: raise SystemExit(0)\n"
+            "print('https://accounts.google.com/o/oauth2/auth?reset=1', flush=True)\n",
+        )
+        reset = subprocess.run(
+            [
+                "/usr/bin/python3", str(HELPER), "--gws-bin", str(reset_gws),
+                "--open-bin", str(opener), "--url-timeout", "2", "--reset-existing",
+            ],
+            env={**env, "RESET_LOG": str(reset_log)}, text=True,
+            capture_output=True, timeout=5, check=False,
+        )
+        assert reset.returncode == 0, reset.stderr
+        reset_calls = reset_log.read_text(encoding="utf-8").splitlines()
+        assert reset_calls[0] == "auth logout"
+        assert reset_calls[1].startswith("auth login --scopes ")
+        assert reset_calls[2].startswith("drive about get --params ")
 
         opened.unlink()
         bad_gws = executable(

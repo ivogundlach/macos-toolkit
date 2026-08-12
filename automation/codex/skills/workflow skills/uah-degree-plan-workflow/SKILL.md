@@ -19,7 +19,7 @@ Maintain Ivo's UAH degree-plan artifacts without mixing locked facts, active dec
 
 - Use `web-research` only when current UAH policy, catalog, transfer, or CLEP information is needed and local files do not prove the answer.
 - Use `local-read-connectors` or `gws-gmail` only when Ivo asks about a UAH/Canvas email or when a planning claim depends on a message.
-- Use `codex-claude-sync-check` only after this skill itself is edited and mirrors need verification.
+- Use `codex-mirror-sync-check` only after this skill itself is edited and mirrors need verification.
 
 ## Source Order
 

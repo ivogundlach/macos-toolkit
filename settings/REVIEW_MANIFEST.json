@@ -5,7 +5,7 @@
       "policyDecision": "approved field-level settings export",
       "redactionCount": 0,
       "reviewStatus": "approved",
-      "sha256": "48862b0188923be2229f40693122d0d7fe49c17601636773d41d4cd18bc3226e"
+      "sha256": "b22fb7e9dc64d9525145810b5788a54f1a832e0fc4f638d87dc83b32a44e464d"
     },
     {
       "path": "settings/dock.json",

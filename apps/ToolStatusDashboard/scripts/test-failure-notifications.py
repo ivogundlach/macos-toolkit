@@ -14,6 +14,7 @@ from pathlib import Path
 
 
 RUNNER = Path(__file__).with_name("tool-status-background-scan.py")
+SCANNER = Path(__file__).with_name("tool-status-scan.py")
 NOTIFIER = Path(__file__).with_name("tool-status-notify.py")
 
 
@@ -52,6 +53,29 @@ def main() -> int:
         runner = importlib.util.module_from_spec(spec)
         assert spec.loader is not None
         spec.loader.exec_module(runner)
+        scanner_spec = importlib.util.spec_from_file_location("tool_status_scanner_test", SCANNER)
+        scanner_module = importlib.util.module_from_spec(scanner_spec)
+        assert scanner_spec.loader is not None
+        scanner_spec.loader.exec_module(scanner_module)
+        scanner_module.HOME = root
+        production_status = root / ".local/state/personal-repo-sync/status.tsv"
+        auth_status = root / ".local/state/personal-repo-sync/auth-check/status.tsv"
+        production_status.parent.mkdir(parents=True)
+        auth_status.parent.mkdir(parents=True)
+        production_status.write_text(
+            "last_attempt_at\t100\nlast_result\tfailed\nlast_detail\tGitHub authentication unavailable\n",
+            encoding="utf-8",
+        )
+        auth_status.write_text(
+            "last_attempt_at\t200\nlast_result\tverified\nlast_detail\tprivate remote verified\n",
+            encoding="utf-8",
+        )
+        assert scanner_module.personal_repo_auth_failure_recovered()
+        auth_status.write_text(
+            "last_attempt_at\t50\nlast_result\tverified\n",
+            encoding="utf-8",
+        )
+        assert not scanner_module.personal_repo_auth_failure_recovered()
         counter_one = item("Counter Tool", "fail", "counter.failed")
         counter_two = json.loads(json.dumps(counter_one))
         counter_one["causeParams"] = {"label": "com.ivo.counter", "failure_count": "1"}
@@ -76,12 +100,21 @@ def main() -> int:
         assert not notification_log.exists(), "a repairable failure pushed before Terra ran"
         run([alpha], "2026-07-13T00:10:00+00:00")
         assert len(queued()) == 1, "continuous incident duplicated its repair job"
-        # Simulate the worker consuming a same-cause job after Ivo denied it.
-        # repairQueued remains on the incident, so later scans stay silent.
+        # A consumed job with no live queue/pending file and no user stop must
+        # requeue instead of stranding the incident forever.
         for path in (state / "repair-queue").glob("*.json"):
             path.unlink()
         run([alpha], "2026-07-13T00:12:00+00:00")
-        assert queued() == [], "a denied continuous incident was re-queued"
+        assert len(queued()) == 1, "an orphaned repair flag stranded a continuous incident"
+        # An explicit Dismiss/Deny remains binding for this exact fingerprint.
+        for path in (state / "repair-queue").glob("*.json"):
+            path.unlink()
+        (state / "repair-requests.json").write_text(json.dumps([{
+            "id": "repair-alpha", "incidentID": alpha["id"],
+            "fingerprint": runner.item_fingerprint(alpha), "status": "denied",
+        }]), encoding="utf-8")
+        run([alpha], "2026-07-13T00:13:00+00:00")
+        assert queued() == [], "an explicitly denied continuous incident was re-queued"
 
         healthy_alpha = item("Alpha Tool", "ok", "alpha.ok")
         run([healthy_alpha], "2026-07-13T00:15:00+00:00")
@@ -92,6 +125,7 @@ def main() -> int:
         assert "Background Job:Alpha Tool" not in incidents["tools"]
         run([alpha], "2026-07-13T01:10:00+00:00")
         assert len(queued()) == 1, "new failure after recovery was not queued"
+        (state / "repair-requests.json").unlink(missing_ok=True)
 
         beta = item("Beta Tool", "warn", "beta.offline", "consecutive")
         run([alpha, beta], "2026-07-13T01:15:00+00:00")
@@ -160,32 +194,31 @@ def main() -> int:
             "a resolved card blocked a genuine re-escalation"
         requests_file.unlink(missing_ok=True)
 
-        # TOKEN WASTE: an incident whose only remedy is Ivo's own credentials must
-        # never reach the model. owner_scope() gives Auth incidents zero write
-        # authority, so a Terra run could only restate "needs login" at full cost.
+        # HUMAN ACTION: authentication enters the queue exactly once so the worker
+        # can create a scanner-owned action card without invoking Luna.
         for path in (state / "repair-queue").glob("*.json"):
             path.unlink()
         auth_item = item("GWS live login", "fail", "auth.expired", "immediate")
         auth_item["category"] = "Auth"
         run([auth_item], "2026-07-13T11:00:00+00:00")
         run([auth_item], "2026-07-13T11:01:00+00:00")
-        assert not any(job["item"]["name"] == "GWS live login" for job in queued()), \
-            "an Auth incident was queued to the model, which can never supply credentials"
+        assert any(job["item"]["name"] == "GWS live login" for job in queued()), \
+            "an Auth incident did not reach the deterministic human-action lane"
         # Same for any tool whose fix is an interactive sign-in, whatever its category.
         launch_item = item("Some Service", "fail", "service.auth_required", "immediate")
         launch_item["fix"] = {"label": "Log in", "kind": "launch", "command": ["x", "login"], "note": ""}
         run([launch_item], "2026-07-13T11:02:00+00:00")
         run([launch_item], "2026-07-13T11:03:00+00:00")
-        assert not any(job["item"]["name"] == "Some Service" for job in queued()), \
-            "a sign-in-only incident was queued to the model"
+        assert any(job["item"]["name"] == "Some Service" for job in queued()), \
+            "a scanner-owned sign-in action did not reach the human-action lane"
         # ...but a normal repairable failure still escalates.
         normal = item("Normal Tool", "fail", "normal.broken", "immediate")
         run([normal], "2026-07-13T11:04:00+00:00")
         assert any(job["item"]["name"] == "Normal Tool" for job in queued()), \
             "the needs-Ivo gate blocked a genuinely repairable incident"
 
-        # INVARIANT: every Auth failure path must be one-click. Auth incidents are
-        # gated away from the model (it can never supply Ivo's credentials), so one
+        # INVARIANT: every Auth failure path must be one-click. The worker turns
+        # queued Auth incidents into deterministic cards without model diagnosis, so one
         # that offered only copy-paste guidance would leave him stuck with nothing
         # working on it. All Auth records live in auth_records(); the sole accepted
         # exception is a missing binary (command_record), where no safe one-click

@@ -1,15 +1,14 @@
 #!/usr/bin/env bash
 # codex-sync-verify — check that the generated mirrors match canonical ~/.codex.
 #
-# Canonical write path is ~/.codex (AGENTS.md + skills/). codex-to-claude-sync
-# one-way mirrors it into the Claude / Gemini / Antigravity copies. This script
+# Canonical write path is ~/.codex (AGENTS.md + skills/). codex-mirror-sync
+# one-way mirrors it into the Gemini / Antigravity / OpenCode copies. This script
 # reports whether each mirror is in sync. It REPLICATES the sync transforms so it
 # never false-positives:
 #   * AGENTS.md mirrors = a sync-header line + the de-headered source (emit_with_header).
-#     Targets: ~/.claude/CLAUDE.md (Claude Code user memory), ~/.gemini/config/AGENTS.md,
-#     ~/.antigravitycli/AGENTS.md. A missing Claude mirror means Claude Code is running
-#     with no global rules at all, so it is drift, not a nice-to-have.
-#   * User-root AGENTS.md and CLAUDE.md must be absent to prevent duplicate loading.
+#     Targets: ~/.gemini/config/AGENTS.md, ~/.antigravitycli/AGENTS.md,
+#     and ~/.config/opencode/AGENTS.md.
+#   * User-root AGENTS.md must be absent to prevent duplicate loading.
 #   * skill mirrors     = rsync of each SKILL.md folder, category folders flattened
 #                         to a sanitized <skill-name>, same excludes as the sync.
 # Read-only: never writes. Exit 0 = all in sync, 1 = drift found.
@@ -24,9 +23,41 @@ VERBOSE=0
 
 HOME_DIR="${HOME:-/Users/YOUR_USERNAME}"
 CODEX_HOME="${CODEX_HOME:-$HOME_DIR/.codex}"
-CLAUDE_HOME="${CLAUDE_HOME:-$HOME_DIR/.claude}"
 GEMINI_HOME="${GEMINI_HOME:-$HOME_DIR/.gemini}"
 ANTIGRAVITY_CLI_HOME="${ANTIGRAVITY_CLI_HOME:-$HOME_DIR/.antigravitycli}"
+OPENCODE_HOME="${OPENCODE_HOME:-${XDG_CONFIG_HOME:-$HOME_DIR/.config}/opencode}"
+OPENCODE_MANAGED_MARKER=".codex-sync-managed"
+
+normalize_opencode_home() {
+  local input="$1"
+  local parent base resolved_parent
+  if [[ -L "$input" ]]; then
+    printf 'codex-sync-verify: refusing symlink OPENCODE_HOME: %s\n' "$input" >&2
+    return 1
+  fi
+  if [[ -e "$input" ]]; then
+    realpath "$input"
+    return
+  fi
+  parent="$(dirname "$input")"
+  base="$(basename "$input")"
+  if [[ "$base" == "." || "$base" == ".." || ! -d "$parent" ]]; then
+    printf 'codex-sync-verify: cannot safely resolve OPENCODE_HOME: %s\n' "$input" >&2
+    return 1
+  fi
+  resolved_parent="$(cd "$parent" && pwd -P)"
+  printf '%s/%s\n' "$resolved_parent" "$base"
+}
+
+case "$OPENCODE_HOME" in
+  /*) ;;
+  *) printf 'codex-sync-verify: unsafe OPENCODE_HOME (must be absolute): %s\n' "$OPENCODE_HOME" >&2; exit 1 ;;
+esac
+OPENCODE_HOME="$(normalize_opencode_home "$OPENCODE_HOME")"
+if [[ "$OPENCODE_HOME" == "/" || "$OPENCODE_HOME" == "$HOME_DIR" || "$OPENCODE_HOME" == "${XDG_CONFIG_HOME:-$HOME_DIR/.config}" ]]; then
+  printf 'codex-sync-verify: unsafe OPENCODE_HOME: %s\n' "$OPENCODE_HOME" >&2
+  exit 1
+fi
 
 drift=0
 
@@ -34,13 +65,13 @@ note()  { printf '  %s\n' "$*"; }
 ok()    { printf 'OK    %s\n' "$*"; }
 bad()   { printf 'DRIFT %s\n' "$*"; drift=1; }
 
-# --- AGENTS.md -> 2 mirrors; user-root duplicates must stay absent ----------
+# --- AGENTS.md mirrors; user-root duplicates must stay absent ---------------
 # Replicate emit_with_header: header line + blank, then source minus any prior
 # sync-header lines, with leading blank lines trimmed.
 emit_with_header() {
   local source="$1"
-  printf '<!-- Synced from %s by codex-to-claude-sync. Edit the Codex source, not this generated file. -->\n\n' "$source"
-  grep -v 'by codex-to-claude-sync\. Edit the Codex source' "$source" | sed '/./,$!d'
+  printf '<!-- Synced from %s by codex-mirror-sync. Edit the Codex source, not this generated file. -->\n\n' "$source"
+  grep -v 'by codex-mirror-sync\. Edit the Codex source' "$source" | sed '/./,$!d'
 }
 
 AGENTS_SRC="$CODEX_HOME/AGENTS.md"
@@ -49,7 +80,6 @@ if [[ -f "$AGENTS_SRC" ]]; then
   expected="$(mktemp)"; trap 'rm -f "$expected"' EXIT
   emit_with_header "$AGENTS_SRC" > "$expected"
   for legacy_target in \
-    "$HOME_DIR/CLAUDE.md" \
     "$HOME_DIR/AGENTS.md" ; do
     if [[ -e "$legacy_target" || -L "$legacy_target" ]]; then
       bad "$legacy_target (must be absent; user-root instructions duplicate global guidance)"
@@ -58,9 +88,9 @@ if [[ -f "$AGENTS_SRC" ]]; then
     fi
   done
   for target in \
-    "$CLAUDE_HOME/CLAUDE.md" \
     "$GEMINI_HOME/config/AGENTS.md" \
-    "$ANTIGRAVITY_CLI_HOME/AGENTS.md" ; do
+    "$ANTIGRAVITY_CLI_HOME/AGENTS.md" \
+    "$OPENCODE_HOME/AGENTS.md" ; do
     if [[ ! -e "$target" ]]; then
       bad "$target (missing)"
     elif cmp -s "$expected" "$target"; then
@@ -74,7 +104,7 @@ else
   bad "$AGENTS_SRC (canonical source missing)"
 fi
 
-# --- skills/**/SKILL.md -> 2 mirror trees -----------------------------------
+# --- skills/**/SKILL.md -> mirror trees -------------------------------------
 skill_name_for_path() {  # mirrors the sync's sanitizer
   basename "$(dirname "$1")" \
     | tr '[:upper:]' '[:lower:]' \
@@ -89,10 +119,14 @@ if [[ -d "$SKILLS_ROOT" ]]; then
     [[ -n "$name" ]] || continue
     src_dir="$(dirname "$skill_md")"
     for target_dir in \
-      "$CLAUDE_HOME/skills/$name" \
-      "$GEMINI_HOME/config/plugins/custom-skills/skills/$name" ; do
+      "$GEMINI_HOME/config/plugins/custom-skills/skills/$name" \
+      "$OPENCODE_HOME/skills/$name" ; do
       if [[ ! -d "$target_dir" ]]; then
         bad "skill '$name' -> $target_dir (missing)"
+        continue
+      fi
+      if [[ "$target_dir" == "$OPENCODE_HOME/skills/"* ]] && [[ ! -f "$target_dir/$OPENCODE_MANAGED_MARKER" ]]; then
+        bad "skill '$name' -> $target_dir (missing sync ownership marker)"
         continue
       fi
       # Dry-run, checksum-based, same excludes/--delete as the sync. Keep only
@@ -100,6 +134,7 @@ if [[ -d "$SKILLS_ROOT" ]]; then
       items="$(rsync -a -ni -c --delete \
                  --exclude '.DS_Store' --exclude '.memory' \
                  --exclude '.git' --exclude '.mcp.json' \
+                 --exclude "$OPENCODE_MANAGED_MARKER" \
                  "$src_dir/" "$target_dir/" 2>/dev/null \
                | grep -vE '^\.' || true)"
       if [[ -z "$items" ]]; then
@@ -110,6 +145,21 @@ if [[ -d "$SKILLS_ROOT" ]]; then
       fi
     done
   done < <(find "$SKILLS_ROOT" -type f -name SKILL.md -print0 | sort -z)
+
+  expected_names="$(mktemp)"
+  while IFS= read -r -d '' skill_md; do
+    skill_name_for_path "$skill_md"
+    printf '\n'
+  done < <(find "$SKILLS_ROOT" -type f -name SKILL.md -print0 | sort -z) | sort -u > "$expected_names"
+  for target_dir in "$OPENCODE_HOME/skills"/*/; do
+    [[ -d "$target_dir" ]] || continue
+    [[ -f "$target_dir/$OPENCODE_MANAGED_MARKER" ]] || continue
+    name="$(basename "$target_dir")"
+    if ! grep -qxF -- "$name" "$expected_names"; then
+      bad "orphan generated OpenCode skill '$name'"
+    fi
+  done
+  rm -f "$expected_names"
 else
   bad "$SKILLS_ROOT (canonical skills dir missing)"
 fi
@@ -118,7 +168,7 @@ echo
 if [[ "$drift" == 0 ]]; then
   echo "codex-sync-verify: all mirrors in sync"
 else
-  echo "codex-sync-verify: DRIFT found — run codex-to-claude-sync to propagate"
+  echo "codex-sync-verify: DRIFT found — run codex-mirror-sync to propagate"
   echo "  (if a mirror was hand-edited, that edit will be overwritten — move it to ~/.codex first)"
 fi
 exit "$drift"

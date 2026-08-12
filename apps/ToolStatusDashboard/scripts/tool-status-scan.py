@@ -21,6 +21,7 @@ import json
 import os
 import plistlib
 import re
+import signal
 import shlex
 import shutil
 import socket
@@ -33,6 +34,7 @@ from typing import Any
 
 
 HOME = Path.home()
+RESOURCE_DIR = Path(__file__).resolve().parent
 PATH = f"{HOME}/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 STATE = Path(os.environ.get("TOOL_STATUS_STATE", HOME / ".local/state/tool-status-dashboard"))
 REGISTRY = STATE / "registry.json"
@@ -53,9 +55,9 @@ REGISTRY_EXEC_TIMEOUT_BUDGET_SECONDS = 90
 # Binaries already covered by a built-in record. Registry entries and discovery
 # must not duplicate them.
 BUILTIN_BINARIES = {
-    "agy", "gws", "codex", "claude", "gemini", "notebooklm", "apfel",
+    "agy", "gws", "gcloud", "codex", "gemini", "notebooklm", "apfel",
     "last30days", "semantic-corpus", "school-mail", "studykit", "swift-smoke",
-    "codex-sync-verify", "codex-to-claude-sync", "semantic-index-status",
+    "codex-sync-verify", "codex-mirror-sync", "semantic-index-status",
     "apple-mail-draft-runner", "quit-on-close",
     "smart-wake", "uv", "uvx",
 }
@@ -73,19 +75,50 @@ def output_text(value: str | bytes | None) -> str:
     return value
 
 
+def terminate_probe(process: subprocess.Popen[Any]) -> None:
+    """End only the timed-out probe's own process group, including descendants."""
+    if process.poll() is not None:
+        return
+    try:
+        os.killpg(process.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    try:
+        process.wait(timeout=2)
+    except subprocess.TimeoutExpired:
+        pass
+    # The direct child may exit on TERM while a descendant ignores it and keeps
+    # the capture pipe open. Kill any remainder in this attributable group.
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        return
+    try:
+        process.wait(timeout=2)
+    except subprocess.TimeoutExpired:
+        pass
+
+
 def run(cmd: list[str], timeout: int = 8) -> tuple[int, str]:
     try:
-        result = subprocess.run(
+        process = subprocess.Popen(
             cmd,
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            timeout=timeout,
             stdin=subprocess.DEVNULL,
             env={**os.environ, "PATH": PATH},
+            start_new_session=True,
         )
-        text = (output_text(result.stdout) + "\n" + output_text(result.stderr)).strip()
-        return result.returncode, text
+        try:
+            stdout, stderr = process.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired as exc:
+            terminate_probe(process)
+            stdout, stderr = process.communicate()
+            text = (output_text(exc.stdout or stdout) + "\n" + output_text(exc.stderr or stderr)).strip()
+            return 124, f"Timed out after {timeout}s. {text}".strip()
+        text = (output_text(stdout) + "\n" + output_text(stderr)).strip()
+        return int(process.returncode or 0), text
     except subprocess.TimeoutExpired as exc:
         # Python can expose partial timeout output as bytes even with text=True.
         text = (output_text(exc.stdout) + "\n" + output_text(exc.stderr)).strip()
@@ -94,6 +127,33 @@ def run(cmd: list[str], timeout: int = 8) -> tuple[int, str]:
         return 127, "Command not found"
     except Exception as exc:
         return 1, f"{type(exc).__name__}: {exc}"
+
+
+def run_status(cmd: list[str], timeout: int = 8) -> tuple[int, bool]:
+    """Run a probe without ever retaining its output.
+
+    Authentication commands can print account names or access tokens. Health
+    needs only the return code and whether a non-empty value existed, so stdout
+    and stderr stay transient and never enter the cache or logs.
+    """
+    try:
+        process = subprocess.Popen(
+            cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL,
+            env={**os.environ, "PATH": PATH},
+            start_new_session=True,
+        )
+        try:
+            stdout, _ = process.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            terminate_probe(process)
+            process.communicate()
+            return 124, False
+        return int(process.returncode or 0), bool((stdout or b"").strip())
+    except subprocess.TimeoutExpired:
+        return 124, False
+    except OSError:
+        return 127, False
 
 
 def clip(text: str, limit: int = 420) -> str:
@@ -294,23 +354,70 @@ def auth_records(rows: list[dict[str, Any]], live_auth: bool) -> None:
                 ],
                 timeout=25,
             )
+            missing_scope = rc != 0 and "insufficient authentication scopes" in out.casefold()
             state = "ok" if rc == 0 else ("fail" if rc == 2 else "warn")
             rec(
                 rows,
                 "GWS live login",
                 "Auth",
                 state,
-                "Logged in" if rc == 0 else f"Probe failed rc={rc}",
-                clip(out),
+                ("Logged in" if rc == 0 else
+                 "Google connected, but Drive permission is missing" if missing_scope else
+                 "Google Workspace could not verify the saved sign-in"),
+                ("The saved Google authorization is valid, but the token selected by GWS does not include the Drive access this check needs."
+                 if missing_scope else clip(out)),
                 "gws drive files list pageSize=1",
                 fix=fix_launch(
-                    "Log in to Google",
-                    "Opens Google sign-in in your browser. Finish it, then Refresh.",
-                    gws_login_command,
+                    "Reconnect Google Workspace" if missing_scope else "Log in to Google",
+                    ("Clears only the unusable Google Workspace CLI authorization, opens Google permission review, verifies the required access, and refreshes the dashboard."
+                     if missing_scope else
+                     "Opens Google permission review in your browser, verifies the required access, and refreshes the dashboard when it finishes."),
+                    [*gws_login_command, "--reset-existing"] if missing_scope else gws_login_command,
                 ) if rc != 0 else None,
+                cause_code="auth.permission_missing" if missing_scope else ("auth.session_expired" if rc != 0 else None),
+                notification_policy="immediate",
+                needs_ivo=rc != 0,
             )
         else:
             rec(rows, "GWS live login", "Auth", "unknown", "Live auth not probed")
+
+    gcloud_path = command_record(rows, "Google Cloud CLI", "gcloud", ["gcloud", "--version"], "Auth")
+    if gcloud_path:
+        if live_auth:
+            rc, has_account = run_status([
+                "gcloud", "auth", "list", "--filter=status:ACTIVE", "--format=value(account)",
+            ], timeout=15)
+            ready = rc == 0 and has_account
+            rec(
+                rows, "Google Cloud user credentials", "Auth", "ok" if ready else "warn",
+                "Configured" if ready else "No active Google Cloud account is configured",
+                "The check reads local credential metadata only; it does not mint or refresh a token.",
+                "gcloud auth list (output discarded)",
+                fix=None if ready else fix_launch(
+                    "Log in to Google Cloud",
+                    "Opens Google Cloud sign-in. The dashboard verifies the local account configuration afterward.",
+                    ["gcloud", "auth", "login"],
+                ),
+                cause_code=None if ready else "auth.session_expired",
+                notification_policy="immediate", needs_ivo=not ready,
+            )
+        else:
+            rec(rows, "Google Cloud user credentials", "Auth", "unknown", "Live auth not probed")
+        adc = HOME / ".config/gcloud/application_default_credentials.json"
+        adc_ready = adc.is_file() and adc.stat().st_size > 0
+        rec(
+            rows, "Google Cloud application credentials", "Auth", "ok" if adc_ready else "warn",
+            "Configured" if adc_ready else "Application credentials are not configured",
+            "The check verifies only that the protected local credential record exists; it never reads or displays its secret values.",
+            str(adc),
+            fix=None if adc_ready else fix_launch(
+                "Set up Google Cloud application access",
+                "Opens Google Cloud application sign-in and refreshes the dashboard afterward.",
+                ["gcloud", "auth", "application-default", "login"],
+            ),
+            cause_code=None if adc_ready else "auth.credentials_missing",
+            notification_policy="immediate", needs_ivo=not adc_ready,
+        )
 
     command_record(rows, "Codex CLI", "codex", ["codex", "--version"], "Auth")
     codex_auth = (HOME / ".codex" / "auth.json").exists()
@@ -327,15 +434,6 @@ def auth_records(rows: list[dict[str, Any]], live_auth: bool) -> None:
         ),
     )
 
-    command_record(rows, "Claude Code CLI", "claude", ["claude", "--version"], "Auth")
-    rec(
-        rows,
-        "Claude local config",
-        "Auth",
-        "ok" if (HOME / ".claude" / "settings.json").exists() else "unknown",
-        "Config present" if (HOME / ".claude" / "settings.json").exists() else "No config found",
-        "~/.claude/settings.json",
-    )
 
     command_record(rows, "Gemini CLI", "gemini", ["gemini", "--version"], "Auth")
     rec(
@@ -402,7 +500,7 @@ def cli_records(rows: list[dict[str, Any]]) -> None:
         ("studykit", "studykit"),
         ("swift-smoke", "swift-smoke"),
         ("codex-sync-verify", "codex-sync-verify"),
-        ("codex-to-claude-sync", "codex-to-claude-sync"),
+        ("codex-mirror-sync", "codex-mirror-sync"),
         ("semantic-index-status", "semantic-index-status"),
         ("apple-mail-draft-runner", "apple-mail-draft-runner"),
         ("quit-on-close", "quit-on-close"),
@@ -647,6 +745,111 @@ def _tsv_result_verified(text: str) -> bool:
     return False
 
 
+def _tsv_result_ok(text: str) -> bool:
+    for line in text.splitlines():
+        key, _, value = line.partition("\t")
+        if key == "last_result":
+            return value.strip() == "ok"
+    return False
+
+
+def _tsv_result_failed(text: str) -> bool:
+    # Only an explicit "failed" counts. These jobs also write "deferred" (offline,
+    # nothing changed) and "partial", neither of which is a failure, and treating
+    # them as one would produce exactly the false alarms this dashboard exists to
+    # avoid.
+    for line in text.splitlines():
+        key, _, value = line.partition("\t")
+        if key == "last_result":
+            return value.strip() == "failed"
+    return False
+
+
+def personal_repo_auth_failure_recovered() -> bool:
+    """A newer exact remote auth-check supersedes only the matching stale auth failure."""
+    production = HOME / ".local/state/personal-repo-sync/status.tsv"
+    auth_check = HOME / ".local/state/personal-repo-sync/auth-check/status.tsv"
+    try:
+        production_fields = dict(
+            line.split("\t", 1) for line in production.read_text(encoding="utf-8").splitlines()
+            if "\t" in line
+        )
+        auth_fields = dict(
+            line.split("\t", 1) for line in auth_check.read_text(encoding="utf-8").splitlines()
+            if "\t" in line
+        )
+        return bool(
+            production_fields.get("last_result") == "failed"
+            and "authentication unavailable" in production_fields.get("last_detail", "").casefold()
+            and auth_fields.get("last_result") == "verified"
+            and int(auth_fields.get("last_attempt_at", "0")) > int(production_fields.get("last_attempt_at", "0"))
+        )
+    except (OSError, ValueError, TypeError):
+        return False
+
+
+def _json_overall_rc_failed(text: str) -> bool:
+    try:
+        value = json.loads(text).get("overall_rc")
+    except (json.JSONDecodeError, AttributeError):
+        return False
+    return value is not None and str(value) != "0"
+
+
+# The mirror image of SELF_REPORTED_STATUS. That map is deliberately one-way: it
+# can only rescue a job from a launchd exit code that no longer reflects reality.
+# Nothing did the opposite, so a job that recorded its OWN failure while exiting 0
+# to launchd stayed green forever. personal-repo-sync -- the Personal-Repo source
+# archive -- sat in that state on 2026-08-09: its status file read
+# "failed / snapshot attempt failed with code 23" from 03:11, and no incident, no
+# repair request and no notification was ever raised. The backup was down and this
+# dashboard was clean. A job's own verdict must be able to condemn it, not only
+# absolve it.
+SELF_REPORTED_FAILURE: dict[str, tuple[Path, Any]] = {
+    "com.ivogundlach.memory.semantic-index": (
+        HOME / ".memory" / "semantic-index-status.json", _json_overall_rc_failed),
+    "com.ivogundlach.personal-repo-sync": (
+        HOME / ".local/state/personal-repo-sync/status.tsv", _tsv_result_failed),
+    "com.ivogundlach.app-repo-sync": (
+        HOME / ".local/state/app-repo-sync/status.tsv", _tsv_result_failed),
+}
+
+
+def self_reported_failure(label: str) -> tuple[bool, str]:
+    """True when the job's own authoritative record says its last run failed.
+
+    No staleness window is applied on purpose: these jobs overwrite their status on
+    every run, so a record still reading "failed" means the most recent run failed,
+    however long ago that was.
+    """
+    entry = SELF_REPORTED_FAILURE.get(label)
+    if entry is None:
+        return False, ""
+    status_path, failed = entry
+    if not status_path.exists():
+        return False, ""
+    try:
+        if failed(status_path.read_text(encoding="utf-8")):
+            if label == "com.ivogundlach.personal-repo-sync" and personal_repo_auth_failure_recovered():
+                return False, ""
+            return True, f"the job recorded its own failure in {status_path}"
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        pass
+    return False, ""
+
+
+def app_repo_sync_waiting_for_active_work() -> bool:
+    status = HOME / ".local/state/app-repo-sync/status.tsv"
+    try:
+        fields = dict(
+            line.split("\t", 1) for line in status.read_text(encoding="utf-8").splitlines()
+            if "\t" in line
+        )
+    except OSError:
+        return False
+    return fields.get("last_result") == "partial" and "unsaved work" in fields.get("last_detail", "").casefold()
+
+
 # launchd's LastExitStatus is a fact about launchd's own last invocation, and it
 # never changes when the job is run by hand or by another path. A job fixed and
 # re-run successfully at 02:08 therefore keeps reporting the 16:30 failure until
@@ -661,6 +864,8 @@ SELF_REPORTED_STATUS: dict[str, tuple[Path, Any]] = {
         HOME / ".memory" / "semantic-index-status.json", _json_rc_ok),
     "com.ivogundlach.personal-repo-sync": (
         HOME / ".local/state/personal-repo-sync/status.tsv", _tsv_result_verified),
+    "com.ivogundlach.app-repo-sync": (
+        HOME / ".local/state/app-repo-sync/status.tsv", _tsv_result_ok),
 }
 
 
@@ -722,6 +927,12 @@ def newer_success_status(label: str, data: dict[str, Any]) -> tuple[bool, str]:
 
 def launch_agent_records(rows: list[dict[str, Any]]) -> None:
     agents_dir = HOME / "Library" / "LaunchAgents"
+    disabled_labels: set[str] = set()
+    disabled_rc, disabled_output = run(
+        ["launchctl", "print-disabled", f"gui/{os.getuid()}"], timeout=8,
+    )
+    if disabled_rc == 0:
+        disabled_labels = set(re.findall(r'"([^"]+)"\s*=>\s*disabled', disabled_output))
     for plist_path in sorted(agents_dir.glob("*.plist")):
         try:
             data = plistlib.loads(plist_path.read_bytes())
@@ -762,13 +973,25 @@ def launch_agent_records(rows: list[dict[str, Any]]) -> None:
         args = data.get("ProgramArguments") or []
         executable = Path(program or (args[0] if args else ""))
         exists = executable.exists() if str(executable) else False
+        protected_control_agent = any(
+            str(value).startswith((str(HOME / ".memory"), str(HOME / ".codex")))
+            for value in ([program] if program else []) + list(args)
+        )
+        has_automatic_trigger = any(
+            bool(data.get(key)) for key in (
+                "RunAtLoad", "KeepAlive", "StartInterval", "StartCalendarInterval",
+                "WatchPaths", "QueueDirectories", "Sockets", "MachServices",
+            )
+        )
         job = launchctl_job(label)
         running = bool(job and job.get("state") == "running")
         last_exit = job.get("last exit code") if job else None
         superseded, superseded_evidence = newer_success_status(label, data)
         if not superseded:
             superseded, superseded_evidence = declared_port_serving(data)
+        self_reported_failed, self_reported_evidence = self_reported_failure(label)
         fix = None
+        self_healing = False
         if not exists:
             state = "fail"
             headline = "Executable path missing"
@@ -783,6 +1006,31 @@ def launch_agent_records(rows: list[dict[str, Any]]) -> None:
             headline = "Running"
             cause_code = None
             policy = "consecutive"
+        elif not has_automatic_trigger and job is None:
+            state = "ok"
+            headline = "Available for manual use"
+            cause_code = None
+            policy = "consecutive"
+        elif label in disabled_labels:
+            state = "fail"
+            headline = "Disabled"
+            cause_code = "launchagent.disabled"
+            policy = "immediate"
+            fix = fix_launch(
+                "Enable and load",
+                "Re-enables this background job and loads it for the current login session.",
+                [str(RESOURCE_DIR / "launchagent-enable.py"), str(label)],
+            )
+        elif job is None and protected_control_agent:
+            state = "warn"
+            headline = "Protected background job is not loaded"
+            cause_code = "launchagent.protected_not_loaded"
+            policy = "consecutive"
+            fix = fix_launch(
+                "Approve and load protected job",
+                "Loads this scheduled job, which can change memory or agent control files. Tool Dashboard will not start it without your approval.",
+                [str(RESOURCE_DIR / "launchagent-enable.py"), str(label)],
+            )
         elif job is None:
             state = "fail"
             headline = "Not loaded"
@@ -793,6 +1041,16 @@ def launch_agent_records(rows: list[dict[str, Any]]) -> None:
                 ["launchctl", "bootstrap", f"gui/{os.getuid()}", str(plist_path)],
                 "Loads the agent for this login session.",
             )
+        elif self_reported_failed:
+            state = "fail"
+            headline = "Last run failed (reported by the job itself)"
+            cause_code = "launchagent.self_reported_failure"
+            policy = "immediate"
+            fix = fix_manual(
+                "Review the failed run",
+                "This job recorded its own last run as failed even though the system "
+                "saw it exit cleanly. Check its log before running it again.",
+            )
         elif last_exit and last_exit not in {"0", "(never exited)"} and label in {
             "com.ivogundlach.memory.semantic-index"
         }:
@@ -800,15 +1058,32 @@ def launch_agent_records(rows: list[dict[str, Any]]) -> None:
             headline = "Loaded / health adapter active"
             cause_code = None
             policy = "consecutive"
+        elif (
+            label == "com.ivogundlach.app-repo-sync"
+            and last_exit and last_exit not in {"0", "(never exited)"}
+            and app_repo_sync_waiting_for_active_work()
+        ):
+            state = "warn"
+            headline = "Waiting for current project work to finish"
+            cause_code = "app_repo_sync.active_changes"
+            policy = "consecutive"
+            self_healing = True
         elif last_exit and last_exit not in {"0", "(never exited)"} and not superseded:
             state = "warn"
             headline = "Last run failed"
             cause_code = "launchagent.last_run_failed"
             policy = "consecutive"
-            fix = fix_auto(
-                "Run again",
-                ["launchctl", "kickstart", "-k", f"gui/{os.getuid()}/{label}"],
-                "Runs the existing agent again. Review its output paths below if it fails.",
+            fix = (
+                fix_manual(
+                    "Review archive run",
+                    "Review why the archive stopped before running it again; a rerun may commit and push project changes.",
+                )
+                if label == "com.ivogundlach.app-repo-sync" else
+                fix_auto(
+                    "Run again",
+                    ["launchctl", "kickstart", "-k", f"gui/{os.getuid()}/{label}"],
+                    "Runs the existing agent again. Review its output paths below if it fails.",
+                )
             )
         else:
             state = "ok"
@@ -837,6 +1112,7 @@ def launch_agent_records(rows: list[dict[str, Any]]) -> None:
             cause_code=cause_code,
             notification_policy=policy,
             cause_params={"label": label},
+            self_healing=self_healing,
         )
 
 
@@ -884,9 +1160,7 @@ def cron_records(rows: list[dict[str, Any]]) -> None:
         if command is None:
             continue
         tag = line.split("#", 1)[1].strip() if "#" in line else ""
-        if "claude-window-keeper" in line:
-            name = "Claude Window Keeper"
-        elif "codex-auto-reset --schedule" in line:
+        if "codex-auto-reset --schedule" in line:
             name = "Codex Auto Reset Scheduler"
         elif "codex-auto-reset" in line:
             target = re.search(r"codex-auto-reset-target:(\d+)", line)
@@ -911,78 +1185,6 @@ def cron_records(rows: list[dict[str, Any]]) -> None:
         else:
             rec(rows, name, "Background Job", "ok", "Scheduled", f"Line {index}: {line}", str(resolved))
 
-    keeper_cron_scheduled = any("claude-window-keeper" in line and not line.lstrip().startswith("#") for line in lines)
-    keeper_launch_job = launchctl_job("com.ivogundlach.claude-window-keeper")
-    keeper_scheduled = keeper_cron_scheduled or keeper_launch_job is not None
-    token = HOME / ".local/state/claude-window-keeper/claude-oauth-token"
-    token_ok = token.is_file() and token.stat().st_size > 0 and (token.stat().st_mode & 0o077) == 0
-    keeper_log = HOME / ".local/state/claude-window-keeper/keeper.log"
-    uses_keychain = keeper_launch_job is not None
-    auth_fix = fix_launch(
-        "Log in to Claude",
-        "Opens the Claude sign-in in Terminal. Finish it, then Refresh — the keeper picks it up on its next tick.",
-        ["claude", "auth", "login"],
-    )
-    if keeper_cron_scheduled and not uses_keychain and not token_ok:
-        rec(
-            rows, "Claude Window Keeper", "Background Job", "fail",
-            "Claude authentication is not configured",
-            "The scheduled keeper cannot start Claude usage windows. Its token file is missing, empty, or not private (required mode: 600).",
-            str(keeper_log),
-            fix=auth_fix,
-            cause_code="claude_keeper.auth_missing", notification_policy="immediate",
-            record_id="Background Job:Claude Window Keeper Authentication",
-        )
-    elif keeper_scheduled:
-        try:
-            latest = next(
-                (line for line in reversed(keeper_log.read_text(encoding="utf-8", errors="replace").splitlines())
-                 if " claude ping " in line),
-                "",
-            )
-            log_predates_auth = not uses_keychain and keeper_log.stat().st_mtime < token.stat().st_mtime
-        except OSError:
-            latest = ""
-            log_predates_auth = True
-        keeper_self_healing = False
-        if not latest or log_predates_auth:
-            state, headline = "warn", "Claude authentication is waiting for verification"
-            cause_code, policy, fix = "claude_keeper.unverified", "consecutive", auth_fix
-        elif " ping ok " in f" {latest} ":
-            state, headline = "ok", "Claude authentication and live ping are verified"
-            cause_code, policy, fix = None, "consecutive", None
-        elif any(marker in latest.lower() for marker in ("not logged in", "oauth", "authentication", "token")):
-            state, headline = "fail", "Claude rejected the keeper authentication"
-            cause_code, policy, fix = "claude_keeper.auth_rejected", "immediate", auth_fix
-        elif any(marker in latest.lower() for marker in (
-            "session limit", "usage limit", "weekly limit", "usage credits", "monthly spend",
-        )):
-            # Expected and self-healing: the account is out of usage. The keeper is
-            # healthy and correctly waits for the reset boundary; nothing to repair,
-            # so this is a green, non-escalating state (not a failure).
-            state, headline = "ok", "Claude usage temporarily exhausted; keeper resumes at reset"
-            cause_code, policy, fix = None, "consecutive", None
-        else:
-            # An unrecognized ping outcome: transient network/service, or a timeout
-            # (e.g. rc=142). Shown for awareness but self-healing -- the keeper retries
-            # every ten minutes and only genuine auth problems (handled above) are
-            # actionable, so this must never escalate to autonomous repair or a push.
-            state, headline = "warn", "Claude Window Keeper ping is retrying"
-            cause_code, policy, fix = "claude_keeper.ping_retrying", "consecutive", fix_manual(
-                "Inspect only if persistent",
-                "Usually transient (network, service, or a ping timeout); the keeper retries every ten minutes. Run `claude-window-keeper` once in Terminal only if this persists for hours.",
-                [str(HOME / ".local/bin/claude-window-keeper")],
-            )
-            keeper_self_healing = True
-        rec(
-            rows, "Claude Window Keeper", "Background Job", state, headline,
-            ("Aqua LaunchAgent using Claude's normal user-session authentication. " if uses_keychain else "Cron using a private long-lived token. ")
-            + (latest or "No Claude keeper result has been recorded since authentication was configured."),
-            str(keeper_log), fix=fix,
-            cause_code=cause_code, notification_policy=policy,
-            record_id="Background Job:Claude Window Keeper Authentication",
-            self_healing=keeper_self_healing,
-        )
 
 
 def semantic_index_records(rows: list[dict[str, Any]]) -> None:
@@ -1196,7 +1398,6 @@ def app_records(rows: list[dict[str, Any]]) -> None:
         ("Market.app", Path("/Applications") / "Market.app"),
         ("Gemini.app", Path("/Applications") / "Gemini.app"),
         ("JDownloader2.app", Path("/Applications") / "JDownloader2.app"),
-        ("Claude Code URL Handler.app", Path("/Applications") / "Claude Code URL Handler.app"),
     ]
     for name, path in apps:
         rec(
@@ -1429,7 +1630,8 @@ def deployed_source_drift_records(rows: list[dict[str, Any]]) -> None:
 REPAIR_LANE_WINDOW = 6
 REPAIR_LANE_MIN_RUNS = 3
 REPAIR_FINISH_EVENTS = {
-    "luna-live-finished", "luna-finished", "terra-finished", "decision-audit-finished",
+    "luna-live-finished", "luna-finished", "sol-finished", "terra-finished",
+    "decision-audit-finished",
 }
 
 
@@ -1466,7 +1668,7 @@ def repair_lane_health(rows: list[dict[str, Any]]) -> None:
                 elif event == "repair-schema-invalid":
                     details = entry.get("details")
                     schema_invalid = details if isinstance(details, list) else [str(details)]
-                elif event in {"luna-live-started", "terra-started", "luna-started"}:
+                elif event in {"luna-live-started", "terra-started", "luna-started", "sol-started"}:
                     # A fresh attempt clears a previously recorded schema refusal.
                     schema_invalid = []
     except OSError as exc:
@@ -1571,16 +1773,17 @@ def school_sync_records(rows: list[dict[str, Any]]) -> None:
     displays), not from the sync's exit status — a run that succeeds at nothing
     still exits 0.
     """
-    sync_dir = HOME / "School" / "sync"
+    sync_dir = HOME / "Projects" / "School" / "sync"
     if not sync_dir.is_dir():
         return  # the project is gone; nothing to report on
 
     snapshot_path = HOME / ".local/state/school-dashboard/dashboard.json"
+    canvas_login_helper = Path(__file__).with_name("canvas-auth-login.py")
     login_fix = fix_launch(
         "Log in to Canvas",
-        "Opens the Canvas login in a browser. Ivo has to sign in himself — it "
-        "restores grades and turned-in status for the School app and the sync.",
-        [str(sync_dir / ".venv/bin/python"), "setup_session.py"],
+        "Opens the Canvas login, rebuilds the School dashboard from the new session, "
+        "and refreshes this status automatically.",
+        ["/usr/bin/python3", str(canvas_login_helper), "--sync-dir", str(sync_dir)],
         cwd=str(sync_dir),
     )
 
@@ -1734,7 +1937,7 @@ def process_label(command: str) -> str:
         ("smart-wake.sh", "Smart Wake"),
         ("quit-on-close", "quit-on-close"),
         ("apple-mail-draft-runner", "Apple Mail Draft Runner"),
-        ("codex-to-claude-sync", "Codex to Claude Sync"),
+        ("codex-mirror-sync", "Codex Mirror Sync"),
         ("notebooklm", "NotebookLM"),
         ("/Projects/Market/", "Market"),
         ("/School/sync/", "School Sync"),
@@ -1860,15 +2063,34 @@ def operational_failure_records(rows: list[dict[str, Any]]) -> None:
         f"{key} [{value.get('phase', 'unknown-phase')}]: {value.get('reason', 'unknown failure')}"
         for key, value in mail_examples
     )
+    if manual_review_mail and not mail_state_error:
+        mail_headline = "A mail draft needs your review"
+        mail_explanation = (
+            "The assistant could not confirm whether the draft was saved. Check Apple Mail's Drafts folder "
+            "before it tries again, so it does not create a duplicate."
+        )
+        mail_fix_note = (
+            "Check Apple Mail's Drafts folder for the message. If the draft exists, keep it and dismiss this card. "
+            "If it does not, use Add Thoughts to record that before the repair is reconsidered."
+        )
+    else:
+        mail_headline = mail_state_error or (
+            f"{len(failed_mail)} mail draft failure{'s' if len(failed_mail) != 1 else ''} need attention"
+            if failed_mail else "No unresolved mail draft failures"
+        )
+        mail_explanation = clip(mail_state_error or mail_detail, 700)
+        mail_fix_note = (
+            "If the saved status is unreadable, restore it before retrying. Otherwise inspect Apple Mail Drafts "
+            "for an already-saved draft, correct the reported mail problem, and then retry the workflow."
+        )
     rec(
         rows, "Apple Mail Draft Assistant", "Background Job", mail_health,
-        mail_state_error
-        or (f"{len(failed_mail)} mail draft failure{'s' if len(failed_mail) != 1 else ''} need attention"
-            if failed_mail else "No unresolved mail draft failures"),
-        clip(mail_state_error or mail_detail, 700), str(mail_state_path),
+        mail_headline,
+        mail_explanation,
+        " | ".join(filter(None, [str(mail_state_path), clip(mail_detail, 700)])),
         fix=fix_manual(
             "Inspect failed drafts",
-            "If state is unreadable, repair or restore state.json before rerunning. For manual-review failures, inspect Apple Mail Drafts for an already-saved draft before changing state or rerunning. Otherwise correct the reported mail/thread problem, then rerun the workflow.",
+            mail_fix_note,
             [str(HOME / ".local/bin/apple-mail-draft-assistant"), "scan", "--json"],
         ) if mail_state_error or failed_mail else None,
         cause_code=("apple_mail_draft.state_unreadable" if mail_state_error else "apple_mail_draft.failed")

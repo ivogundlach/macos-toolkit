@@ -3,7 +3,7 @@ import AppKit
 import Combine
 import UniformTypeIdentifiers
 
-// UsageQueue — queue a message into an existing Claude Code / Codex thread;
+// UsageQueue — queue a message into an existing Codex thread;
 // the backend (~/.local/bin/queue-when-usage) delivers it the moment usage resets.
 
 let backendPath = NSString(string: "~/.local/bin/queue-when-usage").expandingTildeInPath
@@ -45,15 +45,6 @@ struct Job: Codable, Identifiable {
 let imageExtensions: Set<String> = ["png", "jpg", "jpeg", "gif", "webp"]
 
 // Custom model/effort choices, used only when the model source is "custom".
-let claudeModels: [(String, String)] = [
-    ("opus", "Opus 5"), ("haiku", "Haiku 4.5"),
-]
-let claudeOpusEfforts: [(String, String)] = [
-    ("low", "Low"), ("medium", "Medium"), ("high", "High"),
-]
-let claudeHaikuEfforts: [(String, String)] = [
-    ("low", "Low"), ("medium", "Medium"), ("high", "High"), ("max", "Max"),
-]
 let codexModels: [(String, String)] = [
     ("gpt-5.6-sol", "GPT-5.6 Sol"), ("gpt-5.6-luna", "GPT-5.6 Luna"),
 ]
@@ -63,10 +54,6 @@ let codexSolEfforts: [(String, String)] = [
 let codexLunaEfforts: [(String, String)] = [
     ("high", "High"), ("xhigh", "X-High"), ("max", "Max"),
 ]
-
-func claudeEfforts(for model: String) -> [(String, String)] {
-    model == "haiku" ? claudeHaikuEfforts : claudeOpusEfforts
-}
 
 func codexEfforts(for model: String) -> [(String, String)] {
     model == "gpt-5.6-luna" ? codexLunaEfforts : codexSolEfforts
@@ -80,15 +67,13 @@ func normalizedEffort(_ current: String, options: [(String, String)], preferred:
 }
 
 func shortModelName(_ m: String) -> String {
-    m.replacingOccurrences(of: "claude-", with: "")
-     .replacingOccurrences(of: "gpt-5.6-", with: "")
+    m.replacingOccurrences(of: "gpt-5.6-", with: "")
 }
 
 func modelChip(_ job: Job) -> String? {
     if job.inherit == true { return "same as chat" }
     guard let m = job.model else { return nil }
-    let short = m.replacingOccurrences(of: "claude-", with: "")
-        .replacingOccurrences(of: "gpt-5.6-", with: "")
+    let short = m.replacingOccurrences(of: "gpt-5.6-", with: "")
     if let e = job.effort { return "\(short) · \(e == "ultra" ? "Ultra mode" : e)" }
     return short
 }
@@ -108,18 +93,19 @@ func runBackend(_ args: [String]) -> (Int32, String) {
 
 final class AppModel: ObservableObject {
     /// The harness used for the currently selected row, or as the new-thread destination.
-    @Published var agent = "claude" { didSet { persist("agent", agent) } }
-    /// Backend lane for a new thread. T3 Code intentionally stays on Claude's
-    /// lane because the queue backend accepts only "claude" and "codex".
-    @Published var newThreadAgent = "claude" { didSet { persist("newThreadAgent", newThreadAgent) } }
-    /// User-facing new-thread choice: Claude, Codex, or T3 Code.
-    @Published var newThreadKind = "claude" { didSet { persist("newThreadKind", newThreadKind) } }
+    @Published var agent = "codex" { didSet { persist("agent", agent) } }
+    @Published var newThreadAgent = "codex" { didSet { persist("newThreadAgent", newThreadAgent) } }
+    @Published var newThreadKind = "codex" { didSet { persist("newThreadKind", newThreadKind) } }
     @Published var sessions: [SessionRow] = []
     @Published var loadingSessions = false
     @Published var selected = "last" {   // "last" | "new" | agent:session id
         didSet {
             // A brand-new thread has no chat setting to inherit.
-            if selected == "new" { modelMode = "custom" }
+            if selected == "new" {
+                modelMode = "custom"
+            } else if selected != oldValue {
+                modelMode = "chat"
+            }
         }
     }
     @Published var statusFilter = "active" { didSet { persist("statusFilter", statusFilter); if statusFilter != oldValue { loadSessions() } } }
@@ -148,16 +134,6 @@ final class AppModel: ObservableObject {
         addImages(found.reversed().map { URL(fileURLWithPath: $0) })
     }
     @Published var modelMode = "chat" { didSet { persist("modelMode", modelMode) } }
-    @Published var claudeModel = "opus" {
-        didSet {
-            persist("claudeModel", claudeModel)
-            let options = claudeEfforts(for: claudeModel)
-            if !options.contains(where: { $0.0 == claudeEffort }) {
-                claudeEffort = normalizedEffort(claudeEffort, options: options, preferred: "medium")
-            }
-        }
-    }
-    @Published var claudeEffort = "medium" { didSet { persist("claudeEffort", claudeEffort) } }
     @Published var codexModel = "gpt-5.6-sol" {
         didSet {
             persist("codexModel", codexModel)
@@ -185,25 +161,15 @@ final class AppModel: ObservableObject {
     init() {
         // Assignments inside init don't fire didSet, so no reload cascade here.
         let d = UserDefaults.standard
-        agent = d.string(forKey: "agent") ?? agent
-        let storedNewThreadAgent = d.string(forKey: "newThreadAgent") ?? agent
-        // Older builds briefly represented T3 as a destination value. Keep it
-        // user-facing while restoring the backend lane to Claude.
-        if storedNewThreadAgent == "t3" {
-            newThreadAgent = "claude"
-            newThreadKind = "t3"
-        } else {
-            newThreadAgent = storedNewThreadAgent
-            // A lane hidden since this preference was written must not restore
-            // as an invisible selection.
-            newThreadKind = visibleNewThreadKind(d.string(forKey: "newThreadKind") ?? newThreadKind)
-        }
+        agent = "codex"
+        newThreadAgent = "codex"
+        newThreadKind = "codex"
+        d.set(agent, forKey: "agent")
+        d.set(newThreadAgent, forKey: "newThreadAgent")
+        d.set(newThreadKind, forKey: "newThreadKind")
         statusFilter = d.string(forKey: "statusFilter") ?? statusFilter
-        let storedMode = d.string(forKey: "modelMode")
-        modelMode = storedMode == "custom" ? "custom" : "chat"
-        if storedMode != modelMode { d.set(modelMode, forKey: "modelMode") }
-        claudeModel = d.string(forKey: "claudeModel") ?? claudeModel
-        claudeEffort = d.string(forKey: "claudeEffort") ?? claudeEffort
+        modelMode = "chat"
+        if d.string(forKey: "modelMode") != modelMode { d.set(modelMode, forKey: "modelMode") }
         codexModel = d.string(forKey: "codexModel") ?? codexModel
         codexEffort = d.string(forKey: "codexEffort") ?? codexEffort
         codexUltra = (d.object(forKey: "codexUltra") as? Bool) ?? false
@@ -211,17 +177,6 @@ final class AppModel: ObservableObject {
         // A stored model that has since left the plan would still be passed to
         // the CLI and fail at delivery. Drop back to the default and rewrite the
         // stored value (didSet doesn't fire for assignments in init).
-        if !claudeModels.contains(where: { $0.0 == claudeModel }) {
-            claudeModel = "opus"
-            d.set(claudeModel, forKey: "claudeModel")
-        }
-        let validClaudeEffort = normalizedEffort(claudeEffort,
-                                                  options: claudeEfforts(for: claudeModel),
-                                                  preferred: "medium")
-        if validClaudeEffort != claudeEffort {
-            claudeEffort = validClaudeEffort
-            d.set(claudeEffort, forKey: "claudeEffort")
-        }
         if !codexModels.contains(where: { $0.0 == codexModel }) {
             codexModel = "gpt-5.6-sol"
             d.set(codexModel, forKey: "codexModel")
@@ -261,7 +216,6 @@ final class AppModel: ObservableObject {
     }
 
     var effectiveSource: String? {
-        if selected == "new" { return newThreadKind == "t3" ? "t3" : nil }
         return targetSession?.source
     }
 
@@ -280,8 +234,8 @@ final class AppModel: ObservableObject {
     }
 
     func selectNewThread(_ destination: String) {
-        newThreadKind = destination
-        newThreadAgent = destination == "t3" ? "claude" : destination
+        newThreadKind = "codex"
+        newThreadAgent = "codex"
         agent = newThreadAgent
         selected = "new"
     }
@@ -335,7 +289,7 @@ final class AppModel: ObservableObject {
         DispatchQueue.global().async {
             let (rc, out) = runBackend(["jobs", "--json"])
             guard rc == 0, let js = try? JSONDecoder().decode([Job].self, from: Data(out.utf8)) else { return }
-            DispatchQueue.main.async { self.jobs = js }
+            DispatchQueue.main.async { self.jobs = js.filter { $0.agent == "codex" } }
         }
     }
 
@@ -356,12 +310,8 @@ final class AppModel: ObservableObject {
             // own settings, so a picker change in the app is always honored.
             args.append("--inherit")
         } else {
-            m = destination == "claude" ? claudeModel : codexModel
-            if destination == "claude" {
-                e = claudeEffort
-            } else {
-                e = codexModel == "gpt-5.6-sol" && codexUltra ? "ultra" : codexEffort
-            }
+            m = codexModel
+            e = codexModel == "gpt-5.6-sol" && codexUltra ? "ultra" : codexEffort
         }
         if let m = m { args += ["--model", m] }
         if let e = e { args += ["--effort", e] }
@@ -403,43 +353,29 @@ final class AppModel: ObservableObject {
     }
 
     private func restore(_ job: Job) {
-        agent = job.agent
+        agent = "codex"
         if job.session == "new" {
-            newThreadAgent = job.agent
-            newThreadKind = visibleNewThreadKind(job.agent == "claude" ? "claude" : "codex")
+            newThreadAgent = "codex"
+            newThreadKind = "codex"
             selected = "new"
         } else {
             let restoredSession = sessions.first(where: { $0.agent == job.agent && $0.id == job.session })
             selected = restoredSession?.identity ?? job.session
-            if restoredSession?.source == "t3" {
-                newThreadKind = "t3"
-                newThreadAgent = "claude"
-            }
         }
         prompt = job.prompt
         images = (job.images ?? []).filter { FileManager.default.fileExists(atPath: $0) }
         modelMode = "custom"
-        if job.agent == "claude" {
-            if let m = job.model {
-                claudeModel = claudeModels.first(where: { m.contains($0.0) })?.0 ?? "opus"
-            }
-            if let e = job.effort { claudeEffort = e }
-            claudeEffort = normalizedEffort(claudeEffort,
-                                            options: claudeEfforts(for: claudeModel),
-                                            preferred: "medium")
+        if let m = job.model, codexModels.contains(where: { $0.0 == m }) { codexModel = m }
+        if job.effort == "ultra" && codexModel == "gpt-5.6-sol" {
+            codexUltra = true
+            codexEffort = "high"
         } else {
-            if let m = job.model, codexModels.contains(where: { $0.0 == m }) { codexModel = m }
-            if job.effort == "ultra" && codexModel == "gpt-5.6-sol" {
-                codexUltra = true
-                codexEffort = "high"
-            } else {
-                codexUltra = false
-                if let e = job.effort { codexEffort = e }
-            }
-            codexEffort = normalizedEffort(codexEffort,
-                                           options: codexEfforts(for: codexModel),
-                                           preferred: "high")
+            codexUltra = false
+            if let e = job.effort { codexEffort = e }
         }
+        codexEffort = normalizedEffort(codexEffort,
+                                       options: codexEfforts(for: codexModel),
+                                       preferred: "high")
     }
 
     func editAndResend(_ job: Job) {
@@ -476,30 +412,16 @@ final class AppModel: ObservableObject {
 
 // MARK: - Presentation helpers
 
-// Two colour axes, deliberately separate:
-//
-//   * lane  — which harness a thread is delivered to (Claude Code, Codex, T3 Code)
-//   * lab   — who makes the model that runs in it (Anthropic, OpenAI)
-//
-// They agree for the Claude and Codex lanes and diverge inside T3 Code, which
-// is a harness rather than a lab and so carries a neutral-leaning steel of its
-// own. Model names always follow the lab, never the lane.
-let anthropicColor = Color(red: 0.83, green: 0.45, blue: 0.32)  // Anthropic orange
 let openAIColor    = Color(red: 0.24, green: 0.55, blue: 0.52)  // OpenAI teal
-let t3LaneColor    = Color(red: 0.47, green: 0.57, blue: 0.69)  // T3 steel
 
 func agentColor(_ a: String, source: String? = nil) -> Color {
-    if source == "t3" || a == "t3" { return t3LaneColor }
-    return a == "claude" ? anthropicColor : openAIColor
+    openAIColor
 }
 
 /// The lab that makes `m`, by model id. Anything unrecognised falls back to the
 /// lane colour rather than inventing a third hue.
 func labColor(forModel m: String?, fallback: Color) -> Color {
     guard let m = m?.lowercased() else { return fallback }
-    if m.contains("claude") || m.contains("opus") || m.contains("haiku") || m.contains("sonnet") {
-        return anthropicColor
-    }
     if m.contains("gpt") || m.contains("sol") || m.contains("luna") || m.contains("codex") {
         return openAIColor
     }
@@ -508,40 +430,23 @@ func labColor(forModel m: String?, fallback: Color) -> Color {
 
 // MARK: - New-thread lanes
 //
-// Every lane below is fully supported by the queue backend. `hiddenNewThreadKinds`
-// only controls whether a lane is offered in the New thread picker; nothing about
-// queuing, resuming, or listing threads for a hidden lane is disabled, and rows
-// for hidden lanes still appear in the thread list when the backend returns them.
-//
-// "claude" is hidden because this install drives Claude exclusively through T3
-// Code, which is itself a Claude surface. Clear this set to restore the lane —
-// see README.md, "Hiding a lane".
 let allNewThreadChoices: [(String, String, String, String?)] = [
-    ("claude", "Claude Code", "sparkle", nil),
     ("codex", "Codex", "chevron.left.forwardslash.chevron.right", nil),
-    ("t3", "T3 Code", "circle.grid.2x2.fill", "t3"),
 ]
 
-let hiddenNewThreadKinds: Set<String> = ["claude"]
+let hiddenNewThreadKinds: Set<String> = []
 
 /// Maps a hidden lane onto the visible lane that shares its backend, so a
 /// restored job or a persisted preference never selects an invisible button.
-/// Both "claude" and "t3" queue to the same backend destination, so this
-/// changes the label only.
 func visibleNewThreadKind(_ kind: String) -> String {
-    guard hiddenNewThreadKinds.contains(kind) else { return kind }
-    return kind == "claude" ? "t3" : (allNewThreadChoices.first {
-        !hiddenNewThreadKinds.contains($0.0)
-    }?.0 ?? kind)
+    "codex"
 }
 
 func agentDisplay(_ a: String, source: String? = nil) -> String {
-    if source == "t3" || a == "t3" { return "T3 Code" }
-    return a == "claude" ? "Claude Code" : "Codex"
+    "Codex"
 }
 func agentIcon(_ a: String, source: String? = nil) -> String {
-    if source == "t3" || a == "t3" { return "circle.grid.2x2.fill" }
-    return a == "claude" ? "sparkle" : "chevron.left.forwardslash.chevron.right"
+    "chevron.left.forwardslash.chevron.right"
 }
 
 func shortPath(_ p: String) -> String {
@@ -924,7 +829,7 @@ struct ThreadRow: View {
                         Text(shortPath(session.cwd)).lineLimit(1).truncationMode(.middle)
                         Text("·")
                         Text(relTime(session.mtime))
-                        Text(session.source == "t3" ? "T3 Code" : agentDisplay(session.agent))
+                        Text(agentDisplay(session.agent))
                             .font(.system(size: 9, weight: .semibold))
                             .foregroundColor(tint)
                             .padding(.horizontal, 5).padding(.vertical, 2)
@@ -1200,11 +1105,8 @@ private struct MessageTextEditor: NSViewRepresentable {
 struct ComposerColumn: View {
     @ObservedObject var model: AppModel
     var tint: Color { agentColor(model.effectiveAgent, source: model.effectiveSource) }
-    /// The Model block follows the lab that makes the selected model, so a
-    /// Claude model inside the T3 lane still reads Anthropic orange.
     var labTint: Color {
-        labColor(forModel: model.effectiveAgent == "claude" ? model.claudeModel : model.codexModel,
-                 fallback: tint)
+        labColor(forModel: model.codexModel, fallback: tint)
     }
 
     var body: some View {
@@ -1300,32 +1202,25 @@ struct ComposerColumn: View {
             if model.modelMode == "custom" {
                 Card {
                     VStack(spacing: 10) {
-                        if model.effectiveAgent == "claude" {
-                            PillGroup(options: claudeModels, tint: labTint,
-                                      selection: $model.claudeModel, compact: true)
-                            EffortSlider(options: claudeEfforts(for: model.claudeModel), tint: labTint,
-                                         selection: $model.claudeEffort)
-                        } else {
-                            PillGroup(options: codexModels, tint: labTint,
-                                      selection: $model.codexModel, compact: true)
-                            EffortSlider(options: codexEfforts(for: model.codexModel), tint: labTint,
-                                         selection: $model.codexEffort)
-                            if model.codexModel == "gpt-5.6-sol" {
-                                HStack(spacing: 8) {
-                                    VStack(alignment: .leading, spacing: 1) {
-                                        Text("Ultra mode")
-                                            .font(.system(size: 11, weight: .semibold))
-                                        Text("Sol-only setting; sends Ultra instead of the effort value")
-                                            .font(.system(size: 9)).foregroundColor(.secondary)
-                                            .lineLimit(1)
-                                    }
-                                    Spacer()
-                                    Toggle("Ultra mode", isOn: $model.codexUltra)
-                                        .labelsHidden()
-                                        .toggleStyle(.switch)
-                                        .controlSize(.mini)
-                                        .focusEffectDisabled()
+                        PillGroup(options: codexModels, tint: labTint,
+                                  selection: $model.codexModel, compact: true)
+                        EffortSlider(options: codexEfforts(for: model.codexModel), tint: labTint,
+                                     selection: $model.codexEffort)
+                        if model.codexModel == "gpt-5.6-sol" {
+                            HStack(spacing: 8) {
+                                VStack(alignment: .leading, spacing: 1) {
+                                    Text("Ultra mode")
+                                        .font(.system(size: 11, weight: .semibold))
+                                    Text("Sol-only setting; sends Ultra instead of the effort value")
+                                        .font(.system(size: 9)).foregroundColor(.secondary)
+                                        .lineLimit(1)
                                 }
+                                Spacer()
+                                Toggle("Ultra mode", isOn: $model.codexUltra)
+                                    .labelsHidden()
+                                    .toggleStyle(.switch)
+                                    .controlSize(.mini)
+                                    .focusEffectDisabled()
                             }
                         }
                     }

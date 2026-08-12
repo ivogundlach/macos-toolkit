@@ -4,7 +4,7 @@ description: >-
   Use when Ivo asks to scriptify or automate a repeated AI-performed action,
   says "turn this into a script," or wants to find tasks that should run as
   deterministic code instead of spending model tokens. Isolate the mechanical
-  core, mine recent Codex and Claude logs when discovery is requested, build a
+  core, mine recent Codex logs when discovery is requested, build a
   reusable local or project script, verify its direct invocation, and record it
   for future agents. For scheduling the finished script, also use
   macos-background-jobs. Skip judgment-heavy workflows and genuine one-offs.
@@ -67,7 +67,7 @@ Build only candidates Ivo approves.
    meaningful exit codes, results on stdout, and actionable errors on stderr.
 5. Make repeated execution safe. Require an explicit flag for destructive or
    materially state-changing behavior when silent repetition would be unsafe.
-6. Do not call Codex, Claude, an LLM API, or another model from the replacement.
+6. Do not call Codex, an LLM API, or another model from the replacement.
    Such a wrapper may automate orchestration, but it has not eliminated token
    use and must not be reported as a successful scriptification.
 7. If the script must run on a schedule or in the background, finish the worker

@@ -3,7 +3,7 @@
 it fires the moment usage is available again (retry loop on usage-limit errors).
 
 Commands:
-  sessions <claude|codex> [--json] [--limit N]   list recent threads
+  sessions <claude|codex|all> [--json] [--limit N]   list recent threads
   add <claude|codex> --session <id|last|new> [--cwd DIR] [--auto] <prompt...>
   jobs [--json]                                  list queued/finished jobs
   cancel <job-id>                                cancel a pending job
@@ -28,7 +28,7 @@ LIMIT_RE = re.compile(
     r"usage limit|rate.?limit|limit (reached|exceeded|will reset|resets)"
     r"|out of (usage|credits)|quota|too many requests|overloaded|\b429\b"
     r"|try again (at|later)|hit your (session|weekly|usage) limit|high load"
-    r"|out of usage credits"
+    r"|Fable 5 requires usage credits|out of usage credits"
     r"|monthly spend limit"
     r"|reached your .* limit|switch models? with /model",
     re.I,
@@ -36,6 +36,19 @@ LIMIT_RE = re.compile(
 
 RESET_AT_RE = re.compile(
     r"(?:try again at|resets(?: at)?)\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?", re.I)
+
+# Fable genuinely unavailable until week/month rollover or permanently blocked
+# headless → reroute to Opus. Only these; a 5-hour block while on Fable prints
+# "Fable 5 requires usage credits." and must WAIT (LIMIT_RE), not reroute —
+# the CLI's hvg() says "reached your Fable 5 limit" only for the weekly
+# seven_day_overage_included type.
+# NOT here: "out of usage credits" / "monthly spend limit" — those appear when
+# the 5h plan window is out and overage is capped; they block EVERY model, so
+# rerouting can't help. They wait (LIMIT_RE) for the 5h reset instead.
+FABLE_LIMIT_RE = re.compile(
+    r"reached your Fable 5 limit"
+    r"|included Fable 5 usage for this week"
+    r"|Fable 5 uses usage credits and needs a one.time consent", re.I)
 
 
 def parse_reset_epoch(text):
@@ -212,7 +225,8 @@ def which(name, extra):
     return shutil.which(name) or name
 
 
-CLAUDE = which("claude", ["/opt/homebrew/bin/claude"])
+CLAUDE = which("claude", [os.path.join(HOME, ".local/bin/claude"),
+                          "/opt/homebrew/bin/claude"])
 CODEX = which("codex", ["/Applications/ChatGPT.app/Contents/Resources/codex",
                         "/opt/homebrew/bin/codex", os.path.join(HOME, ".local/bin/codex")])
 NOTIFIER = os.path.join(HOME, ".local/bin/tool-status-notify")
@@ -446,81 +460,6 @@ def want(archived, status):
     return status == "all" or (status == "archived") == archived
 
 
-T3_DB = os.path.join(HOME, ".t3/userdata/state.sqlite")
-
-
-def t3_model_effort(model_selection_json):
-    """Return the model and effort selected for a T3 Code thread."""
-    try:
-        selection = json.loads(model_selection_json or "{}")
-    except (TypeError, ValueError):
-        return None, None
-    model = selection.get("model")
-    effort = None
-    for option in selection.get("options") or []:
-        if isinstance(option, dict) and option.get("id") == "effort":
-            effort = option.get("value")
-            break
-    return model, effort
-
-
-def sessions_t3_claude(status="active"):
-    """List resumable Claude threads owned by T3 Code, read-only.
-
-    T3's projection thread id is not accepted by ``claude --resume``. The
-    provider runtime's ``resume`` cursor is the underlying Claude session id
-    and therefore becomes the row id returned to the app.
-    """
-    if not os.path.isfile(T3_DB):
-        return []
-    query = """
-        SELECT t.title, t.updated_at, t.archived_at, t.model_selection_json,
-               p.workspace_root, s.provider_name, r.provider_name,
-               r.adapter_key, r.resume_cursor_json
-          FROM projection_threads AS t
-          JOIN projection_projects AS p ON p.project_id = t.project_id
-          JOIN projection_thread_sessions AS s ON s.thread_id = t.thread_id
-          JOIN provider_session_runtime AS r ON r.thread_id = t.thread_id
-         WHERE t.deleted_at IS NULL
-           AND s.provider_name = 'claudeAgent'
-           AND r.provider_name = 'claudeAgent'
-           AND r.adapter_key = 'claudeAgent'
-    """
-    rows = []
-    try:
-        con = sqlite3.connect("file:%s?mode=ro" % T3_DB, uri=True, timeout=2)
-        try:
-            for (title, updated_at, archived_at, selection_json, workspace,
-                 _, _, _, cursor_json) in con.execute(query):
-                try:
-                    cursor = json.loads(cursor_json or "{}")
-                except (TypeError, ValueError):
-                    continue
-                resume_id = cursor.get("resume")
-                if not isinstance(resume_id, str) or not resume_id.strip():
-                    continue
-                archived = bool(archived_at)
-                if not want(archived, status):
-                    continue
-                model, effort = t3_model_effort(selection_json)
-                rows.append({
-                    "id": resume_id,
-                    "agent": "claude",
-                    "cwd": workspace or HOME,
-                    "mtime": int(_iso_to_epoch(updated_at) or 0),
-                    "label": (title or "T3 Code thread")[:120],
-                    "archived": archived,
-                    "model": model,
-                    "effort": effort,
-                    "source": "t3",
-                })
-        finally:
-            con.close()
-    except (OSError, sqlite3.Error):
-        return []
-    return rows
-
-
 def sessions_claude(limit, status="active"):
     desktop = claude_desktop_index()
     files = []
@@ -547,7 +486,7 @@ def sessions_claude(limit, status="active"):
             sort_ms = ts_ms or int(os.path.getmtime(p) * 1000)
             files.append((sort_ms, p, sid, meta))
     files.sort(key=lambda r: r[0], reverse=True)
-    desktop_rows = []
+    out = []
     for sort_ms, path, sid, meta in files:
         archived = meta.get("archived", False)
         if not want(archived, status):
@@ -556,18 +495,14 @@ def sessions_claude(limit, status="active"):
         label = meta.get("title") or text
         if not label:
             continue
-        desktop_rows.append({"id": sid, "agent": "claude", "cwd": cwd or HOME, "mtime": int(sort_ms / 1000),
-                             "label": label[:120], "archived": archived,
-                             "model": live_model_claude(path) or meta.get("model"),
-                             "effort": meta.get("effort")})
-
-    # Merge both Claude surfaces before applying the limit. T3 rows win a
-    # duplicate underlying session id so the app can keep the source visible.
-    merged = {row["id"]: row for row in desktop_rows}
-    for row in sessions_t3_claude(status):
-        merged[row["id"]] = row
-    rows = sorted(merged.values(), key=lambda row: row["mtime"], reverse=True)
-    return rows if limit == 0 else rows[:limit]
+        out.append({"id": sid, "agent": "claude", "source": "claude",
+                    "cwd": cwd or HOME, "mtime": int(sort_ms / 1000),
+                    "label": label[:120], "archived": archived,
+                    "model": live_model_claude(path) or meta.get("model"),
+                    "effort": meta.get("effort")})
+        if limit != 0 and len(out) >= limit:
+            break
+    return out
 
 
 def codex_thread_settings():
@@ -657,20 +592,13 @@ def sessions_codex(limit, status="active"):
         if sid and (text or sid in names or db_title):
             dm, de, _, db_title = settings.get(sid, (None, None, None, None))
             lm, le = live_settings_codex(path)
-            out.append({"id": sid, "agent": "codex", "cwd": cwd or HOME, "mtime": int(mtime),
+            out.append({"id": sid, "agent": "codex", "source": "codex",
+                        "cwd": cwd or HOME, "mtime": int(mtime),
                         "label": (names.get(sid) or db_title or text)[:120], "archived": archived,
                         "model": lm or dm, "effort": le or de})
         if limit != 0 and len(out) >= limit:
             break
     return out
-
-
-def sessions_all(limit, status="active"):
-    """List all open Claude Desktop/T3 Code and Codex threads together."""
-    rows = sessions_claude(0, status) + sessions_codex(0, status)
-    merged = {(row["agent"], row["id"]): row for row in rows}
-    rows = sorted(merged.values(), key=lambda row: row["mtime"], reverse=True)
-    return rows if limit == 0 else rows[:limit]
 
 
 # ---------- jobs ----------
@@ -951,6 +879,19 @@ def cmd_run(jid):
                                capture_output=True)
             notify("%s: queued message delivered (attempt %d)." % (job["agent"], job["attempts"]))
             return
+        # Key off the CLI's own output, not job["model"]: with --inherit the
+        # model field is empty even when the resumed thread runs on Fable.
+        if (job["agent"] == "claude" and
+                not job.get("fallback_from") and FABLE_LIMIT_RE.search(out[-4000:])):
+            job["fallback_from"] = job.get("model") or "inherit"
+            job["inherit"] = False
+            job["model"] = "opus"
+            job["effort"] = "xhigh"
+            job["status"] = "queued"
+            job["error"] = "Fable 5 exhausted; rerouting to Opus with xhigh effort."
+            save_job(job)
+            print("--- Fable 5 exhausted; rerouting to Opus xhigh ---", flush=True)
+            continue
         if LIMIT_RE.search(out[-4000:]):
             if time.time() >= deadline:
                 job["status"] = "gave_up"
@@ -1073,9 +1014,14 @@ def main():
             limit = int(a[a.index("--limit") + 1])
         if "--status" in a:
             status = a[a.index("--status") + 1]
-        rows = (sessions_all(limit, status) if agent == "all"
-                else sessions_claude(limit, status) if agent == "claude"
-                else sessions_codex(limit, status))
+        if agent == "claude":
+            rows = sessions_claude(limit, status)
+        elif agent in ("codex", "all"):
+            # The installed app requests `all`; keep that surface Codex-only.
+            # A future UI may opt in explicitly with `sessions claude`.
+            rows = sessions_codex(limit, status)
+        else:
+            sys.exit("unsupported agent: " + agent)
         print(json.dumps(rows) if as_json else
               "\n".join("%s  %s  %s" % (r["id"][:8], r["cwd"], r["label"][:70]) for r in rows))
     elif cmd == "add":

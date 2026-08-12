@@ -46,5 +46,13 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 </dict></plist>
 PLIST
 
-codesign --force --deep -s - "$APP" >/dev/null 2>&1 || true
+# Certificate, not ad-hoc: an ad-hoc signature is keyed to the exact compiled bytes,
+# so every rebuild looks like a different app to macOS and silently drops whatever
+# permissions the app held. Check the fleet with `signing-audit`.
+if security find-identity -v -p codesigning | grep -q "Ivo Market Dev"; then
+  codesign --force --deep -s "Ivo Market Dev" --timestamp=none "$APP" >/dev/null 2>&1 || true
+else
+  echo "WARNING: 'Ivo Market Dev' certificate missing; ad-hoc signing means permissions break on rebuild." >&2
+  codesign --force --deep -s - "$APP" >/dev/null 2>&1 || true
+fi
 echo "✓ built $APP"

@@ -2,6 +2,14 @@
   "components": [
     {
       "category": "macOS application",
+      "id": "autoinstalldmg",
+      "license": "MIT; provenance: Ivo/agent-authored for Ivo",
+      "location": "apps/AutoInstallDMG",
+      "name": "AutoInstallDMG",
+      "verification_status": "source export checked; clean-machine install not verified"
+    },
+    {
+      "category": "macOS application",
       "id": "caniaffordthis",
       "license": "MIT; provenance: Ivo/agent-authored for Ivo",
       "location": "apps/CanIAffordThis",
@@ -161,6 +169,14 @@
       "verification_status": "source export checked; clean-machine install not verified"
     },
     {
+      "category": "macOS application",
+      "id": "schooldashboard",
+      "license": "MIT; provenance: Ivo/agent-authored for Ivo",
+      "location": "apps/SchoolDashboard",
+      "name": "SchoolDashboard",
+      "verification_status": "source export checked; clean-machine install not verified"
+    },
+    {
       "category": "macOS automation",
       "id": "smart-wake",
       "license": "MIT; provenance: Ivo/agent-authored for Ivo",
@@ -229,6 +245,14 @@
     {
       "path": "README.md",
       "reason": "unknown path"
+    },
+    {
+      "path": "apps/AutoInstallDMG/resources/Assets.car",
+      "reason": "compiled Apple asset catalog copied from the installed app; the reviewable AppleScript and worker source remain exportable, but generated binary resources are not public source"
+    },
+    {
+      "path": "apps/AutoInstallDMG/resources/droplet.icns",
+      "reason": "excluded suffix: .icns"
     },
     {
       "path": "apps/CanIAffordThis/public/favicon.svg",
@@ -659,6 +683,58 @@
       "reason": "excluded root: apps/School"
     },
     {
+      "path": "apps/SchoolDashboard/Icon/AppIcon-1024.png",
+      "reason": "excluded suffix: .png"
+    },
+    {
+      "path": "apps/SchoolDashboard/Icon/AppIcon.icns",
+      "reason": "excluded suffix: .icns"
+    },
+    {
+      "path": "apps/SchoolDashboard/Icon/AppIcon.iconset/icon_128x128.png",
+      "reason": "compiled bundle directory: AppIcon.iconset"
+    },
+    {
+      "path": "apps/SchoolDashboard/Icon/AppIcon.iconset/icon_128x128@2x.png",
+      "reason": "compiled bundle directory: AppIcon.iconset"
+    },
+    {
+      "path": "apps/SchoolDashboard/Icon/AppIcon.iconset/icon_16x16.png",
+      "reason": "compiled bundle directory: AppIcon.iconset"
+    },
+    {
+      "path": "apps/SchoolDashboard/Icon/AppIcon.iconset/icon_16x16@2x.png",
+      "reason": "compiled bundle directory: AppIcon.iconset"
+    },
+    {
+      "path": "apps/SchoolDashboard/Icon/AppIcon.iconset/icon_256x256.png",
+      "reason": "compiled bundle directory: AppIcon.iconset"
+    },
+    {
+      "path": "apps/SchoolDashboard/Icon/AppIcon.iconset/icon_256x256@2x.png",
+      "reason": "compiled bundle directory: AppIcon.iconset"
+    },
+    {
+      "path": "apps/SchoolDashboard/Icon/AppIcon.iconset/icon_32x32.png",
+      "reason": "compiled bundle directory: AppIcon.iconset"
+    },
+    {
+      "path": "apps/SchoolDashboard/Icon/AppIcon.iconset/icon_32x32@2x.png",
+      "reason": "compiled bundle directory: AppIcon.iconset"
+    },
+    {
+      "path": "apps/SchoolDashboard/Icon/AppIcon.iconset/icon_512x512.png",
+      "reason": "compiled bundle directory: AppIcon.iconset"
+    },
+    {
+      "path": "apps/SchoolDashboard/Icon/AppIcon.iconset/icon_512x512@2x.png",
+      "reason": "compiled bundle directory: AppIcon.iconset"
+    },
+    {
+      "path": "apps/SchoolDashboard/Icon/AppIcon.svg",
+      "reason": "excluded suffix: .svg"
+    },
+    {
       "path": "apps/ToolStatusDashboard/Icon/AppIcon-1024.png",
       "reason": "excluded suffix: .png"
     },
@@ -991,6 +1067,14 @@
       "reason": "excluded root: automation/codex/skills/workflow skills/web-research/scripts/selftest.py"
     },
     {
+      "path": "automation/dormant-launch-agents/com.ivogundlach.claude-window-keeper.plist",
+      "reason": "unknown path"
+    },
+    {
+      "path": "automation/dormant-local-bin/claude-window-keeper",
+      "reason": "unknown path"
+    },
+    {
       "path": "automation/local-bin/app-repo-bootstrap",
       "reason": "hardcodes the private per-app repository fleet's owner and archive remote"
     },
@@ -1003,12 +1087,32 @@
       "reason": "hardcodes the private per-app repository fleet's owner and archive remote"
     },
     {
+      "path": "automation/local-bin/backup-coverage-audit",
+      "reason": "private backup-maintenance command with machine-specific archive and repository checks; excluded until Ivo explicitly chooses to publish it"
+    },
+    {
+      "path": "automation/local-bin/env",
+      "reason": "installer-generated local shell environment helper rather than an Ivo-authored portable command"
+    },
+    {
+      "path": "automation/local-bin/env.fish",
+      "reason": "installer-generated Fish shell environment helper rather than an Ivo-authored portable command"
+    },
+    {
+      "path": "automation/local-bin/mail-assistant-app-build",
+      "reason": "private local build and permission-maintenance command; excluded until Ivo explicitly chooses to publish it"
+    },
+    {
       "path": "automation/local-bin/personal-repo-sync",
       "reason": "private-only maintenance synchronizer with repository identity and external-write authority"
     },
     {
       "path": "automation/local-bin/public-toolkit-publish",
       "reason": "hardcodes the private archive's clone URL; publishing it would link the private repository, which the public README states this export does not do"
+    },
+    {
+      "path": "automation/local-bin/signing-audit",
+      "reason": "private machine signing and certificate audit command; excluded until Ivo explicitly chooses to publish it"
     },
     {
       "path": "automation/memory-tests/test_redaction.py",

@@ -97,7 +97,23 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--gws-bin", required=True)
     parser.add_argument("--open-bin", default="/usr/bin/open")
     parser.add_argument("--url-timeout", type=float, default=60.0)
+    parser.add_argument(
+        "--reset-existing", action="store_true",
+        help="Clear only GWS saved authorization before requesting fresh consent.",
+    )
     return parser.parse_args()
+
+
+def verify_drive_access(gws: Path) -> bool:
+    try:
+        result = subprocess.run(
+            [str(gws), "drive", "about", "get", "--params", '{"fields":"user(permissionId)"}'],
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL, timeout=30, check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return result.returncode == 0
 
 
 def main() -> int:
@@ -111,6 +127,19 @@ def main() -> int:
         return 2
 
     print("— Log in to Google —", flush=True)
+    if args.reset_existing:
+        print(
+            "Clearing only Google Workspace CLI's saved authorization so Google can ask for the required permissions again.",
+            flush=True,
+        )
+        logout = subprocess.run(
+            [str(gws), "auth", "logout"], stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            timeout=30, check=False,
+        )
+        if logout.returncode != 0:
+            print("Could not clear the old Google Workspace authorization.", file=sys.stderr)
+            return logout.returncode
     print(f"Requesting your previously configured read-only access: {SERVICE_NAMES}.", flush=True)
     print("Google will show the final permissions before anything is granted.\n", flush=True)
 
@@ -217,7 +246,15 @@ def main() -> int:
             return returncode
 
         if returncode == 0:
-            print("\nGoogle Workspace login completed.", flush=True)
+            if verify_drive_access(gws):
+                print("\nGoogle Workspace login and permission check completed.", flush=True)
+            else:
+                print(
+                    "\nGoogle accepted the sign-in, but the required Drive permission is still unavailable.",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                return 1
         elif opened:
             print(
                 f"\nGoogle Workspace login did not complete (exit {returncode}).",

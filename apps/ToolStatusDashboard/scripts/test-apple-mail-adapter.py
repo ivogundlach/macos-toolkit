@@ -39,9 +39,10 @@ def main() -> int:
         assert record["state"] == "fail", record
         assert record["causeCode"] == "apple_mail_draft.failed", record
         assert record["notificationPolicy"] == "immediate", record
-        assert "[manual-review]" in record["detail"], record
+        assert "could not confirm whether the draft was saved" in record["detail"], record
+        assert "[manual-review]" in record["evidence"], record
         assert record["causeParams"]["manual_review_count"] == "1", record
-        assert "inspect Apple Mail Drafts" in record["fix"]["note"], record
+        assert "drafts folder" in record["fix"]["note"].lower(), record
 
         state_path.write_text("{not-json", encoding="utf-8")
         rows = []
@@ -51,7 +52,7 @@ def main() -> int:
         assert record["causeCode"] == "apple_mail_draft.state_unreadable", record
         assert record["notificationPolicy"] == "immediate", record
         assert "state unreadable" in record["headline"].lower(), record
-        assert "repair or restore state.json" in record["fix"]["note"], record
+        assert "restore it before retrying" in record["fix"]["note"].lower(), record
 
     print("Apple Mail Dashboard adapter checks passed")
     return 0

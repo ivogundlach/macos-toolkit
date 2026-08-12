@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.ivogundlach.weekly-system-improvement</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/YOUR_USERNAME/.local/bin/weekly-system-improvement</string>
+    <string>--scheduled</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Weekday</key>
+    <integer>0</integer>
+    <key>Hour</key>
+    <integer>19</integer>
+    <key>Minute</key>
+    <integer>0</integer>
+  </dict>
+  <key>StartInterval</key>
+  <integer>21600</integer>
+  <key>StandardOutPath</key>
+  <string>/Users/YOUR_USERNAME/.memory/logs/weekly-system-improvement/launchd.out</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/YOUR_USERNAME/.memory/logs/weekly-system-improvement/launchd.err</string>
+  <key>ProcessType</key>
+  <string>Background</string>
+</dict>
+</plist>

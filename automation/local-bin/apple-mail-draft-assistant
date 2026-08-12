@@ -124,23 +124,14 @@ on run argv
         set visible of theReply to false
         set content of theReply to draftBody
         set sender of theReply to replySender
+        set attachmentRequested to false
         repeat with attachmentPath in attachmentLines
             if (attachmentPath as text) is not "" then
-                set newAttachment to make new attachment with properties {file name:(POSIX file (attachmentPath as text))} at after the last paragraph of content of theReply
-                set resolvedAttachmentPath to ""
-                repeat with attemptNumber from 1 to 30
-                    try
-                        set resolvedAttachmentFile to file name of newAttachment
-                        if resolvedAttachmentFile is not missing value then
-                            set resolvedAttachmentPath to POSIX path of resolvedAttachmentFile
-                            exit repeat
-                        end if
-                    end try
-                    delay 0.5
-                end repeat
-                if resolvedAttachmentPath is "" then error "attachment filename did not materialize"
+                make new attachment with properties {file name:(POSIX file (attachmentPath as text))} at after the last paragraph of content of theReply
+                set attachmentRequested to true
             end if
         end repeat
+        if attachmentRequested then delay 15
         save theReply
         delay 2
         set sep to ASCII character 31
@@ -148,14 +139,7 @@ on run argv
         repeat with r in to recipients of theReply
             set recipientText to recipientText & (address of r as text) & linefeed
         end repeat
-        set attachmentText to ""
-        repeat with savedAttachment in every attachment of content of theReply
-            try
-                set savedAttachmentFile to file name of savedAttachment
-                if savedAttachmentFile is not missing value then set attachmentText to attachmentText & (POSIX path of savedAttachmentFile) & linefeed
-            end try
-        end repeat
-        return (id of theReply as text) & sep & (sender of theReply as text) & sep & recipientText & sep & attachmentText
+        return (id of theReply as text) & sep & (sender of theReply as text) & sep & recipientText & sep & (subject of theReply as text)
     end tell
 end run
 '''
@@ -176,23 +160,14 @@ on run argv
                     make new to recipient at end of to recipients with properties {address:(recipientAddress as text)}
                 end if
             end repeat
+            set attachmentRequested to false
             repeat with attachmentPath in attachmentLines
                 if (attachmentPath as text) is not "" then
-                    set newAttachment to make new attachment with properties {file name:(POSIX file (attachmentPath as text))} at after the last paragraph
-                    set resolvedAttachmentPath to ""
-                    repeat with attemptNumber from 1 to 30
-                        try
-                            set resolvedAttachmentFile to file name of newAttachment
-                            if resolvedAttachmentFile is not missing value then
-                                set resolvedAttachmentPath to POSIX path of resolvedAttachmentFile
-                                exit repeat
-                            end if
-                        end try
-                        delay 0.5
-                    end repeat
-                    if resolvedAttachmentPath is "" then error "attachment filename did not materialize"
+                    make new attachment with properties {file name:(POSIX file (attachmentPath as text))} at after the last paragraph
+                    set attachmentRequested to true
                 end if
             end repeat
+            if attachmentRequested then delay 15
             save
             delay 2
         end tell
@@ -201,14 +176,7 @@ on run argv
         repeat with r in to recipients of theDraft
             set recipientText to recipientText & (address of r as text) & linefeed
         end repeat
-        set attachmentText to ""
-        repeat with savedAttachment in every attachment of content of theDraft
-            try
-                set savedAttachmentFile to file name of savedAttachment
-                if savedAttachmentFile is not missing value then set attachmentText to attachmentText & (POSIX path of savedAttachmentFile) & linefeed
-            end try
-        end repeat
-        return (id of theDraft as text) & sep & (sender of theDraft as text) & sep & recipientText & sep & attachmentText
+        return (id of theDraft as text) & sep & (sender of theDraft as text) & sep & recipientText & sep & (subject of theDraft as text)
     end tell
 end run
 '''
@@ -238,7 +206,7 @@ on run argv
         end repeat
         if actualRecipientText is not expectedRecipientText then error "target draft recipient mismatch"
 
-        set attachmentText to ""
+        set attachmentRequested to false
         repeat with attachmentPath in attachmentLines
             if (attachmentPath as text) is not "" then
                 set alreadyPresent to false
@@ -249,34 +217,22 @@ on run argv
                             set existingAttachmentPath to POSIX path of existingAttachmentFile
                             if existingAttachmentPath is (attachmentPath as text) then
                                 set alreadyPresent to true
-                                set attachmentText to attachmentText & existingAttachmentPath & linefeed
                                 exit repeat
                             end if
                         end if
                     end try
                 end repeat
                 if not alreadyPresent then
-                    set newAttachment to make new attachment with properties {file name:(POSIX file (attachmentPath as text))} at after the last paragraph of content of theDraft
-                    set resolvedAttachmentPath to ""
-                    repeat with attemptNumber from 1 to 30
-                        try
-                            set resolvedAttachmentFile to file name of newAttachment
-                            if resolvedAttachmentFile is not missing value then
-                                set resolvedAttachmentPath to POSIX path of resolvedAttachmentFile
-                                exit repeat
-                            end if
-                        end try
-                        delay 0.5
-                    end repeat
-                    if resolvedAttachmentPath is "" then error "attachment filename did not materialize"
-                    set attachmentText to attachmentText & resolvedAttachmentPath & linefeed
+                    make new attachment with properties {file name:(POSIX file (attachmentPath as text))} at after the last paragraph of content of theDraft
+                    set attachmentRequested to true
                 end if
             end if
         end repeat
+        if attachmentRequested then delay 15
         save theDraft
         delay 2
         set sep to ASCII character 31
-        return (id of theDraft as text) & sep & (sender of theDraft as text) & sep & actualRecipientText & sep & attachmentText
+        return (id of theDraft as text) & sep & (sender of theDraft as text) & sep & actualRecipientText & sep & (subject of theDraft as text)
     end tell
 end run
 '''
@@ -298,6 +254,25 @@ end run
 '''
 
 JUNK_MOVE_TO_INBOX_APPLESCRIPT = r'''
+on matchingInboxMessages(targetInbox, expectedMessageId, expectedSender, expectedSubject, expectedDate)
+    tell application "Mail"
+        if expectedMessageId is not "" then
+            set candidates to every message of targetInbox whose message id is expectedMessageId
+        else
+            set candidates to every message of targetInbox whose subject is expectedSubject
+        end if
+        set matchedMessages to {}
+        repeat with candidate in candidates
+            try
+                if (sender of candidate as text) is expectedSender and (subject of candidate as text) is expectedSubject and (date received of candidate) is expectedDate then
+                    set end of matchedMessages to candidate
+                end if
+            end try
+        end repeat
+        return matchedMessages
+    end tell
+end matchingInboxMessages
+
 on run argv
     set accountName to item 1 of argv
     set mailboxName to item 2 of argv
@@ -307,17 +282,41 @@ on run argv
         set sourceMailbox to first mailbox of targetAccount whose name is mailboxName
         set targetInbox to first mailbox of targetAccount whose name is "INBOX"
         set m to first message of sourceMailbox whose id is mailId
-
-        -- Marking a message as not junk can itself move it in some accounts.
-        set junk mail status of m to false
-        set inboxMatches to every message of targetInbox whose id is mailId
-        if (count of inboxMatches) is 0 then
-            move m to targetInbox
+        set rawMessageId to message id of m
+        if rawMessageId is missing value then
+            set expectedMessageId to ""
+        else
+            set expectedMessageId to rawMessageId as text
         end if
+        set expectedSender to sender of m as text
+        set expectedSubject to subject of m as text
+        set expectedDate to date received of m
 
-        set verifiedMatches to every message of targetInbox whose id is mailId
-        if (count of verifiedMatches) is 0 then error "message was not found in account Inbox after move"
-        return "moved-to-inbox"
+        -- Move exactly once while the source reference is still valid. An IMAP move
+        -- can replace Mail's numeric id, so never use mailId to find the Inbox copy.
+        move m to targetInbox
+
+        set inboxMatches to {}
+        repeat 10 times
+            set inboxMatches to my matchingInboxMessages(targetInbox, expectedMessageId, expectedSender, expectedSubject, expectedDate)
+            if (count of inboxMatches) is greater than 0 then exit repeat
+            delay 1
+        end repeat
+        if (count of inboxMatches) is not 1 then error "protected message did not produce one unique Inbox copy after move"
+
+        set rescuedMessage to item 1 of inboxMatches
+        set junk mail status of rescuedMessage to false
+
+        repeat 10 times
+            set inboxMatches to my matchingInboxMessages(targetInbox, expectedMessageId, expectedSender, expectedSubject, expectedDate)
+            if (count of inboxMatches) is 1 then
+                if junk mail status of item 1 of inboxMatches is false then return "moved-to-inbox"
+            else if (count of inboxMatches) is greater than 1 then
+                error "protected message produced multiple matching Inbox copies"
+            end if
+            delay 1
+        end repeat
+        error "protected message was not verified as non-junk in account Inbox"
     end tell
 end run
 '''
@@ -583,8 +582,8 @@ def record_failure(key: str, reason: str, extra: dict[str, Any] | None = None) -
 def split_mail_evidence(output: str) -> tuple[str, str, str, str]:
     """Parse the four-field AppleScript evidence envelope without losing empties."""
     # AppleScript writes a line ending after the final field.  Do not use
-    # str.strip(): an empty attachment field is represented by a trailing unit
-    # separator and strip() would remove it before split().
+    # str.strip(): the subject field can be empty on a malformed Mail result,
+    # and strip() would remove the trailing unit separator before split().
     fields = output.rstrip("\r\n").split("\x1f")
     if len(fields) != 4:
         raise RuntimeError(f"Apple Mail evidence had {len(fields)} fields; expected 4")
@@ -2235,6 +2234,7 @@ def attachment_evidence(
     msg: email.message.EmailMessage,
     emlx_path: str | None = None,
     message_rowid: int | None = None,
+    allow_extra: bool = False,
 ) -> list[dict[str, Any]]:
     expected: dict[str, tuple[int, str]] = {}
     for raw_path in paths:
@@ -2276,9 +2276,9 @@ def attachment_evidence(
         if external_path is None:
             raise RuntimeError(f"external MIME attachment bytes are missing: {filename}")
         actual[name] = read_external_attachment(external_path)
-    if set(actual) != set(expected):
-        missing = sorted(set(expected) - set(actual))
-        extra = sorted(set(actual) - set(expected))
+    missing = sorted(set(expected) - set(actual))
+    extra = sorted(set(actual) - set(expected))
+    if missing or (extra and not allow_extra):
         raise RuntimeError(f"saved MIME attachment set mismatch: missing={missing} extra={extra}")
     for name, expected_value in expected.items():
         if actual[name] != expected_value:
@@ -2523,6 +2523,7 @@ def create_draft(args: argparse.Namespace) -> None:
         "mailbox_name": mailbox_name,
         "expected_message_id": expected_message_id,
     })
+    draft_snapshot = draft_emlx_snapshot()
     try:
         evidence = run_osascript(
             REPLY_APPLESCRIPT,
@@ -2534,11 +2535,22 @@ def create_draft(args: argparse.Namespace) -> None:
             expected_message_id,
             "\n".join(attachment_paths),
         )
-        draft_id, actual_sender, actual_recipient_text, actual_attachment_text = split_mail_evidence(evidence)
+        draft_id, actual_sender, actual_recipient_text, actual_subject = split_mail_evidence(evidence)
         if email.utils.parseaddr(actual_sender)[1].casefold() != reply_from:
             raise RuntimeError(f"saved reply sender mismatch: {actual_sender}")
         require_exact_saved_recipients(actual_recipient_text, {expected_recipient}, "reply")
-        reported_attachments = require_reported_attachment_paths(actual_attachment_text, attachment_paths)
+        if not actual_subject.strip():
+            raise RuntimeError("saved reply subject is empty")
+        persisted = verify_persisted_draft_after(
+            draft_snapshot,
+            reply_from,
+            {expected_recipient},
+            actual_subject,
+            body,
+            attachment_paths,
+            expected_message_id=expected_message_id,
+        )
+        reported_attachments = attachment_paths
     except Exception as exc:
         reason = f"draft-create-failed:{exc}"
         mark_ambiguous_creation(state_key, operation_id, reason, {
@@ -2561,6 +2573,7 @@ def create_draft(args: argparse.Namespace) -> None:
         "mailbox_name": mailbox_name,
         "operation_id": operation_id,
         "attachments": reported_attachments,
+        "message_rowid": persisted["message_rowid"],
     }))
 
 
@@ -2588,12 +2601,82 @@ def validated_attachment_paths(raw_values: Any) -> list[str]:
     return paths
 
 
-def require_reported_attachment_paths(actual_text: str, expected_paths: list[str]) -> list[str]:
-    actual_paths = [str(Path(line).resolve()) for line in actual_text.splitlines() if line.strip()]
-    missing = [path for path in expected_paths if path not in actual_paths]
-    if missing:
-        raise RuntimeError("Apple Mail did not report requested attachments: " + ", ".join(missing))
-    return actual_paths
+def draft_emlx_snapshot(root: Path = MAIL_ROOT) -> dict[str, tuple[int, int]]:
+    snapshot: dict[str, tuple[int, int]] = {}
+    patterns = ("**/Drafts.mbox/**/Messages/*.emlx", "**/Drafts.mbox/**/Messages/*.partial.emlx")
+    for pattern in patterns:
+        for path in root.glob(pattern):
+            try:
+                path_stat = path.stat()
+            except OSError:
+                continue
+            if stat.S_ISREG(path_stat.st_mode) and not path.is_symlink():
+                snapshot[str(path)] = (path_stat.st_size, path_stat.st_mtime_ns)
+    return snapshot
+
+
+def verify_persisted_draft_after(
+    before: dict[str, tuple[int, int]],
+    sender: str,
+    recipients: set[str],
+    subject: str,
+    body: str | None,
+    attachment_paths: list[str],
+    expected_message_id: str = "",
+    allow_extra_attachments: bool = False,
+    root: Path = MAIL_ROOT,
+    timeout: float = 20.0,
+) -> dict[str, Any]:
+    expected_sender = {email.utils.parseaddr(sender)[1].casefold()}
+    expected_body = re.sub(r"\s+", " ", body or "").strip()
+    deadline = time.monotonic() + timeout
+    last_error = "no new or changed Drafts EMLX appeared"
+    while time.monotonic() < deadline:
+        changed: list[Path] = []
+        current = draft_emlx_snapshot(root)
+        for raw_path, observation in current.items():
+            if before.get(raw_path) != observation:
+                changed.append(Path(raw_path))
+        changed.sort(key=lambda path: current[str(path)][1], reverse=True)
+        for path in changed:
+            try:
+                data, observation = stable_emlx_bytes(str(path))
+                msg = decode_emlx_bytes(data)
+                if normalized_address_list(msg.get_all("From", []), "saved draft From") != sorted(expected_sender):
+                    continue
+                if set(normalized_address_list(msg.get_all("To", []), "saved draft To")) != recipients:
+                    continue
+                if str(msg.get("Subject", "")) != subject:
+                    continue
+                if expected_body:
+                    actual_body = re.sub(r"\s+", " ", message_body(msg)).strip()
+                    if expected_body not in actual_body:
+                        continue
+                if expected_message_id:
+                    reply_headers = msg.get_all("In-Reply-To", []) + msg.get_all("References", [])
+                    if not any(expected_message_id in value for value in reply_headers):
+                        continue
+                rowid_match = re.match(r"(\d+)", path.name)
+                if rowid_match is None:
+                    raise RuntimeError("saved draft EMLX filename has no rowid")
+                rowid = int(rowid_match.group(1))
+                attachments = attachment_evidence(
+                    attachment_paths,
+                    msg,
+                    str(path),
+                    rowid,
+                    allow_extra=allow_extra_attachments,
+                )
+                return {
+                    "message_rowid": rowid,
+                    "emlx": str(path),
+                    "emlx_sha256": observation["sha256"],
+                    "attachments": attachments,
+                }
+            except Exception as exc:
+                last_error = str(exc)
+        time.sleep(0.5)
+    raise RuntimeError(f"persisted draft verification failed: {last_error}")
 
 
 def create_message_draft(args: argparse.Namespace) -> None:
@@ -2633,6 +2716,7 @@ def create_message_draft(args: argparse.Namespace) -> None:
         fail(f"message draft state is not claimable: {claim.get('status')}:{claim.get('reason')}")
     transition_to_creating(state_key, operation_id, {"sender": normalized_sender, "to": recipients, "subject": subject})
 
+    draft_snapshot = draft_emlx_snapshot()
     try:
         evidence = run_osascript(
             MESSAGE_DRAFT_APPLESCRIPT,
@@ -2642,12 +2726,22 @@ def create_message_draft(args: argparse.Namespace) -> None:
             "\n".join(recipients),
             "\n".join(attachment_paths),
         )
-        draft_id, actual_sender, actual_recipient_text, actual_attachment_text = split_mail_evidence(evidence)
+        draft_id, actual_sender, actual_recipient_text, actual_subject = split_mail_evidence(evidence)
         if email.utils.parseaddr(actual_sender)[1].casefold() != normalized_sender:
             raise RuntimeError(f"saved standalone sender mismatch: {actual_sender}")
         expected_recipients = {email.utils.parseaddr(value)[1].casefold() for value in recipients}
         require_exact_saved_recipients(actual_recipient_text, expected_recipients, "standalone")
-        reported_attachments = require_reported_attachment_paths(actual_attachment_text, attachment_paths)
+        if actual_subject != subject:
+            raise RuntimeError("saved standalone subject mismatch")
+        persisted = verify_persisted_draft_after(
+            draft_snapshot,
+            normalized_sender,
+            expected_recipients,
+            subject,
+            body,
+            attachment_paths,
+        )
+        reported_attachments = attachment_paths
     except Exception as exc:
         reason = f"message-draft-create-failed:{exc}"
         mark_ambiguous_creation(state_key, operation_id, reason, {"sender": normalized_sender, "to": recipients, "subject": subject})
@@ -2662,6 +2756,7 @@ def create_message_draft(args: argparse.Namespace) -> None:
         "sender": normalized_sender,
         "subject": subject,
         "attachments": reported_attachments,
+        "message_rowid": persisted["message_rowid"],
     }))
 
 
@@ -2685,6 +2780,7 @@ def add_message_draft_attachments(args: argparse.Namespace) -> None:
     if not subject:
         fail("message draft attachment payload subject is empty")
     attachment_paths = validated_attachment_paths(payload["attachments"])
+    draft_snapshot = draft_emlx_snapshot()
     try:
         evidence = run_osascript(
             ADD_MESSAGE_DRAFT_ATTACHMENTS_APPLESCRIPT,
@@ -2694,13 +2790,24 @@ def add_message_draft_attachments(args: argparse.Namespace) -> None:
             "\n".join(recipients),
             "\n".join(attachment_paths),
         )
-        actual_id, actual_sender, actual_recipient_text, actual_attachment_text = split_mail_evidence(evidence)
+        actual_id, actual_sender, actual_recipient_text, actual_subject = split_mail_evidence(evidence)
         if int(actual_id) != draft_id:
             raise RuntimeError("saved draft id mismatch")
         if email.utils.parseaddr(actual_sender)[1].casefold() != sender:
             raise RuntimeError("saved draft sender mismatch")
         require_exact_saved_recipients(actual_recipient_text, set(recipients), "existing-standalone")
-        reported_attachments = require_reported_attachment_paths(actual_attachment_text, attachment_paths)
+        if actual_subject != subject:
+            raise RuntimeError("saved draft subject mismatch")
+        persisted = verify_persisted_draft_after(
+            draft_snapshot,
+            sender,
+            set(recipients),
+            subject,
+            None,
+            attachment_paths,
+            allow_extra_attachments=True,
+        )
+        reported_attachments = attachment_paths
     except Exception as exc:
         fail(f"message-draft-attachment-failed:{exc}")
     print(json.dumps({
@@ -2710,6 +2817,7 @@ def add_message_draft_attachments(args: argparse.Namespace) -> None:
         "sender": sender,
         "subject": subject,
         "attachments": reported_attachments,
+        "message_rowid": persisted["message_rowid"],
     }))
 
 
@@ -2826,6 +2934,27 @@ def self_test(args: argparse.Namespace) -> None:
                 errors.append("manual-review MIME attachment length verification failed")
             if evidence["attachments"][0]["sha256"] != hashlib.sha256(b"proof bytes").hexdigest():
                 errors.append("manual-review MIME attachment hash verification failed")
+
+            draft_root = Path(tmp) / "Mail"
+            draft_snapshot = draft_emlx_snapshot(draft_root)
+            draft_emlx = draft_root / "Account" / "Drafts.mbox" / "Data" / "2" / "Messages" / "2.emlx"
+            draft_emlx.parent.mkdir(parents=True)
+            draft_emlx.write_bytes(str(len(raw_mime)).encode("ascii") + b"\n" + raw_mime)
+            persisted = verify_persisted_draft_after(
+                draft_snapshot,
+                "alice@example.com",
+                {"ivo@example.com"},
+                "Re: Proof",
+                "Proof body",
+                [str(attachment)],
+                expected_message_id="<inbound@example.com>",
+                root=draft_root,
+                timeout=2.0,
+            )
+            if persisted["message_rowid"] != 2:
+                errors.append("persisted draft verifier returned the wrong rowid")
+            if persisted["attachments"][0]["sha256"] != hashlib.sha256(b"proof bytes").hexdigest():
+                errors.append("persisted draft verifier did not hash the requested attachment")
 
             external_mailbox = Path(tmp) / "External.mbox"
             external_messages = external_mailbox / "Messages"
@@ -3083,9 +3212,25 @@ def self_test(args: argparse.Namespace) -> None:
     normalized_move_script = re.sub(r"\s+", " ", JUNK_MOVE_TO_INBOX_APPLESCRIPT).lower()
     if 'whose name is "inbox"' not in normalized_move_script:
         errors.append("junk review routing does not target the account Inbox")
-    if "set junk mail status of m to false" not in normalized_move_script:
+    move_index = normalized_move_script.find("move m to targetinbox")
+    clear_index = normalized_move_script.find("set junk mail status of rescuedmessage to false")
+    if move_index < 0 or clear_index < 0 or move_index > clear_index:
+        errors.append("junk review routing must move before clearing junk status")
+    if "message id of m" not in normalized_move_script or "expectedmessageid" not in normalized_move_script:
+        errors.append("junk review routing does not preserve the RFC Message-ID")
+    if "rawmessageid is missing value" not in normalized_move_script:
+        errors.append("junk review routing does not safely handle a missing RFC Message-ID")
+    if "expectedsender" not in normalized_move_script or "expectedsubject" not in normalized_move_script or "expecteddate" not in normalized_move_script:
+        errors.append("junk review routing does not match stable message attributes")
+    if "repeat 10 times" not in normalized_move_script or "delay 1" not in normalized_move_script:
+        errors.append("junk review routing does not wait for mailbox synchronization")
+    if "(count of inboxmatches) is not 1" not in normalized_move_script:
+        errors.append("junk review routing does not require one unique Inbox copy")
+    if re.search(r"\bdelete\b", normalized_move_script):
+        errors.append("junk review routing must never delete a protected message")
+    if "set junk mail status of rescuedmessage to false" not in normalized_move_script:
         errors.append("junk review routing does not clear junk status")
-    if "message was not found in account inbox after move" not in normalized_move_script:
+    if "protected message was not verified as non-junk in account inbox" not in normalized_move_script:
         errors.append("junk review routing does not verify the move")
     mail_junk_only = MessageRecord(
         mail_id=8,

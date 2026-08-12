@@ -76,7 +76,7 @@ MAX_MODEL_SECONDS = 1200
 MAX_CHANGED_FILES = 60
 MAX_CHANGED_BYTES = 2_000_000
 MAX_DELETED_FILES = 3
-REPAIR_POLICY_VERSION = 5
+REPAIR_POLICY_VERSION = 9
 REPAIR_REQUEST_SCHEMA_VERSION = 5
 LEGACY_REPAIR_REQUEST_SCHEMA_VERSION = 4
 AUTHORITY_LEASE_SECONDS = max(30, int(os.environ.get("TOOL_STATUS_AUTHORITY_LEASE_SECONDS", "180")))
@@ -106,7 +106,7 @@ IGNORED_DIRS = {
     ".git", ".memory", ".build", "build", "dist", "node_modules", "__pycache__",
     ".venv", "venv", "DerivedData", ".cache", "Caches", ".codex",
 }
-INSTRUCTION_FILENAMES = {"AGENTS.md", "CLAUDE.md", "GEMINI.md"}
+INSTRUCTION_FILENAMES = {"AGENTS.md", "GEMINI.md"}
 SELF_PROTECTED_SOURCE_NAMES = {
     "tool-status-repair-worker.py",
     "tool-status-repair-worker-wrapper.sh",
@@ -205,9 +205,8 @@ RECIPE_TIMEOUTS = {"codex-auto-reset": 240}
 # Each entry was audited for what a mid-run kill leaves behind (2026-07-20):
 #   market.refresh              SQLite WAL journal rolls back a torn write, and the
 #                               dispatcher reclaims a proven-stale lock on next run.
-#   claude-window-keeper        Stamp-gated; worst case is a skipped ping.
 #   codex-auto-reset-scheduler  Writes schedule.json via a temp-file rename.
-#   codex-to-claude-sync        Prune runs only after the sync loop completes and
+#   codex-mirror-sync           Prune runs only after the sync loop completes and
 #                               refuses an empty name set, so a kill under-prunes
 #                               rather than over-prunes; the next run finishes it.
 #   quit-on-close, smartwake,
@@ -217,9 +216,8 @@ RECIPE_TIMEOUTS = {"codex-auto-reset": 240}
 # leave state that the next run will not repair.
 RESTART_SAFE_LABELS = frozenset({
     "com.ivo.market.refresh",
-    "com.ivogundlach.claude-window-keeper",
     "com.ivogundlach.codex-auto-reset-scheduler",
-    "com.ivogundlach.codex-to-claude-sync",
+    "com.ivogundlach.codex-mirror-sync",
     "com.ivogundlach.quit-on-close",
     "com.user.smartwake",
     "com.user.smartwake.discord",
@@ -586,13 +584,27 @@ def acquire_incidents_lock():
 def run(command: list[str], timeout: int = 120, cwd: Path | None = None,
         env: dict[str, str] | None = None) -> tuple[int, str]:
     try:
-        completed = subprocess.run(
+        process = subprocess.Popen(
             command, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            stdin=subprocess.DEVNULL, timeout=timeout, cwd=cwd,
+            stdin=subprocess.DEVNULL, cwd=cwd, start_new_session=True,
             env=env or {**os.environ, "PATH": f"{HOME}/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"},
-            check=False,
         )
-        return completed.returncode, (completed.stdout or "").strip()
+        try:
+            output, _ = process.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired as error:
+            try:
+                os.killpg(process.pid, signal.SIGTERM)
+                process.wait(timeout=2)
+            except (ProcessLookupError, subprocess.TimeoutExpired):
+                pass
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            final_output, _ = process.communicate()
+            partial = error.stdout.decode(errors="replace") if isinstance(error.stdout, bytes) else (error.stdout or "")
+            return 124, f"Timed out after {timeout}s. {partial or final_output or ''}".strip()
+        return int(process.returncode or 0), (output or "").strip()
     except subprocess.TimeoutExpired as error:
         output = error.stdout.decode(errors="replace") if isinstance(error.stdout, bytes) else (error.stdout or "")
         return 124, f"Timed out after {timeout}s. {output}".strip()
@@ -1169,7 +1181,7 @@ def sanitize_persisted(value: Any, depth: int = 0) -> Any:
 def current_payload() -> dict[str, Any] | None:
     if not SCANNER.is_file():
         return None
-    rc, output = run(["/usr/bin/python3", str(SCANNER)], timeout=150)
+    rc, output = run(["/usr/bin/python3", str(SCANNER)], timeout=300)
     if rc != 0:
         return None
     try:
@@ -1199,7 +1211,9 @@ def target_healthy(payload: dict[str, Any] | None, job: dict[str, Any]) -> bool:
         # A scanner-created row disappearing is recovery. An externally reported
         # failure must be positively matched; otherwise it would be silently lost.
         return payload is not None and not bool(job.get("externalGroup"))
-    return item.get("state") not in {"warn", "fail"}
+    # `unknown` means the check was not run (for example live auth was not
+    # probed). It is neither recovery nor a reason to involve Ivo.
+    return item.get("state") == "ok"
 
 
 def target_in_progress(payload: dict[str, Any] | None, job: dict[str, Any]) -> bool:
@@ -1289,11 +1303,16 @@ def identity_executable(item: dict[str, Any]) -> Path | None:
     binding, so an unregistered name grants nothing.
     """
     slug = re.sub(r"[^a-z0-9]+", "-", str(item.get("name") or "").casefold()).strip("-")
+    owner_slug = re.sub(r"[^a-z0-9]+", "-", str(item.get("owner") or "").casefold()).strip("-")
     # Scanner names carry qualifiers the binary does not ("... Health", "... Target 1").
     trimmed = re.sub(r"-(health|status|target(-\d+)?)$", "", slug)
     registered = registered_binaries()
-    for candidate in (slug, trimmed):
-        if not candidate or candidate not in registered or candidate in SELF_PROTECTED_BINARIES:
+    for candidate in (owner_slug, slug, trimmed):
+        # `owner` is assigned by scanner code, not copied from logs. It is an
+        # exact executable grant even when the registry entry predates the
+        # agent-owned marker; display-name inference still requires registration.
+        owner_bound = bool(owner_slug and candidate == owner_slug)
+        if not candidate or (not owner_bound and candidate not in registered) or candidate in SELF_PROTECTED_BINARIES:
             continue
         path = HOME / ".local/bin" / candidate
         if not path.is_file():
@@ -1448,12 +1467,12 @@ def owner_scope(item: dict[str, Any], proposed_paths: object = None) -> tuple[li
     roots: list[Path] = []
     if (granted("tool status dashboard") or owner == "tool-status-dashboard") and not protected_incident:
         roots.append(HOME / "Projects/ToolStatusDashboard")
-    if granted("smart wake") and not protected_incident:
+    if granted("smart wake"):
         roots.append(HOME / ".config/smart-wake")
-    if granted("usagequeue") and not protected_incident:
+    if granted("usagequeue"):
         roots.append(HOME / "Projects/UsageQueue")
     exact_project = exact_identity_project(item)
-    if exact_project is not None and not protected_incident:
+    if exact_project is not None:
         roots.append(exact_project)
     if market_incident:
         roots = [path for path in MARKET_BACKGROUND_CODE_ROOTS if path.exists() and not path.is_symlink()]
@@ -1465,22 +1484,23 @@ def owner_scope(item: dict[str, Any], proposed_paths: object = None) -> tuple[li
         return [], "The canonical Market dispatcher source is unavailable; diagnosis is read-only."
 
     label = launch_label(item)
-    if label and first_party_label(label) and not protected_incident:
+    if label and first_party_label(label):
         plist = HOME / f"Library/LaunchAgents/{label}.plist"
         if plist.is_file():
-            roots.append(plist)
             try:
                 data = plistlib.loads(plist.read_bytes())
                 args = data.get("ProgramArguments") or []
-                program = data.get("Program") or (args[0] if args else "")
-                if program:
-                    program_path = Path(str(program)).expanduser()
+                candidates = [data.get("Program"), *args]
+                for value in candidates:
+                    if not isinstance(value, str) or not value.startswith(("/", "~")):
+                        continue
+                    program_path = Path(value).expanduser().resolve(strict=False)
+                    if not program_path.is_relative_to(HOME.resolve()):
+                        continue
                     if program_path.exists() and not program_path.is_symlink():
                         containing_project = project_root(program_path)
-                        roots.append(
-                            program_path.parent if containing_project is not None
-                            else program_path
-                        )
+                        roots.append(containing_project or program_path)
+                        break
             except Exception:
                 pass
 
@@ -1509,13 +1529,20 @@ def owner_scope(item: dict[str, Any], proposed_paths: object = None) -> tuple[li
             roots.append(HOME / ".config/smart-wake")
         elif str(resolved).startswith(str((HOME / "Projects/Market/app").resolve())):
             roots.append(HOME / "Projects/Market/app")
-        elif resolved.parent == (HOME / "Library/LaunchAgents").resolve() and label and first_party_label(label):
-            roots.append(resolved)
+        # LaunchAgent plists are diagnostic evidence only. The exact first-party
+        # program is resolved from the plist above, but the scheduler definition
+        # itself never becomes model-editable scope.
 
     safe: list[Path] = []
     for root in roots:
         root = root.expanduser()
-        value = str(root.resolve(strict=False))
+        resolved_root = root.resolve(strict=False)
+        value = str(resolved_root)
+        # Candidate mirroring is rooted under HOME. Rejecting every external
+        # executable here prevents a shell/interpreter such as /bin/bash from
+        # becoming writable scope or crashing mirror_path().
+        if not resolved_root.is_relative_to(HOME.resolve()):
+            continue
         # Both trees stay excluded wholesale; the only way through is being an exact
         # allowlisted file. (Both sides are resolved, so ~/School -- itself a symlink
         # to ~/Projects/School -- is compared as its canonical target.)
@@ -3006,8 +3033,8 @@ def autonomous_code_preflight(
         fake_home = run_root / "home"
         (fake_home / ".local/state").mkdir(parents=True)
         # Everything else in the real home is mirrored as a symlink, so the tool
-        # reads exactly what it reads in production (the corpus, and the notes
-        # under ~/.claude it cross-references). Reads were already permitted by
+        # reads exactly what it reads in production (the corpus and any hidden
+        # notes it cross-references). Reads were already permitted by
         # the profile, so this grants nothing; writes through these links resolve
         # to canonical paths outside the writable root and are denied. `.local` is
         # deliberately NOT mirrored -- that is the scratch the tool writes into.
@@ -3159,7 +3186,7 @@ def market_candidate_preflight(
 
 def prompt_for(
     job: dict[str, Any], mappings: list[dict[str, str]], scope_note: str,
-    research_evidence: str = "",
+    research_evidence: str = "", *, model: str = MODEL, reasoning: str = REASONING,
 ) -> str:
     item = job.get("item") or {}
     thoughts = redact(job.get("userThoughts"), 2400)
@@ -3174,7 +3201,7 @@ def prompt_for(
     mapping_text = json.dumps(mappings, indent=2)
     config_note = config_prompt_section(job)
     return f"""
-You are the unsupervised Tool Dashboard repair agent running as {MODEL} with {REASONING} reasoning.
+You are the unsupervised Tool Dashboard repair agent running as {model} with {reasoning} reasoning.
 
 Objective: diagnose and repair exactly the incident below on Ivo's owned Mac. Reason fully and use local read-only evidence broadly. Do not stop at a superficial restart when a durable root-cause repair is possible.
 Use the available `vibe-coding` skill for code work and `macos-background-jobs` for LaunchAgent or scheduled-context work. Work iteratively inside this one agent run: inspect, form a root-cause hypothesis, edit the candidate, and run the smallest relevant candidate-side checks before returning.
@@ -3247,21 +3274,87 @@ def parse_result(path: Path) -> dict[str, Any] | None:
         return None
 
 
+def repair_agent(job: dict[str, Any]) -> tuple[str, str]:
+    """The unattended repair lane is Luna/max only."""
+    return MODEL, REASONING
+
+
+def repair_evidence_digest(
+    job: dict[str, Any], item: dict[str, Any], source_manifest: dict[str, Any],
+) -> str:
+    """Versioned material evidence; timestamps/counters cannot buy another call."""
+    params = item.get("causeParams") if isinstance(item.get("causeParams"), dict) else {}
+    stable_params = {
+        str(key): value for key, value in params.items()
+        if str(key) not in {"failure_count", "healthy_count", "attempt_count", "checked_at", "timestamp"}
+    }
+    sources = {
+        str(path): {
+            "hash": value.get("hash"), "size": value.get("size"), "kind": value.get("kind"),
+        }
+        for path, value in sorted(source_manifest.items())
+        if isinstance(value, dict)
+    }
+    controls = {}
+    for name, path in (("worker", Path(__file__)), ("scanner", SCANNER)):
+        try:
+            controls[name] = file_hash(path)
+        except OSError:
+            controls[name] = "unavailable"
+    def material_text(value: object) -> str:
+        text = redact(str(value or ""), 5000)
+        text = re.sub(r"\b\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?\b", "<TIME>", text)
+        text = re.sub(r"\b(runs|failure_count|healthy_count|attempt_count|pid)\s*[=:]\s*\d+\b", r"\1=<COUNT>", text, flags=re.IGNORECASE)
+        text = re.sub(r"\b\d+\s+(?:seconds?|minutes?|hours?)\s+ago\b", "<AGE>", text, flags=re.IGNORECASE)
+        return text
+
+    payload = {
+        "policy": REPAIR_POLICY_VERSION,
+        "incident": job.get("id"),
+        "state": item.get("state"),
+        "causeCode": item.get("causeCode"),
+        "causeParams": stable_params,
+        "owner": item.get("owner"),
+        "headline": material_text(item.get("headline")),
+        "detail": material_text(item.get("detail")),
+        "evidence": material_text(item.get("evidence")),
+        "fix": sanitize_persisted(item.get("fix")),
+        "needsIvo": bool(item.get("needsIvo")),
+        "sources": sources,
+        "controls": controls,
+    }
+    return hashlib.sha256(
+        json.dumps(sanitize_persisted(payload), separators=(",", ":"), sort_keys=True).encode("utf-8")
+    ).hexdigest()
+
+
+def repair_invocation(
+    job: dict[str, Any], candidate: Path, mappings: list[dict[str, str]],
+    writable: bool, scope_note: str, research_evidence: str, output: Path,
+) -> tuple[list[str], str, str]:
+    """Build both tiers through one authority path; only capability may differ."""
+    model, reasoning = repair_agent(job)
+    command = [
+        str(CODEX), "exec", "--ephemeral", "--skip-git-repo-check", "--ignore-rules",
+        "--ignore-user-config", "--sandbox", "workspace-write" if writable else "read-only",
+        "--model", model, "-c", f'model_reasoning_effort="{reasoning}"',
+        "-c", "sandbox_workspace_write.network_access=false",
+        "-c", 'approval_policy="never"', "--output-schema", str(SCHEMA),
+        "--output-last-message", str(output), "-C", str(candidate),
+        prompt_for(job, mappings, scope_note, research_evidence, model=model, reasoning=reasoning),
+    ]
+    return command, model, reasoning
+
+
 def call_luna(
     job: dict[str, Any], candidate: Path, mappings: list[dict[str, str]],
     writable: bool, scope_note: str, research_evidence: str = "",
 ) -> tuple[dict[str, Any] | None, int, str]:
     output = candidate.parent / "luna-result.json"
-    command = [
-        str(CODEX), "exec", "--ephemeral", "--skip-git-repo-check", "--ignore-rules",
-        "--ignore-user-config", "--sandbox", "workspace-write" if writable else "read-only",
-        "--model", MODEL, "-c", f'model_reasoning_effort="{REASONING}"',
-        "-c", "sandbox_workspace_write.network_access=false",
-        "-c", 'approval_policy="never"', "--output-schema", str(SCHEMA),
-        "--output-last-message", str(output), "-C", str(candidate),
-        prompt_for(job, mappings, scope_note, research_evidence),
-    ]
-    append_history("luna-started", job, model=MODEL, reasoning=REASONING, writable=writable)
+    command, model, reasoning = repair_invocation(
+        job, candidate, mappings, writable, scope_note, research_evidence, output,
+    )
+    append_history("luna-started", job, model=model, reasoning=reasoning, writable=writable)
     try:
         codex_home = prepare_repair_codex_home()
     except RuntimeError as error:
@@ -3888,8 +3981,8 @@ def mark_incident_escalated(job: dict[str, Any]) -> None:
 def derive_escalation(job: dict[str, Any], result: dict[str, Any] | None) -> tuple[str, str]:
     """Decide whether this card needs Ivo, and why. Returns (escalation, reason).
 
-    Ivo's rule: notify when the bot could not fix it and he has to step in --
-    either by handing it to a full agent or by signing in somewhere himself.
+    Ivo's v6 rule: model inability is not a human decision and must stay silent.
+    Notify only for a deterministically identified action or operating choice.
 
     This is derived from the worker's OWN outcome, not from the model's opinion.
     Luna may state an `escalation`, and it is recorded, but it cannot be the thing
@@ -3899,41 +3992,27 @@ def derive_escalation(job: dict[str, Any], result: dict[str, Any] | None) -> tup
     attention, never less.
     """
     item = job.get("item") or {}
-    action = (result or {}).get("requested_action")
-    status = str((result or {}).get("status") or "")
+    # Model output cannot mint a card. A failed model, proposed command,
+    # self-declared hard stop, uncertain audit, or missing scope is an internal
+    # engineering outcome and is automatically retried with the stronger tier.
+    # Only scanner-owned structured facts or a supervisor-observed incomplete
+    # rollback can prove that Ivo actually has to act.
+    cause = str(item.get("causeCode") or "")
+    if job.get("verifiedHumanBoundary") == "rollback_incomplete":
+        return "user_action", "automatic rollback could not restore the recorded pre-repair state"
 
-    if isinstance(action, dict) and approved_command(action.get("command"))[0]:
-        return "approve", "a command is waiting for your approval"
-
-    # Sign-in is the one thing nobody can do for him.
-    combined = f"{item.get('causeCode', '')} {item.get('headline', '')}".casefold()
+    control_plane_only = cause in {
+        "tool_status.repair_lane_dead",
+        "tool_status.repair_schema_invalid",
+        "tool_status.repair_lane_unverifiable",
+    }
     fix_kind = str((item.get("fix") or {}).get("kind") or "")
-    if fix_kind == "launch" or "auth" in combined or "login" in combined or "logged in" in combined:
-        return "user_action", "needs you to sign in"
+    if cause == "market.x_auth_required":
+        return "user_action", "the worker owns one exact Safari sign-in action for this cause"
+    if not control_plane_only and (bool(item.get("needsIvo")) or fix_kind == "launch"):
+        return "user_action", "the scanner identified a concrete sign-in, physical action, or personal judgment"
 
-    # Everything else needs an agent, INCLUDING a clean `no_change` verdict.
-    #
-    # That is deliberate and it is the one place this was nearly got wrong. A
-    # `no_change` with no requested action reads like "nothing is wrong", and
-    # silencing it looks like exactly the noise reduction Ivo asked for. It is not:
-    # the check is still failing, so the honest reading is "the bot could not fix
-    # this", which is precisely the case he said he wants to hear about. When the
-    # diagnosis is right, the defect is in the CHECK, and a check that fails while
-    # every diagnosis says it should not is a bug that would go unowned forever if
-    # its card never spoke up.
-    #
-    # There is no `repaired` case here either. Reaching this function means the
-    # worker did NOT accept the repair -- a successful one leaves through
-    # finish_success and never builds a card at all -- so a `repaired` claim
-    # arriving here is one the worker already rejected.
-    #
-    # The volume Ivo was complaining about is therefore not fixed by muting cards.
-    # It is fixed upstream: the broken CLIs no longer raise incidents at all, and
-    # config authority lets Luna resolve the coverage class through finish_success,
-    # where nothing is ever pushed.
-    if status == "no_change" and not action:
-        return "agent", "the check keeps failing while every diagnosis says it should not"
-    return "agent", "needs a full agent session"
+    return "internal", "the repair is unresolved, but no verified human decision or action is required"
 
 
 def plain_fallback(job: dict[str, Any], field: str, reason: str = "") -> str:
@@ -4069,16 +4148,31 @@ def check_scanner_heartbeat() -> None:
         "causeCode": "tool_status.heartbeat_stale",
     }
     append_history("scanner-heartbeat-stale", {"id": item["id"], "item": item}, detail=detail)
-    notify_request(
-        item,
-        f"{detail} Tool failures are not being detected until the background scan runs again.",
-        "tool-status-dashboard.scanner-liveness",
+    domain = f"gui/{os.getuid()}/com.ivogundlach.tool-status-dashboard.scan"
+    status_rc, status_output = run(["/bin/launchctl", "print", domain], timeout=15)
+    if status_rc == 0 and re.search(r"(?m)^\s*state = running\s*$", status_output):
+        append_history(
+            "scanner-heartbeat-scan-already-running", {"id": item["id"], "item": item},
+            detail=detail,
+        )
+        return
+    rc, output = run(["/bin/launchctl", "kickstart", domain], timeout=30)
+    append_history(
+        "scanner-heartbeat-auto-kickstart", {"id": item["id"], "item": item},
+        returnCode=rc, detail=redact(output or detail, 800),
     )
 
 
 def create_request(job_path: Path, job: dict[str, Any], result: dict[str, Any] | None,
                    reason: str, push_body: str, plan: dict[str, Any] | None = None) -> None:
     ensure_generation(job)
+    escalation, escalation_reason = derive_escalation(job, result)
+    if escalation == "internal":
+        defer_job(job_path, job, reason or escalation_reason)
+        append_history(
+            "repair-stayed-silent", job, reason=redact(reason or escalation_reason, 1000),
+        )
+        return
     key = repair_key(job)
     requests = load_requests()
     same_incident = [request for request in requests if request.get("incidentID") == job.get("id")]
@@ -4097,7 +4191,30 @@ def create_request(job_path: Path, job: dict[str, Any], result: dict[str, Any] |
         ensure_generation(job)
     action = (result or {}).get("requested_action")
     action = sanitize_persisted(action) if isinstance(action, dict) else None
-    auth_request = (job.get("item") or {}).get("causeCode") == "market.x_auth_required"
+    source_item = job.get("item") or {}
+    verified_manual = job.get("verifiedHumanBoundary") == "rollback_incomplete"
+    auth_request = (
+        verified_manual
+        or
+        source_item.get("causeCode") == "market.x_auth_required"
+        or source_item.get("category") == "Auth"
+        or (source_item.get("fix") or {}).get("kind") == "launch"
+        or bool(source_item.get("needsIvo"))
+    )
+    scanner_auth_action = bool(
+        auth_request
+        and isinstance(action, dict)
+        and (source_item.get("fix") or {}).get("kind") == "launch"
+        and action.get("command") == (source_item.get("fix") or {}).get("command")
+    )
+    exact_auth_request = bool(
+        auth_request
+        and isinstance(action, dict)
+        and (
+            scanner_auth_action
+            or source_item.get("causeCode") == "market.x_auth_required"
+        )
+    )
     display_action = action
     if not auth_request and isinstance(action, dict):
         display_action = {
@@ -4108,8 +4225,8 @@ def create_request(job_path: Path, job: dict[str, Any], result: dict[str, Any] |
     # Authentication is intentionally still exact-action. Every other approval
     # is an issue grant: staged paths/commands are retained only as redacted
     # provenance and never become authority-bearing request fields.
-    plan = staged_plan if auth_request else None
-    if auth_request and plan is None and isinstance(action, dict) and action.get("command"):
+    plan = staged_plan if exact_auth_request else None
+    if exact_auth_request and plan is None and isinstance(action, dict) and action.get("command"):
         effects = plan_effects([], job.get("item") or {})
         effects["command"] = command_effect(action.get("command"))
         plan = {
@@ -4125,11 +4242,11 @@ def create_request(job_path: Path, job: dict[str, Any], result: dict[str, Any] |
             "immutableConstraints": ["Only the exact displayed command may run once; no future discretion."],
         }
     descriptor = issue_authority_descriptor(
-        job, exact_plan=plan if auth_request else None,
-        exact_action=display_action if auth_request else None,
+        job, exact_plan=plan if exact_auth_request else None,
+        exact_action=display_action if exact_auth_request else None,
     )
     authority_digest = issue_authority_digest(descriptor)
-    digest = canonical_plan_digest(plan) if auth_request and plan else None
+    digest = canonical_plan_digest(plan) if exact_auth_request and plan else None
     request_id = "repair-" + hashlib.sha256(
         f"{job.get('id')}|{job.get('generation')}|{job.get('revision')}|{authority_digest}|{digest or ''}".encode()
     ).hexdigest()[:24]
@@ -4139,10 +4256,7 @@ def create_request(job_path: Path, job: dict[str, Any], result: dict[str, Any] |
     previous_plan_signature = plan_authority_signature((existing or {}).get("proposedPlan"))
     current_plan_signature = plan_authority_signature(plan)
     cause_code = (job.get("item") or {}).get("causeCode")
-    escalation, escalation_reason = derive_escalation(job, result)
-    if not auth_request:
-        escalation, escalation_reason = "approve", "one approval grants full local repair authority for this incident until the trusted health check is healthy"
-    elif plan and not action:
+    if plan and not action:
         escalation, escalation_reason = "approve", approval_reason(job, reason, plan)
     summary = plain_display((result or {}).get("summary"), job, "summary", reason)
     root_cause = plain_display((result or {}).get("root_cause"), job, "root", reason)
@@ -4179,7 +4293,10 @@ def create_request(job_path: Path, job: dict[str, Any], result: dict[str, Any] |
         "proposedFix": proposed_fix,
         "approvalReason": (
             "Approve grants Luna full local repair authority for this incident until it is healthy; paths and commands may change. Hard stops remain enforced."
-            if not auth_request else approval_reason(job, reason, plan)
+            if not auth_request else (
+                approval_reason(job, reason, plan) if exact_auth_request
+                else "No approval is available because Luna has no exact safe action to run. Use Add Thoughts or Dismiss after completing the review."
+            )
         ),
         "risk": risk,
         "requestedAction": display_action,
@@ -4187,7 +4304,10 @@ def create_request(job_path: Path, job: dict[str, Any], result: dict[str, Any] |
         "planDigest": digest,
         "authorityDescriptor": descriptor,
         "authorityDigest": authority_digest,
-        "authorityStatus": "auth-exact" if auth_request else "pending",
+        "authorityStatus": (
+            "auth-exact" if exact_auth_request
+            else ("human-only" if auth_request else "pending")
+        ),
         "grantID": None,
         "candidateProvenance": {
             "diagnosticOnly": True,
@@ -4199,12 +4319,13 @@ def create_request(job_path: Path, job: dict[str, Any], result: dict[str, Any] |
         "actionable": True if not auth_request else bool(
             (isinstance(plan, dict) and bool(plan.get("operations")))
             or (isinstance(action, dict) and approved_command(action.get("command"))[0])
+            or scanner_auth_action
         ),
         "escalation": escalation,
         "escalationReason": escalation_reason,
         "modelEscalation": (result or {}).get("escalation"),
-        "model": MODEL,
-        "reasoning": REASONING,
+        "model": repair_agent(job)[0],
+        "reasoning": repair_agent(job)[1],
         "status": "pending",
         "createdAt": existing.get("createdAt") if existing else iso(),
         "updatedAt": iso(),
@@ -4230,7 +4351,17 @@ def create_request(job_path: Path, job: dict[str, Any], result: dict[str, Any] |
         or (auth_request and (previous_action != next_action or previous_plan_signature != current_plan_signature))
     )
     if materially_new_authority and escalation in {"approve", "user_action", "agent"}:
-        prefix = {"approve": "Needs your approval", "user_action": "Needs you to sign in", "agent": "Needs an agent session"}.get(escalation, "Review needed")
+        item = job.get("item") or {}
+        is_auth_action = (
+            item.get("category") == "Auth"
+            or "auth" in str(item.get("causeCode") or "").casefold()
+            or "login" in str(item.get("causeCode") or "").casefold()
+        )
+        prefix = {
+            "approve": "Needs your approval",
+            "user_action": "Needs you to sign in" if is_auth_action else "Needs your action",
+            "agent": "Needs an agent session",
+        }.get(escalation, "Review needed")
         conclusion = plain_display(summary, job, "summary", push_body)
         body = f"{prefix}: {conclusion}. Open Tool Dashboard to review."
         notify_request(job.get("item") or {}, redact(body, 240), request_id)
@@ -5065,7 +5196,7 @@ def process_decisions() -> None:
             # v5 non-auth approval mints a durable issue grant and requeues the
             # incident. The staged candidate remains diagnostic provenance only;
             # it is never passed to apply_approved_candidate().
-            auth_request = request.get("causeCode") == "market.x_auth_required"
+            auth_request = request.get("authorityStatus") in {"auth-exact", "human-only"}
             active_grant = grant_for_job(job)
             if active_grant is None:
                 active_grant = next((value for value in load_issue_grants().values()
@@ -5159,6 +5290,14 @@ def process_decisions() -> None:
             update_request(request_id, "reconsidering")
             append_history("thoughts-added", job, revision=job["revision"])
         elif choice == "approve":
+            if request.get("authorityStatus") == "human-only":
+                append_history(
+                    "decision-rejected-no-action", job,
+                    reason="This incident requires human input but has no exact action Luna can safely approve.",
+                )
+                update_request(request_id, "pending")
+                path.unlink(missing_ok=True)
+                continue
             # Claim before any command, file mutation, build, restart, or auth
             # browser action. A replay therefore becomes a history-only no-op.
             update_request(request_id, "executing")
@@ -5168,13 +5307,27 @@ def process_decisions() -> None:
                 continue
             action = request.get("requestedAction") or {}
             command = action.get("command")
-            auth_request = request.get("causeCode") == "market.x_auth_required"
-            if auth_request and command != MARKET_X_LOGIN_COMMAND:
+            auth_request = request.get("authorityStatus") == "auth-exact"
+            market_auth_request = request.get("causeCode") == "market.x_auth_required"
+            if market_auth_request and command != MARKET_X_LOGIN_COMMAND:
                 append_history(
                     "market-x-auth-action-rejected", job,
                     note="The stored action did not match the immutable Safari login action.",
                 )
                 requeue_candidate_mismatch(pending, job, request, "The immutable authentication action was altered before approval.")
+                path.unlink(missing_ok=True)
+                continue
+            # For ordinary dashboard authentication cards, the visible app has
+            # already opened the exact scanner-owned login action in response to
+            # the user's Approve click. The background worker only records the
+            # health wait; executing the interactive command again here would
+            # open a duplicate browser or Terminal window.
+            if auth_request and not market_auth_request:
+                job["authWaitStartedAt"] = iso()
+                job["authWaitExpiresAt"] = iso(now() + dt.timedelta(seconds=AUTH_WAIT_SECONDS))
+                atomic_json(pending, job)
+                update_request(request_id, "awaiting_user_auth")
+                append_history("auth-user-action-opened", job, request=request_id)
                 path.unlink(missing_ok=True)
                 continue
             allowed, note = approved_command(command)
@@ -5300,7 +5453,15 @@ def defer_for_network(job_path: Path, job: dict[str, Any], reason: str) -> None:
 def defer_job(job_path: Path, job: dict[str, Any], reason: str) -> None:
     attempts = int(job.get("attempts") or 0) + 1
     job["attempts"] = attempts
-    delay = [300, 900, 1800][min(attempts - 1, 2)]
+    delay = 24 * 3600
+    job["lunaExhausted"] = True
+    job["lunaAttemptState"] = "exhausted"
+    job.pop("internalAgentTier", None)
+    job.pop("solAttempts", None)
+    append_history(
+        "luna-evidence-exhausted", job, model=MODEL, reasoning=REASONING,
+        reason=redact(reason, 1000), retrySeconds=delay,
+    )
     job["nextAttemptAt"] = iso(now() + dt.timedelta(seconds=delay))
     job["lastModelError"] = redact(reason, 1800)
     atomic_json(job_path, job)
@@ -5525,7 +5686,7 @@ def reconcile_pending_recoveries() -> None:
             )
             if fresh_success:
                 finish_success(
-                    path, job, None, "Fresh Market health confirmed the restored X sign-in.",
+                    path, job, None, "A fresh trusted health check confirmed the completed user action.",
                     "recovered_awaiting_decision",
                 )
                 continue
@@ -5535,6 +5696,38 @@ def reconcile_pending_recoveries() -> None:
                 "recovered_awaiting_decision",
             )
             continue
+        live_item = find_item(payload, job)
+        if (
+            isinstance(live_item, dict)
+            and isinstance(matching_request, dict)
+            and matching_request.get("status") == "pending"
+            and matching_request.get("authorityStatus") == "human-only"
+        ):
+            # Presentation copy is not authority-bearing for a human-only card.
+            # Keep it current without changing the request identity or pushing
+            # again when the scanner learns a clearer explanation.
+            job["item"] = live_item
+            atomic_json(path, job)
+            fix = live_item.get("fix") or {}
+            current_requests = load_requests()
+            current_request = next((
+                request for request in current_requests
+                if request.get("id") == matching_request.get("id")
+            ), None)
+            if not isinstance(current_request, dict):
+                continue
+            current_request["summary"] = plain_display(live_item.get("headline"), job, "summary")
+            current_request["rootCause"] = plain_display(live_item.get("detail"), job, "root")
+            current_request["proposedFix"] = plain_display(
+                fix.get("note") or fix.get("label"), job, "fix",
+                "Complete the required review, then dismiss the card or add what you found.",
+            )
+            current_request["approvalReason"] = (
+                "No approval is available because Luna has no exact safe action to run. "
+                "Use Add Thoughts or Dismiss after completing the review."
+            )
+            current_request["updatedAt"] = iso()
+            save_requests(current_requests)
         if not job.get("authWaitExpiresAt"):
             continue
         expires = parse_time(job.get("authWaitExpiresAt"))
@@ -5548,12 +5741,12 @@ def reconcile_pending_recoveries() -> None:
         if matching_request:
             reissue_auth_request(
                 str(matching_request.get("id")),
-                "Market still cannot confirm your X sign-in. Approve to reopen the official sign-in page.",
+                "The service still cannot confirm the completed action. Approve to try the scanner-owned action again.",
             )
         job.pop("authWaitExpiresAt", None)
         job.pop("authWaitStartedAt", None)
         atomic_json(path, job)
-        append_history("market-x-auth-wait-expired", job)
+        append_history("auth-wait-expired", job)
 
 
 def migrate_legacy_auth_request(job: dict[str, Any], request: dict[str, Any], pending: Path) -> bool:
@@ -5603,6 +5796,118 @@ def migrate_legacy_auth_request(job: dict[str, Any], request: dict[str, Any], pe
     return True
 
 
+def migrate_generic_requests_to_internal() -> None:
+    """Remove the obsolete approval relay without discarding unresolved work."""
+    requests = load_requests()
+    grants = load_issue_grants()
+    changed = False
+    open_statuses = {
+        "pending", "approved", "repairing", "stalled", "suspended-hard-stop",
+        "executing", "reconsidering",
+    }
+    protected_authority = {"auth-exact", "human-only", "exact-candidate"}
+    for request in requests:
+        if request.get("status") not in open_statuses:
+            continue
+        if request.get("authorityStatus") in protected_authority:
+            continue
+        pending_key = str(request.get("pendingKey") or "")
+        pending_path = PENDING / f"{pending_key}.json" if pending_key else None
+        job = load_json(pending_path, {}) if pending_path is not None else {}
+        queue_path: Path | None = None
+        if not isinstance(job, dict) or not job.get("id"):
+            for candidate in QUEUE.glob("*.json"):
+                value = load_json(candidate, {})
+                if isinstance(value, dict) and value.get("id") == request.get("incidentID"):
+                    job = value
+                    queue_path = candidate
+                    break
+        grant = grants.get(str(request.get("grantID") or ""))
+        if (not isinstance(job, dict) or not job.get("id")) and isinstance(grant, dict):
+            snapshot = grant.get("jobSnapshot")
+            job = dict(snapshot) if isinstance(snapshot, dict) else {}
+        in_flight = bool(isinstance(job, dict) and any(job.get(key) for key in (
+            "transactionRollback", "transactionState", "verificationPending",
+        )))
+        if isinstance(grant, dict):
+            lease_path = REPAIR_LEASES / f"{grant.get('grantID')}.json"
+            lease = load_json(lease_path, {})
+            if isinstance(lease, dict) and lease.get("fencingToken"):
+                expires = parse_time(lease.get("expiresAt"))
+                child_status, _ = child_identity(lease)
+                in_flight = in_flight or child_status == "verified" or bool(expires and expires > now())
+        if in_flight:
+            request["migrateAfterAttempt"] = True
+            request["updatedAt"] = iso()
+            changed = True
+            continue
+        if isinstance(grant, dict) and grant.get("status") in {
+            "active", "stalled", "suspended-hard-stop",
+        }:
+            superseded = update_issue_grant(
+                grant, "superseded",
+                reason="Policy v9 continues ordinary repair internally without Ivo approval.",
+            )
+            grants[str(grant.get("grantID"))] = superseded
+        if isinstance(job, dict) and job.get("id"):
+            job.pop("issueAuthorityGrant", None)
+            job.pop("candidatePlan", None)
+            job.pop("approvalGranted", None)
+            job["repairPolicyVersion"] = REPAIR_POLICY_VERSION
+            job.pop("internalAgentTier", None)
+            job.pop("solAttempts", None)
+            job.pop("lunaExhausted", None)
+            job.pop("lunaAttemptEvidenceDigest", None)
+            job.pop("lunaAttemptState", None)
+            job["attempts"] = 0
+            job["nextAttemptAt"] = iso()
+            destination = QUEUE / f"{repair_key(job)}.json"
+            atomic_json(destination, job)
+            if queue_path is not None and queue_path != destination:
+                queue_path.unlink(missing_ok=True)
+            if pending_path is not None:
+                pending_path.unlink(missing_ok=True)
+        request["status"] = "internal"
+        request["authorityStatus"] = "internal"
+        request["migrateAfterAttempt"] = False
+        request["updatedAt"] = iso()
+        changed = True
+        append_history(
+            "generic-request-migrated-internal",
+            job if isinstance(job, dict) and job.get("id") else {
+                "id": request.get("incidentID"), "item": {"name": request.get("toolName")},
+            },
+            request=request.get("id"),
+        )
+    if changed:
+        save_requests(requests)
+
+
+def migrate_queued_jobs_to_luna_only() -> None:
+    """Remove legacy model-tier state; policy v9 earns one Luna/max attempt."""
+    for directory in (QUEUE, PENDING):
+        for path in directory.glob("*.json"):
+            job = load_json(path, {})
+            if not isinstance(job, dict) or not job.get("id"):
+                continue
+            if (
+                int(job.get("repairPolicyVersion") or 0) >= REPAIR_POLICY_VERSION
+                and not job.get("internalAgentTier") and "solAttempts" not in job
+            ):
+                continue
+            job.pop("internalAgentTier", None)
+            job.pop("solAttempts", None)
+            job.pop("lunaExhausted", None)
+            job.pop("lunaAttemptEvidenceDigest", None)
+            job.pop("lunaAttemptState", None)
+            job["repairPolicyVersion"] = REPAIR_POLICY_VERSION
+            job["attempts"] = 0
+            if directory == QUEUE:
+                job["nextAttemptAt"] = iso()
+            atomic_json(path, job)
+            append_history("queued-job-migrated-luna-only", job, model=MODEL, reasoning=REASONING)
+
+
 def reconsider_legacy_pending() -> None:
     """Re-diagnose old non-auth escalations without retroactively granting authority."""
     requests = load_requests()
@@ -5611,9 +5916,22 @@ def reconsider_legacy_pending() -> None:
         job = load_json(path, {})
         if not isinstance(job, dict) or not job.get("id"):
             continue
+        matching = next((
+            request for request in requests
+            if request.get("pendingKey") == repair_key(job)
+            or request.get("incidentID") == job.get("id")
+        ), None)
+        if isinstance(matching, dict) and matching.get("authorityStatus") in {
+            "auth-exact", "human-only", "exact-candidate",
+        }:
+            # A policy version bump cannot turn a genuine human boundary back
+            # into generic internal work (or vice versa). Preserve the exact
+            # request and only mark its durable job as understood by v7.
+            job["repairPolicyVersion"] = REPAIR_POLICY_VERSION
+            atomic_json(path, job)
+            continue
         cause = str((job.get("item") or {}).get("causeCode") or "")
         if cause == "market.x_auth_required":
-            matching = next((request for request in requests if request.get("pendingKey") == repair_key(job)), None)
             if matching is not None and migrate_legacy_auth_request(job, matching, path):
                 changed_requests = True
             job["repairPolicyVersion"] = REPAIR_POLICY_VERSION
@@ -5667,25 +5985,93 @@ def reconsider_legacy_pending() -> None:
         save_requests(requests)
 
 
-def process_job(job_path: Path, job: dict[str, Any]) -> None:
+def process_job(
+    job_path: Path, job: dict[str, Any], scan_payload: dict[str, Any] | None = None,
+) -> None:
     ensure_generation(job)
     if int(job.get("repairPolicyVersion") or 0) < REPAIR_POLICY_VERSION:
         job["repairPolicyVersion"] = REPAIR_POLICY_VERSION
         atomic_json(job_path, job)
+    transaction_path = job.get("transactionRollback")
+    if transaction_path and not job.get("verificationPending"):
+        changes = job.get("transactionChanges") or []
+        try:
+            detail = rollback_and_restore(Path(str(transaction_path)), changes, job.get("item") or {})
+        except Exception as error:
+            detail = f"Interrupted transaction recovery raised {type(error).__name__}: {error}"
+        job.pop("transactionRollback", None)
+        job.pop("transactionChanges", None)
+        atomic_json(job_path, job)
+        append_history("interrupted-transaction-recovered", job, details=redact(detail, 1600))
+        if any(marker in detail.casefold() for marker in (
+            "conflicts:", "redeployment failed", "rollback raised", "could not restore",
+        )):
+            job["verifiedHumanBoundary"] = "rollback_incomplete"
+            create_request(
+                job_path, job, None, detail,
+                "Automatic rollback could not fully restore the previous state",
+            )
+            return
+    payload = scan_payload if scan_payload is not None else current_payload()
+    if target_healthy(payload, job):
+        finish_success(
+            job_path, job, None, "The incident recovered before repair execution.",
+            "recovered_before_repair",
+        )
+        return
+    live_item = find_item(payload, job)
+    if live_item is not None:
+        job["item"] = live_item
+    item = job.get("item") or {}
+    if job.get("lunaAttemptState") == "exhausted" and job.get("lunaAttemptEvidenceDigest"):
+        try:
+            evidence_roots, _ = owner_scope(item)
+            current_evidence = repair_evidence_digest(job, item, actual_manifest(evidence_roots))
+        except (OSError, RuntimeError, ValueError):
+            current_evidence = str(job.get("lunaAttemptEvidenceDigest") or "")
+        if current_evidence != job.get("lunaAttemptEvidenceDigest"):
+            job.pop("lunaAttemptEvidenceDigest", None)
+            job.pop("lunaAttemptState", None)
+            job["lunaExhausted"] = False
+            job["attempts"] = 0
+            job["nextAttemptAt"] = iso()
+            append_history(
+                "luna-evidence-materially-changed", job,
+                reason="Fresh scanner evidence or owned source hashes changed; one new Luna/max attempt is allowed.",
+            )
+    atomic_json(job_path, job)
     due = parse_time(job.get("nextAttemptAt"))
     if due and due > now():
         return
-    # Some rows record something that already happened and that only Ivo can
-    # close -- a mail draft that failed to save days ago cannot be repaired
-    # retroactively by anyone. Running one through the repair lane produces an
-    # endless retry against an unfixable past event, and offers an Approve button
-    # with nothing behind it. Leave the card visible; take it out of the queue.
-    if (job.get("item") or {}).get("needsIvo"):
-        finish_success(
-            job_path, job, None,
-            "This records a past event that only Ivo can close, so no repair was attempted.",
-            "needs_ivo",
-        )
+    # A scanner-owned needsIvo flag is the deterministic human-action boundary.
+    # Do not spend a Luna run restating it; create one exact action card and push.
+    if item.get("needsIvo") or (item.get("fix") or {}).get("kind") == "launch":
+        fix = item.get("fix") or {}
+        action = None
+        if fix.get("kind") == "launch" and isinstance(fix.get("command"), list):
+            is_auth = item.get("category") == "Auth" or "auth" in str(item.get("causeCode") or "").casefold()
+            action = {
+                "kind": "command", "description": fix.get("note") or fix.get("label") or "Complete the required sign-in.",
+                "risk": (
+                    "This opens the service's own sign-in flow; no password or token is stored by Tool Dashboard."
+                    if is_auth else
+                    "This runs only the exact local action shown. Tool Dashboard verifies the original health check afterward."
+                ),
+                "command": fix.get("command"),
+            }
+        result = {
+            "status": "needs_approval",
+            "summary": item.get("headline") or f"{item.get('name') or 'This tool'} needs you.",
+            "root_cause": item.get("detail") or "The remaining step requires your sign-in or judgment.",
+            "proposed_fix": (fix.get("note") or fix.get("label") or "Complete the required action, then Tool Dashboard will verify it automatically."),
+            "decision_impact": "overrides_decision" if action is None else "preserves_decisions",
+            "requested_action": action,
+            "hard_stop": {
+                "reason": "The remaining step requires Ivo's physical action or judgment.",
+                "human_action": fix.get("label") or "Review the action in Tool Dashboard.",
+            },
+        }
+        create_request(job_path, job, result, "Scanner classified this as a genuine human action.", "Needs your action")
         return
     # A v5 grant owns the incident after approval.  It is deliberately checked
     # before any deterministic recipe, staged candidate, or owner-scope logic so
@@ -5701,29 +6087,6 @@ def process_job(job_path: Path, job: dict[str, Any]) -> None:
         }:
             return
         return
-    transaction_path = job.get("transactionRollback")
-    if transaction_path and not job.get("verificationPending"):
-        changes = job.get("transactionChanges") or []
-        try:
-            detail = rollback_and_restore(Path(str(transaction_path)), changes, job.get("item") or {})
-        except Exception as error:
-            detail = f"Interrupted transaction recovery raised {type(error).__name__}: {error}"
-        job.pop("transactionRollback", None)
-        job.pop("transactionChanges", None)
-        atomic_json(job_path, job)
-        append_history("interrupted-transaction-recovered", job, details=redact(detail, 1600))
-    payload = current_payload()
-    if target_healthy(payload, job):
-        finish_success(
-            job_path, job, None, "The incident recovered before repair execution.",
-            "recovered_before_repair",
-        )
-        return
-
-    live_item = find_item(payload, job)
-    if live_item is not None:
-        job["item"] = live_item
-        atomic_json(job_path, job)
     if target_in_progress(payload, job):
         delay = 15 * 60
         job["nextAttemptAt"] = iso(now() + dt.timedelta(seconds=delay))
@@ -5823,55 +6186,48 @@ def process_job(job_path: Path, job: dict[str, Any]) -> None:
     candidate.mkdir(parents=True, exist_ok=True)
     mappings = copy_scope(roots, candidate) if roots else []
     original, before_candidate = manifests(roots, candidate) if roots else ({}, {})
+    evidence_digest = repair_evidence_digest(job, item, original)
+    previous_digest = str(job.get("lunaAttemptEvidenceDigest") or "")
+    previous_state = str(job.get("lunaAttemptState") or "")
+    if previous_digest == evidence_digest and previous_state in {"running", "exhausted"}:
+        job["lunaExhausted"] = True
+        job["lunaAttemptState"] = "exhausted"
+        job["nextAttemptAt"] = iso(now() + dt.timedelta(hours=24))
+        atomic_json(job_path, job)
+        append_history(
+            "luna-call-suppressed-unchanged-evidence", job,
+            evidenceDigest=evidence_digest,
+            reason="Luna/max already received this materially unchanged incident evidence.",
+        )
+        return
+    job["lunaAttemptEvidenceDigest"] = evidence_digest
+    job["lunaAttemptState"] = "running"
+    job["lunaInvocationID"] = secrets.token_hex(12)
+    job["lunaExhausted"] = False
+    job["lastLunaAttemptAt"] = iso()
+    atomic_json(job_path, job)
     result, rc, model_log = call_luna(job, candidate, mappings, bool(roots), scope_note)
 
     if result is None or rc != 0:
         if not network_available():
             defer_for_network(job_path, job, model_log or f"Luna exited {rc} while the network was unavailable.")
             return
-        if transient_call_failure(rc, model_log) and int(job.get("attempts") or 0) < 2:
-            defer_job(job_path, job, model_log or f"Luna exited {rc}")
-            return
-        create_request(
-            job_path, job, result, model_log or f"Luna exited {rc} without a valid result.",
-            "Luna could not complete the repair; review required",
-        )
+        defer_job(job_path, job, model_log or f"Luna exited {rc} without a valid result.")
         return
 
-    # Luna may discover one exact project path that was not inferable from the
-    # scanner identity. Revalidate and stage it once for this revision, then give
-    # Luna one bounded rediscovery run. A second proposal is recorded but never
-    # loops into another scope expansion.
+    # A proposed path is useful diagnostic evidence, but it never causes a second
+    # model call. The next call is permitted only after scanner evidence changes.
     proposed = result.get("proposed_paths") if isinstance(result, dict) else None
-    revision = int(job.get("revision") or 1)
-    if proposed and job.get("scopeRediscoveryAttemptedRevision") != revision:
+    if proposed:
         expanded_roots, expanded_note = owner_scope(item, proposed)
         extra_roots = [root for root in expanded_roots if root not in roots]
         if extra_roots:
-            job["scopeRediscoveryAttemptedRevision"] = revision
-            atomic_json(job_path, job)
-            extra_mappings = copy_scope(extra_roots, candidate)
-            mappings.extend(extra_mappings)
-            for path, value in actual_manifest(extra_roots).items():
-                original[path] = value
-            roots = expanded_roots
-            scope_note = expanded_note
             append_history(
-                "model-scope-rediscovered", job,
+                "model-scope-discovered-for-next-evidence", job,
                 proposedPaths=[str(path) for path in extra_roots],
+                note=expanded_note,
                 policyVersion=REPAIR_POLICY_VERSION,
             )
-            result, rc, model_log = call_luna(
-                job, candidate, mappings, True, scope_note,
-                "The outer worker validated and staged the additional exact paths you proposed. Reassess the incident and return the smallest verified repair; do not propose another scope expansion.",
-            )
-            if result is None or rc != 0:
-                create_request(
-                    job_path, job, result,
-                    model_log or f"Luna exited {rc} after the validated scope expansion.",
-                    "The repair could not be completed after reviewing the additional project files.",
-                )
-                return
 
     research_evidence, research_records = fetch_research_evidence(
         result.get("research_urls"), workspace,
@@ -5879,16 +6235,10 @@ def process_job(job_path: Path, job: dict[str, Any]) -> None:
     if research_records:
         append_history("research-broker-finished", job, requests=research_records)
     if research_evidence:
-        result, rc, model_log = call_luna(
-            job, candidate, mappings, bool(roots), scope_note, research_evidence,
+        append_history(
+            "research-evidence-saved-for-next-evidence", job,
+            reason="Research was collected without issuing a second repair-generation call.",
         )
-        if result is None or rc != 0:
-            create_request(
-                job_path, job, result,
-                model_log or f"Luna exited {rc} after brokered documentation research.",
-                "Luna could not complete the repair; review required",
-            )
-            return
 
     if luna_claims_stale_market_auth(job, result):
         job["userThoughts"] = (
@@ -5928,28 +6278,11 @@ def process_job(job_path: Path, job: dict[str, Any]) -> None:
         and not result.get("requested_action")
     ):
         append_history(
-            "luna-empty-candidate-retry", job,
-            firstStatus=result.get("status"),
-            firstSummary=redact(result.get("summary"), 800),
+            "luna-empty-candidate-exhausted", job,
+            status=result.get("status"), summary=redact(result.get("summary"), 800),
         )
-        result, rc, model_log = call_luna(
-            job, candidate, mappings, bool(roots), scope_note,
-            (
-                "Outer-worker validation found no staged file change, so the incident "
-                "is still unresolved. Make one final contract-preserving repair attempt "
-                "inside the same candidate scope, verify it, and do not claim repaired "
-                "without a concrete candidate change."
-            ),
-        )
-        if result is None or rc != 0:
-            create_request(
-                job_path, job, result,
-                model_log or f"Luna exited {rc} on its final pre-mutation attempt.",
-                "Luna could not complete the repair; review required",
-            )
-            return
-        _original_after, candidate_after = manifests(roots, candidate) if roots else ({}, {})
-        changes = changed_files(original, candidate_after)
+        defer_job(job_path, job, result.get("summary") or "Luna produced no verifiable candidate change.")
+        return
     policy_ok, policy_note = validate_change_policy(changes, roots)
     plan_for_request = None
     if changes:
@@ -6200,6 +6533,15 @@ def process_job(job_path: Path, job: dict[str, Any]) -> None:
         f"Candidate was rolled back. Validation={valid}; deployment={deployed}; "
         f"checks={' | '.join(checks)}; deploy={deploy_detail}; restore={restore_detail}"
     )
+    rollback_incomplete = any(marker in restore_detail.casefold() for marker in (
+        "conflicts:", "redeployment failed", "rollback raised", "could not restore",
+    ))
+    if rollback_incomplete:
+        job["verifiedHumanBoundary"] = "rollback_incomplete"
+        result["hard_stop"] = {
+            "reason": "Automatic rollback did not fully restore the pre-repair state.",
+            "human_action": "Review the affected repair in Tool Dashboard before another attempt.",
+        }
     result["requested_action"] = result.get("requested_action") or {
         "kind": "manual", "description": "Review the rolled-back candidate and verification evidence.",
         "risk": "Automatic validation or the post-repair health scan failed.", "command": None,
@@ -6261,12 +6603,35 @@ def main() -> int:
                 details=schema_problems,
             )
             return 78
+        migrate_queued_jobs_to_luna_only()
+        migrate_generic_requests_to_internal()
         process_decisions()
         reconsider_legacy_pending()
         recover_active_issue_grants()
         check_scanner_heartbeat()
         reconcile_pending_recoveries()
-        jobs = sorted(QUEUE.glob("*.json"), key=lambda path: path.stat().st_mtime)
+        # One scanner result reconciles every queued incident, including jobs
+        # whose retry timer is in the future. This closes stale cards/grants
+        # immediately without letting a future-due job consume the one model slot.
+        payload = current_payload()
+        for path in list(QUEUE.glob("*.json")):
+            job = load_json(path, {})
+            if (
+                isinstance(job, dict) and job.get("id")
+                and not job.get("transactionRollback")
+                and target_healthy(payload, job)
+            ):
+                finish_success(
+                    path, job, None, "The incident recovered before its next retry.",
+                    "recovered_before_repair",
+                )
+        jobs = sorted(
+            QUEUE.glob("*.json"),
+            key=lambda path: (
+                parse_time(load_json(path, {}).get("nextAttemptAt")) or dt.datetime.min.replace(tzinfo=dt.timezone.utc),
+                path.stat().st_mtime,
+            ),
+        )
         for path in jobs:
             job = load_json(path, {})
             if not isinstance(job, dict) or not job.get("id") or not isinstance(job.get("item"), dict):
@@ -6276,7 +6641,7 @@ def main() -> int:
             due = parse_time(job.get("nextAttemptAt"))
             if due and due > now():
                 continue
-            process_job(path, job)
+            process_job(path, job, payload)
             break
         return 0
     finally:

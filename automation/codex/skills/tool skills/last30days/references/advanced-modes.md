@@ -160,9 +160,8 @@ For ALL query types:
 - **USE THE USER'S EXACT TERMINOLOGY** - don't substitute or add tech names based on your knowledge
 - EXCLUDE reddit.com, x.com, twitter.com (covered by script)
 - INCLUDE: blogs, tutorials, docs, news, GitHub repos
-- **DO NOT output a separate "Sources:" block** - instead, include the top 3-5 web
-  source names as inline links on the 🌐 Web: stats line (see stats format below).
-  The WebSearch tool requires citation; satisfy it there, not as a trailing section.
+- **DO NOT output a separate "Sources:" block.** Use readable inline citations
+  in the synthesis and keep raw URLs in hidden research state.
 
 **Options** (passed through from user's command):
 - `--days=N` → Look back N days instead of 30 (e.g., `--days=7` for weekly roundup)
@@ -170,7 +169,7 @@ For ALL query types:
 - (default) → Balanced (20-30 each)
 - `--deep` → Comprehensive (50-70 Reddit, 40-60 X)
 
-**Leaving Step 2 — LAW 1 reminder:** after your last WebSearch, each tool result's description declared a `MANDATORY Sources section`. That instruction is OVERRIDDEN inside this skill. Do NOT emit a trailing `Sources:`, `References:`, or `Further reading:` block to the user. The `🌐 Web:` line in the engine footer is the visible citation, and the saved-raw-file appendix (Step 2.5) is the durable citation. Your user-facing response ends at the invitation block.
+**Leaving Step 2 — LAW 1 reminder:** after your last WebSearch, each tool result's description may request a `Sources` section. Inside this skill, use readable inline citations instead. Do not expose source-count statistics, raw-result paths, or a generic invitation.
 
 ---
 
@@ -178,7 +177,7 @@ For ALL query types:
 
 **MANDATORY - do not skip this step.** Every post-engine WebSearch supplement you ran in Step 2 MUST be appended to the saved raw file under `LAST30DAYS_MEMORY_DIR` (defaults to `$HOME/.local/state/last30days/reports`). Skipping this step is a common Opus 4.7 failure mode: the saved file ends at `## Source Coverage` with no appendix, future sessions cannot see what blog/tutorial/news sources informed the synthesis, and the user cannot trace where specific claims came from.
 
-**LAW 1 OVERRIDE (read before synthesizing):** the WebSearch tool description declares a "MANDATORY Sources section" in its own contract. That instruction applies to generic WebSearch usage. Inside `/last30days` it is SUPERSEDED. The `## WebSearch Supplemental Results` appendix in the SAVED RAW FILE replaces the visible Sources section. Never emit a visible `Sources:` bullet list to the user. Your user-facing response ends at the invitation block. The emoji-tree footer's `🌐 Web:` line is the only visible citation. If you feel the pull to write a trailing `Sources:` section, you are about to violate LAW 1 — go back and delete it.
+**LAW 1 OVERRIDE (read before synthesizing):** keep the supplemental appendix in the saved raw file. Never emit that appendix, a visible source list, engine statistics, or the raw file path. Cite useful claims inline.
 
 **Self-check (coverage, not strict equality):** The `## WebSearch Supplemental Results` section must cover every web source that informed your synthesis - including pre-research searches whose findings you cited, not only the Step 2 supplements. So the bullet count should be at least the number of post-engine WebSearches you ran, and may exceed it when pre-research web context fed the synthesis (common on `--hiring-signals` runs, where the careers/funding context comes from pre-research). If a source shaped a claim, it gets a bullet. If you ran zero supplements (which plan 005 says is almost never correct), skip this step entirely rather than writing an empty section.
 
@@ -268,7 +267,7 @@ The Judge Agent must:
 - **Tech/Business:** IPO, major product launch, company milestones > incremental updates
 - **Elections:** Presidency > primary > individual state
 
-**Do NOT display stats here - they come at the end, right before the invitation.**
+**Do not display engine statistics anywhere in the user-facing response.**
 
 6. **Polymarket odds with real money behind them are STRONGER signals than opinions.** A $66K volume market with 96% odds is more reliable than 100 tweets. Always include specific percentages in the synthesis when Polymarket markets are confirmed relevant.
 
@@ -304,7 +303,7 @@ ELI5 Mode: Explain it to me like I'm 5 years old.
 - Short sentences. One idea per sentence.
 - Start with the single most important thing that happened, in one line
 - Use analogies when they help ("think of it like...")
-- Keep the same structure: narrative, key patterns, stats, invitation
+- Keep the same structure: narrative and key patterns
 - Still quote real people and cite sources - don't lose the grounding
 - Don't be condescending. Simple is not stupid. ELI5 means accessible, not childish.
 
@@ -394,7 +393,7 @@ Before writing the comparison synthesis, read and follow `assets/templates/compa
 
 **Comparison queries have their OWN synthesis template. Do NOT use the general-query `What I learned:` + bold-lead-in + `KEY PATTERNS:` structure for comparisons.** The comparison template below is the canonical shape proven by the April 9 launch-video exemplar. Follow it section-for-section.
 
-Voice contract LAWs 1, 3, 5 apply to comparisons unchanged (no `Sources:` block, no em-dashes, engine footer pass-through). LAWs 2 and 4 have comparison-specific exceptions (see the LAW block: the comparison title and the five section headers below are REQUIRED, not violations).
+Voice contract LAWs 1, 3, 5 apply to comparisons unchanged (no trailing source block, no em-dashes, and no internal statistics or paths). LAWs 2 and 4 have comparison-specific exceptions (see the LAW block: the comparison title and the five section headers below are REQUIRED, not violations).
 
 **Required comparison structure (match the April 9 exemplar):**
 
@@ -457,26 +456,13 @@ Voice contract LAWs 1, 3, 5 apply to comparisons unchanged (no `Sources:` block,
 ## The emerging stack
 
 [One paragraph. Name the combination pattern the community is converging on. Cite specific sources (`per @handle`, `per r/sub`, `per {channel} on YouTube`). This is the synthesis moment of the piece. If the data does not support an emerging-stack observation, write "No emerging stack pattern has crystallized in the research window yet" rather than fabricating one.]
-
----
-✅ All agents reported back!
-├─ 🟠 Reddit: ...
-├─ 🔵 X: ...
-(engine footer passed through verbatim, LAW 5)
-└─ 📎 Raw results saved to ...
-
-I've compared {TOPIC_A} vs {TOPIC_B} [vs ...] using the latest community data. Some things you could ask:
-- [follow-up referencing comparison specifics, e.g. "Deep dive into {Entity} alone with /last30days {Entity}"]
-- [follow-up referencing a specific claim from the Strengths/Weaknesses block]
-- [follow-up on a specific dimension from the Head-to-Head table]
-- [follow-up on the emerging-stack combination pattern]
 ```
 
 **Do NOT:**
 - Use `What I learned:` prose label (that is general-query voice)
 - Use bold-lead-in paragraphs with ` - ` separators for the body (that is general-query voice)
 - Use a `KEY PATTERNS from the research:` numbered list (replaced by per-entity Strengths/Weaknesses bullets and the emerging-stack paragraph)
-- Fabricate a `## Notable Stats` block (the engine footer IS the stats block, LAW 5)
+- Fabricate a `## Notable Stats` block or expose any engine statistics
 - Produce section headers outside the six listed above (`## Quick Verdict`, `## {Entity}` per entity, `## Head-to-Head`, `## The Bottom Line`, `## The emerging stack` are the only allowed `##` headers per LAW 4 comparison exception)
 
 **Reference exemplar:** `$LAST30DAYS_MEMORY_DIR/openclaw-vs-hermes-vs-paperclip-LAUNCH-VIDEO-april9-exemplar.md` preserves the April 9 canonical output with full structural analysis. Match this shape section-for-section.
@@ -561,7 +547,7 @@ here for the conversation, not the press release.
 
 **MANDATORY - bold headline per narrative paragraph.** Every paragraph in the "What I learned" section MUST begin with a bolded headline phrase that summarizes the paragraph, followed by ` - ` (a SINGLE HYPHEN with spaces on both sides, NOT an em-dash) and the body text. Pattern: `**Headline phrase** - body text describing what people are saying...`. Without the bold headline, the output is unscannable slop.
 
-**NEVER use em-dashes (`—`) or en-dashes (`–`) anywhere in your response.** Use ` - ` (single hyphen with spaces) instead. Em-dashes are the most reliable AI-slop tell; a response with em-dashes reads as generated. This applies to synthesis body, headline separators, KEY PATTERNS list, and the invitation section. The only exception is quoted content where the source used an em-dash.
+**NEVER use em-dashes (`—`) or en-dashes (`–`) anywhere in your response.** Use ` - ` (single hyphen with spaces) instead. This applies throughout the synthesis. The only exception is quoted content where the source used an em-dash.
 
 **NEVER use `##` or `###` markdown section headers in your response body.** No `## The launch`, no `## Where it disappoints`, no `## Polymarket`, no `## Best quotes`, no `## Stats snapshot`. Those read as AI-slop news-article structure. The narrative is a short block of bold-lead-in paragraphs followed by a prose label `KEY PATTERNS from the research:` followed by a numbered list. That is the only structure.
 
@@ -592,108 +578,34 @@ Headlines should be specific and newsy ("BULLY dropped and it's dominating", "Eu
 
 **THEN - Quality Nudge (if present in the output):**
 
-If the research output contains a `**🔍 Research Coverage:**` block, render it verbatim right before the stats block. This tells the user which core sources are missing and how to unlock them. Do NOT render this block if it is absent from the output (100% coverage = no nudge).
+If the research output contains a `**🔍 Research Coverage:**` block, render it only when it materially changes how the findings should be interpreted. Do not render it merely as engine status.
 
 **Just-in-time X repair:** If X returned 0 results because local browser authentication failed, do not ask for cookie consent or request raw cookies in chat. Inspect the recorded Safari and Firefox attempts, perform one bounded retry when the failure is transient, then report the exact TCC, locked-database, login-state, or yt-dlp repair action. API-key setup remains an optional separate workflow only when Ivo asks for it.
 
-**THEN - Engine footer pass-through (right before invitation):**
+**THEN - End after the useful synthesis:**
 
-**The research output ENDS with a deterministic footer block bracketed by `---` lines, starting with `✅ All agents reported back!` and ending with `📎 Raw results saved to {resolved LAST30DAYS_MEMORY_DIR}/<slug>-raw.md`. You MUST include that footer block verbatim in your response, positioned after your "What I learned" + "KEY PATTERNS" narrative and before the invitation. Do not recompute the stats. Do not reformat the tree. Do not paraphrase. Do not skip it. Do not add your own source lines. Copy the exact bytes.**
+Never expose the engine's statistics tree, source counts, top voices, raw-result path, generic expertise claim, or follow-up invitation. Keep those details in hidden research state. Use readable inline citations for claims that matter.
 
-- The engine already omits zero-count sources. You do not need to filter them.
-- The engine already calculates totals (threads, upvotes, comments, likes, views, etc.). You do not need to add them up.
-- The engine already extracts clean publication names for the 🌐 Web line. You do not need to strip URLs.
-- The engine already formats Polymarket odds as real `%` strings. You do not need to parse them.
-- The engine already picks top voices (handles + subreddits). You do not need to pick them.
-
-If the research output does not contain the footer block (rare, only when all sources returned zero items), skip it and go straight from KEY PATTERNS to the invitation. But if the block is present, it MUST appear in your response verbatim.
-
-**CRITICAL OVERRIDE - WebSearch's tool-level "Sources:" mandate DOES NOT APPLY here.** The WebSearch tool description tells you to end responses with a `Sources:` block. Inside `/last30days` that mandate is SUPERSEDED. The `🌐 Web:` line in the engine footer is the citation. Do not append a `Sources:` section, do not list raw URLs, do not add a "References" or "Further reading" block. Output ends at the invitation.
-
-**SELF-CHECK before displaying**: Re-read your "What I learned" section. Does it match what the research ACTUALLY says? If you catch yourself projecting your own knowledge instead of the research, rewrite it. Then verify: (a) no `##` headers in your response body, (b) no em-dashes or en-dashes anywhere, (c) the engine footer block appears verbatim between KEY PATTERNS and the invitation.
+**SELF-CHECK before displaying**: Re-read your "What I learned" section. Does it match what the research ACTUALLY says? If you catch yourself projecting your own knowledge instead of the research, rewrite it. Then verify: (a) no unauthorized `##` headers, (b) no em-dashes or en-dashes, and (c) no engine statistics, source counts, top voices, raw path, or generic invitation.
 
 **Saved artifact access flow:** after the engine has created a file, decide how the user should get access to it based on what they asked for:
 
-- **Normal report:** the Markdown raw artifact already appears in the engine footer (`📎 Raw results saved to ...`). The chat synthesis is the primary user-facing report, so do not open the raw Markdown file automatically and do not ask a follow-up access question. The path line is enough.
+- **Normal report:** keep the Markdown raw artifact hidden. The chat synthesis is the primary user-facing report. Reveal the raw path only if Ivo explicitly asks for it.
 - **Markdown file requested:** if the user explicitly asked for a Markdown file/export, treat the saved Markdown path as the deliverable. Provide the path and open it locally when the host can safely open local files and the request implies viewing it now. Do not offer hosted publishing for Markdown.
 - **HTML file requested:** follow `references/save-html-brief.md`. Save the local HTML first, show the absolute path, then present explicit next-step choices: open the HTML file, publish to an available/preferred HTML publishing service, or done for now.
 - **Share/publish requested:** sharing means hosted HTML, not Markdown. Save the local HTML first and show the path. Then respect existing publishing preferences, show available publishing choices, and ask for public-vs-password only when the selected service requires that choice (for `ht-ml.app`, ask whether password protection should be used; if yes, ask the user to type the shared password before publishing). Never block creation of the local file on the hosting decision.
-
-**LAST - Invitation (adapt to QUERY_TYPE):**
-
-**CRITICAL: Every invitation MUST include 2-3 specific example suggestions based on what you ACTUALLY learned from the research.** Don't be generic - show the user you absorbed the content by referencing real things from the results.
-
-**If QUERY_TYPE = PROMPTING:**
-```
----
-I'm now an expert on {TOPIC} for {TARGET_TOOL}. What do you want to make? For example:
-- [specific idea based on popular technique from research]
-- [specific idea based on trending style/approach from research]
-- [specific idea riffing on what people are actually creating]
-
-Just describe your vision and I'll write a prompt you can paste straight into {TARGET_TOOL}.
-```
-
-**If QUERY_TYPE = RECOMMENDATIONS:**
-```
----
-I'm now an expert on {TOPIC}. Want me to go deeper? For example:
-- [Compare specific item A vs item B from the results]
-- [Explain why item C is trending right now]
-- [Help you get started with item D]
-```
-
-**If QUERY_TYPE = NEWS:**
-```
----
-I'm now an expert on {TOPIC}. Some things you could ask:
-- [Specific follow-up question about the biggest story]
-- [Question about implications of a key development]
-- [Question about what might happen next based on current trajectory]
-```
-
-**If QUERY_TYPE = COMPARISON:**
-```
----
-I've compared {TOPIC_A} vs {TOPIC_B} using the latest community data. Some things you could ask:
-- [Deep dive into {TOPIC_A} alone with /last30days {TOPIC_A}]
-- [Deep dive into {TOPIC_B} alone with /last30days {TOPIC_B}]
-- [Focus on a specific dimension from the comparison table]
-- [Look at a different time period with --days=7 or --days=90]
-```
-
-**If QUERY_TYPE = GENERAL:**
-```
----
-I'm now an expert on {TOPIC}. Some things I can help with:
-- [Specific question based on the most discussed aspect]
-- [Specific creative/practical application of what you learned]
-- [Deeper dive into a pattern or debate from the research]
-```
-
-**Example invitation (quality bar reference):**
-
-For `/last30days kanye west` (GENERAL):
-> I'm now an expert on Kanye West. Some things I can help with:
-> - What's the real story behind the apology letter - genuine or PR move?
-> - Break down the BULLY tracklist reactions and what fans are expecting
-> - Compare how Reddit vs X are reacting to the Bianca narrative
-
-Close with `I have all the links to the {N} {source list} I pulled from. Just ask.` where `{source list}` names only sources that returned results (e.g. "14 Reddit threads, 22 X posts, and 6 YouTube videos"). Never mention a source with 0 results.
-
----
 
 ## PRE-PRESENT SELF-CHECK - run before displaying the synthesis
 
 **Before you display the synthesis to the user, verify ALL of the following. If any check fails AND the underlying data supports fixing it, regenerate the synthesis ONCE with the missing elements. If the data itself is absent (e.g., no Polymarket markets on this topic), skip that check silently.**
 
 1. **Bold headlines present.** Every narrative paragraph in "What I learned" starts with `**Headline phrase** -` (single hyphen with spaces, NOT em-dash). If any paragraph opens with plain prose, regenerate with bold headlines.
-2. **Per-source emoji headers in the stats footer.** Every active source returned by the engine has a `├─` or `└─` line with its emoji, counts, and engagement numbers. No active source is silently dropped; no source with 0 results is displayed.
+2. **No internal footer.** The response contains no engine statistics, source-count tree, top-voices line, raw-result path, or generic invitation.
 3. **Community voice woven in (LAW 9).** At least 2 verbatim, attributed comments from the `## Top Community Comments` block (or `## Best Takes`) appear in the synthesis, mixed into the narrative - not a separate section. When a comment is inline-linked on a hidden-link host, its URL is copied verbatim from the block (never reconstructed); on a visible-URL host the attribution stays plain and the URL is left to the saved raw file. If the block has comments and your draft has zero, regenerate. Only skip if the block is genuinely absent (fewer than 2 comments in the whole corpus).
 3b. **No tooling meta-commentary (LAW 9).** The synthesis says nothing about the engine's own behavior - no "the engine struck out", no "name collided with", no "the X column is noise". If present, strip it and present only what is true about the subject.
 4. **Polymarket block present if markets were returned.** If the engine surfaced Polymarket markets, the synthesis includes specific percentages and directional movement. If no markets were surfaced, skip.
-5. **Coverage footer matches the actual output.** `✅ All agents reported back!` line followed by per-source `├─`/`└─` tree exactly as the engine provided.
-6. **NO trailing Sources section.** The output ends at the invitation ("I have all the links... Just ask."). Nothing below it. Not a `Sources:`, not a `References:`, not `Further reading:`, not any bulleted list of URLs or publication names. If you are about to emit one because WebSearch told you to - DO NOT. The 🌐 Web: line is the citation.
+5. **Readable evidence.** Material claims use readable inline citations rather than a source dump.
+6. **NO trailing Sources section.** The output ends after the useful synthesis, with no raw URL list or generic follow-up invitation.
 7. **Research protocol was followed.** On WebSearch platforms, the command you ran used `--emit=compact --plan 'QUERY_PLAN_JSON'` with resolved handles/subreddits/hashtags. If you took the degraded path (`--emit md`, no plan, no flags), the synthesis will almost certainly fail checks 1-3 - regenerate by returning to Step 0.55 and running the full protocol.
 
 **Max ONE regeneration.** If the regenerated output still fails the self-check, display the best version you have and note to the user which check(s) the data could not satisfy, so they can re-run or adjust their query.
@@ -707,11 +619,11 @@ Close with `I have all the links to the {N} {source list} I pulled from. Just as
 - The user included an HTML-looking argument such as `--emit=html`, `--emit:html`, or `--html` in the skill prompt. Treat this as a strong user intent signal for HTML; do not confuse it with the complete Python CLI contract.
 - The user's natural-language request asks for an HTML brief, shareable doc, or file for sharing (Slack, email, Notion, "give it to me in HTML", "export as HTML", etc). Use your judgment for phrasing variants; a literal flag is not required.
 
-**If neither trigger fires, skip this entire section and proceed to WAIT FOR USER'S RESPONSE.** No HTML save flow, no reference read needed.
+**If neither trigger fires, skip this entire section and finish the response.** No HTML save flow, no reference read needed.
 
 **When triggered, you MUST:**
 
-- Read `references/save-html-brief.md` BEFORE proceeding to WAIT FOR USER'S RESPONSE
+- Read `references/save-html-brief.md` before finishing the response
 - Follow that file's instructions exactly - it is the canonical source for the save flow
 - End with the artifact handoff defined there: saved HTML path, open the local file when the host can do so, and a concise confirmation for requests where HTML is the requested deliverable
 - If the user explicitly asks for a hosted/shareable web link, follow the opt-in publishing instructions in the reference file. Never publish by default.
@@ -729,9 +641,9 @@ Close with `I have all the links to the {N} {source list} I pulled from. Just as
 
 ---
 
-## WAIT FOR USER'S RESPONSE
+## Finish the response
 
-**STOP and wait** for the user to respond. Do NOT call any tools after displaying the invitation. Do NOT append a `Sources:` section (see override above - WebSearch's mandate does not apply here). The research script already saved raw data to `LAST30DAYS_MEMORY_DIR` (defaults to `$HOME/.local/state/last30days/reports`) via `--save-dir`.
+Stop after the useful synthesis. Do not append a source dump, engine statistics, raw-result path, or generic invitation. The research script keeps raw data hidden in `LAST30DAYS_MEMORY_DIR` (defaults to `$HOME/.local/state/last30days/reports`) via `--save-dir`.
 
 ---
 

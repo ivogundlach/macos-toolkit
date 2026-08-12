@@ -121,12 +121,14 @@ These requirements remain local because each prevents an observed regression:
    not break execution.
 7. Read the complete engine output. Synthesize evidence; never emit ranked
    evidence clusters verbatim.
-8. Preserve the engine badge and pass-through footer. GENERAL/NEWS/PROMPTING/
+8. Preserve the engine badge. GENERAL/NEWS/PROMPTING/
    RECOMMENDATIONS output begins with `What I learned:` after the badge and has
    no invented title or body section headers. COMPARISON uses only the approved
    comparison headers.
 9. Never append a trailing Sources/References/URL block. Cite according to the
-   active host and let the engine footer plus hidden raw report carry coverage.
+   active host and keep the raw report hidden unless Ivo explicitly asks for it.
+   Never expose engine statistics, source-count trees, top voices, raw-result
+   paths, generic expertise claims, or follow-up invitations.
 10. Weave at least two attributed community comments into the narrative when
     the evidence supplies them. Do not narrate tool health or engine noise.
 11. First-party posts are primary evidence when relevant. Recommendation
@@ -255,12 +257,12 @@ within the user's research scope.
 ## Synthesize and verify
 
 Read the complete compact output, including evidence clusters, top comments,
-best takes, source coverage, and the exact pass-through footer. Ground every
+best takes, and source coverage. Ground every
 claim in retrieved evidence and distinguish thin or conflicting support.
 
 Before writing, read `voice-contract.md` and the matching output template.
 Before emitting, verify badge, allowed structure, community voice, lack of tool
-meta-commentary, exact footer, and no trailing sources block. Regenerate once
+meta-commentary, no internal statistics or paths, and no trailing sources block. Regenerate once
 when the evidence supports correcting a failed check; otherwise disclose the
 missing evidence rather than fabricating it.
 

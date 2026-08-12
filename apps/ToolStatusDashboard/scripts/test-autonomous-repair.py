@@ -581,7 +581,7 @@ print(json.dumps({{"schemaVersion":2,"generatedAt":"2026-07-17T00:00:00+00:00","
         } == {"vibe-coding", "macos-background-jobs"}
 
         # A syntactically valid change that does not restore health is rolled
-        # back before escalation, and escalation pushes exactly once.
+        # back and retried silently. Model inability is not a human decision.
         target.write_text("VALUE = 'broken'\n", encoding="utf-8")
         rollback_state = root / "rollback-state"
         rollback_queue = rollback_state / "repair-queue"
@@ -595,9 +595,12 @@ print(json.dumps({{"schemaVersion":2,"generatedAt":"2026-07-17T00:00:00+00:00","
         }
         subprocess.run(["/usr/bin/python3", str(WORKER)], env=rollback_env, check=True)
         assert target.read_text() == "VALUE = 'broken'\n", "failed repair was not rolled back"
-        rollback_requests = json.loads((rollback_state / "repair-requests.json").read_text())
-        assert len(rollback_requests) == 1 and rollback_requests[0]["status"] == "pending"
-        assert len(rollback_log.read_text().splitlines()) == 1, "rollback escalation did not push once"
+        assert not (rollback_state / "repair-requests.json").exists(), \
+            "a fully rolled-back unsuccessful repair created a human decision"
+        assert not rollback_log.exists(), "a fully rolled-back unsuccessful repair pushed"
+        retry_jobs = list(rollback_queue.glob("*.json"))
+        assert len(retry_jobs) == 1 and json.loads(retry_jobs[0].read_text())["attempts"] == 1, \
+            "the unsuccessful contained repair was not retained for silent retry"
 
         # Protected failures still get full Terra diagnosis, but no write scope.
         protected_state = root / "protected-state"
@@ -608,14 +611,14 @@ print(json.dumps({{"schemaVersion":2,"generatedAt":"2026-07-17T00:00:00+00:00","
 import json, os
 from pathlib import Path
 healthy=Path(os.environ["FAKE_APPROVAL_MARKER"]).exists()
-item={"id":"Auth:Example","name":"Example Authentication","category":"Auth","state":"ok" if healthy else "fail","headline":"Ready" if healthy else "Login expired","detail":"fixture","evidence":"credential metadata only","checkedAt":"2026-07-17T00:00:00+00:00","fix":None,"causeCode":"auth.expired","causeParams":{},"notificationPolicy":"immediate","deadlineAt":None}
+item={"id":"Auth:Example","name":"Example Authentication","category":"Auth","state":"ok" if healthy else "fail","headline":"Ready" if healthy else "Login expired","detail":"fixture","evidence":"credential metadata only","checkedAt":"2026-07-17T00:00:00+00:00","fix":None,"needsIvo":not healthy,"causeCode":"auth.expired","causeParams":{},"notificationPolicy":"immediate","deadlineAt":None}
 print(json.dumps({"schemaVersion":2,"generatedAt":"2026-07-17T00:00:00+00:00","liveAuth":False,"items":[item]}))
 """)
         protected_job = {
             "schemaVersion": 1, "id": "Auth:Example", "fingerprint": "fixture-protected",
             "createdAt": "2026-07-17T00:00:00+00:00", "attempts": 0,
             "nextAttemptAt": "2026-07-17T00:00:00+00:00",
-            "item": {"id":"Auth:Example","name":"Example Authentication","category":"Auth","state":"fail","headline":"Login expired","detail":"fixture","evidence":"credential metadata only","checkedAt":"2026-07-17T00:00:00+00:00","fix":None,"causeCode":"auth.expired","causeParams":{},"notificationPolicy":"immediate","deadlineAt":None},
+            "item": {"id":"Auth:Example","name":"Example Authentication","category":"Auth","state":"fail","headline":"Login expired","detail":"fixture","evidence":"credential metadata only","checkedAt":"2026-07-17T00:00:00+00:00","fix":None,"needsIvo":True,"causeCode":"auth.expired","causeParams":{},"notificationPolicy":"immediate","deadlineAt":None},
         }
         (protected_queue / "protected.json").write_text(json.dumps(protected_job), encoding="utf-8")
         protected_env = {
@@ -628,15 +631,15 @@ print(json.dumps({"schemaVersion":2,"generatedAt":"2026-07-17T00:00:00+00:00","l
         assert result.returncode == 0
         requests = json.loads((protected_state / "repair-requests.json").read_text())
         assert len(requests) == 1 and requests[0]["status"] == "pending"
-        assert requests[0]["requestedAction"]["command"] is None
-        assert requests[0]["authorityStatus"] == "pending" and len(requests[0]["authorityDigest"]) == 64
+        assert requests[0]["requestedAction"] is None
+        assert requests[0]["authorityStatus"] == "human-only" and len(requests[0]["authorityDigest"]) == 64
         protected_log = Path(protected_env["TOOL_STATUS_NOTIFICATION_LOG"])
         pushes = [json.loads(line) for line in protected_log.read_text().splitlines()]
-        # The push body now leads with Terra's plain-English summary, not the generic
-        # "needs your decision" string.
+        # Authentication push copy names the concrete user action and never asks
+        # for broad repair authority or a separate full-agent session.
         assert len(pushes) == 1, "same incident pushed the wrong number of times"
-        assert "authority" in pushes[0]["body"].lower() and "needs your decision" not in pushes[0]["body"].lower(), \
-            "push body should be Terra's plain-English summary"
+        assert "sign in" in pushes[0]["body"].lower() and "agent session" not in pushes[0]["body"].lower(), \
+            "push body did not name the concrete authentication action"
         original_request_id = requests[0]["id"]
         # A changed scan fingerprint for the same producer incident updates the
         # existing card and pending job instead of creating another approval.
@@ -677,44 +680,54 @@ print(json.dumps({"schemaVersion":2,"generatedAt":"2026-07-17T00:00:00+00:00","l
         approval_queue.mkdir(parents=True)
         approval_marker = root / "approved;literal"
         approval_log = root / "approval-notifications.jsonl"
+        approval_scanner = root / "approval-scanner.py"
+        executable(approval_scanner, """#!/usr/bin/env python3
+import json, os
+from pathlib import Path
+healthy=Path(os.environ["FAKE_APPROVAL_MARKER"]).exists()
+item={"id":"Auth:Example","name":"Example Scheduled Repair","category":"Scheduled Work","state":"ok" if healthy else "fail","headline":"Ready" if healthy else "Job failed","detail":"fixture","evidence":"local fixture","checkedAt":"2026-07-17T00:00:00+00:00","fix":None,"needsIvo":False,"causeCode":"job.failed","causeParams":{},"notificationPolicy":"immediate","deadlineAt":None}
+print(json.dumps({"schemaVersion":2,"generatedAt":"2026-07-17T00:00:00+00:00","liveAuth":False,"items":[item]}))
+""")
         approval_env = {
             **env, "TOOL_STATUS_STATE": str(approval_state),
-            "TOOL_STATUS_SCANNER": str(protected_scanner), "FAKE_CODEX_MODE": "approval",
+            "TOOL_STATUS_SCANNER": str(approval_scanner), "FAKE_CODEX_MODE": "approval",
             "FAKE_APPROVAL_MARKER": str(approval_marker),
             "TOOL_STATUS_NOTIFICATION_LOG": str(approval_log),
         }
-        approval_job = {**protected_job, "fingerprint": "fixture-approved"}
+        approval_item = {
+            **protected_job["item"],
+            "category": "Scheduled Work",
+            "causeCode": "job.failed",
+            "needsIvo": False,
+        }
+        approval_job = {
+            **protected_job,
+            "fingerprint": "fixture-approved",
+            "item": approval_item,
+        }
         (approval_queue / "approval.json").write_text(json.dumps(approval_job), encoding="utf-8")
         subprocess.run(["/usr/bin/python3", str(WORKER)], env=approval_env, check=True)
-        approval_requests = json.loads((approval_state / "repair-requests.json").read_text())
-        approval_request = approval_requests[0]
-        assert approval_request["requestedAction"]["command"] is None
-        assert approval_request["authorityStatus"] == "pending"
-        approval_decisions = approval_state / "repair-decisions"
-        (approval_decisions / "approve.json").write_text(json.dumps(
-            decision_payload(approval_request, "approve")
-        ), encoding="utf-8")
-        subprocess.run(["/usr/bin/python3", str(WORKER)], env=approval_env, check=True)
+        assert not (approval_state / "repair-requests.json").exists(), \
+            "ordinary model inability created a broad approval request"
+        assert not approval_log.exists(), "ordinary model inability produced a push"
         assert not approval_marker.exists(), "non-auth approval executed a staged command"
-        approval_requests = json.loads((approval_state / "repair-requests.json").read_text())
-        assert approval_requests[0]["status"] == "approved"
-        assert approval_requests[0]["authorityStatus"] == "active"
-        assert not list((approval_state / "repair-pending").glob("*.json"))
-        queued_grant = list(approval_queue.glob("*.json"))
-        assert queued_grant and json.loads(queued_grant[0].read_text())["issueAuthorityGrant"]["status"] == "active"
+        queued_internal = list(approval_queue.glob("*.json"))
+        assert len(queued_internal) == 1
+        queued_job = json.loads(queued_internal[0].read_text())
+        assert queued_job["lunaExhausted"] is True, "unchanged Luna evidence was not exhausted"
+        assert "internalAgentTier" not in queued_job
+        queued_job["nextAttemptAt"] = "2026-07-17T00:00:00+00:00"
+        queued_internal[0].write_text(json.dumps(queued_job), encoding="utf-8")
+        before_calls = len(json.loads(codex_log.read_text()))
+        subprocess.run(["/usr/bin/python3", str(WORKER)], env=approval_env, check=True)
+        after_calls = json.loads(codex_log.read_text())
+        assert len(after_calls) == before_calls, "unchanged evidence triggered another model call"
+        assert not (approval_state / "repair-requests.json").exists()
+        assert not approval_log.exists()
         approval_history = [
             json.loads(line) for line in (approval_state / "repair-history.jsonl").read_text().splitlines()
         ]
-        assert sum(event["event"] == "issue-authority-approved" for event in approval_history) == 1
-        (approval_decisions / "replay.json").write_text(json.dumps(
-            decision_payload(approval_request, "approve")
-        ), encoding="utf-8")
-        subprocess.run(["/usr/bin/python3", str(WORKER)], env=approval_env, check=True)
-        replay_history = [
-            json.loads(line) for line in (approval_state / "repair-history.jsonl").read_text().splitlines()
-        ]
-        assert sum(event["event"] == "issue-authority-approved" for event in replay_history) == 1
-        assert len(approval_log.read_text().splitlines()) == 1
+        assert any(event["event"] == "luna-call-suppressed-unchanged-evidence" for event in approval_history)
 
         # Recovery while a card is pending resolves it without a click. A later
         # incident generation may alert once again.
@@ -745,33 +758,6 @@ print(json.dumps({"schemaVersion":2,"generatedAt":"2026-07-17T00:00:00+00:00","l
         assert recurring_request["id"] == first_recovery_request["id"], "same issue generation changed authority ID"
         assert recurring_request["authorityDigest"] == first_recovery_request["authorityDigest"]
         assert len(recovery_log.read_text().splitlines()) == 2
-
-        # Add Thoughts returns the incident and exact text to Terra without a
-        # duplicate push when the requested authority is unchanged.
-        thoughts_state = root / "thoughts-state"
-        thoughts_queue = thoughts_state / "repair-queue"
-        thoughts_queue.mkdir(parents=True)
-        thoughts_marker = root / "thoughts-marker"
-        thoughts_log = root / "thoughts-notifications.jsonl"
-        thoughts_env = {
-            **env, "TOOL_STATUS_STATE": str(thoughts_state),
-            "TOOL_STATUS_SCANNER": str(protected_scanner), "FAKE_CODEX_MODE": "approval",
-            "FAKE_APPROVAL_MARKER": str(thoughts_marker),
-            "TOOL_STATUS_NOTIFICATION_LOG": str(thoughts_log),
-        }
-        thoughts_job = {**protected_job, "fingerprint": "fixture-thoughts"}
-        (thoughts_queue / "thoughts.json").write_text(json.dumps(thoughts_job), encoding="utf-8")
-        subprocess.run(["/usr/bin/python3", str(WORKER)], env=thoughts_env, check=True)
-        thoughts_request = json.loads((thoughts_state / "repair-requests.json").read_text())[0]
-        thoughts_decisions = thoughts_state / "repair-decisions"
-        user_context = "Use the secondary account; do not change the primary login."
-        (thoughts_decisions / "thoughts.json").write_text(json.dumps(
-            decision_payload(thoughts_request, "thoughts", user_context)
-        ), encoding="utf-8")
-        subprocess.run(["/usr/bin/python3", str(WORKER)], env=thoughts_env, check=True)
-        thoughts_calls = json.loads(codex_log.read_text())
-        assert user_context in thoughts_calls[-1][-1], "Add Thoughts text did not reach Luna's prompt"
-        assert len(thoughts_log.read_text().splitlines()) == 2
 
         # Known Market X authentication never goes to Terra. Approval opens only
         # the fixed Safari URL, then remains visible until fresh health confirms it.
@@ -925,9 +911,8 @@ print(json.dumps({"schemaVersion":2,"generatedAt":"2026-07-17T00:00:00+00:00","l
         assert sum(event["event"] == "market-x-auth-opened" for event in expiry_history) == 1, \
             "consumed approval replayed after auth-wait expiry"
 
-        # A needs_approval whose action has no runnable command and no
-        # synthesizable restart is a non-actionable manual hand-off: the card
-        # offers no Approve, and approving it (defensively) never starts a loop.
+        # A human-only incident with no exact runnable action offers no Approve.
+        # A forged approval is rejected, while Dismiss remains available.
         manual_state = root / "manual-state"
         manual_queue = manual_state / "repair-queue"
         manual_queue.mkdir(parents=True)
@@ -943,8 +928,9 @@ print(json.dumps({"schemaVersion":2,"generatedAt":"2026-07-17T00:00:00+00:00","l
         subprocess.run(["/usr/bin/python3", str(WORKER)], env=manual_env, check=True)
         manual_requests = json.loads((manual_state / "repair-requests.json").read_text())
         assert len(manual_requests) == 1 and manual_requests[0]["status"] == "pending"
-        assert manual_requests[0].get("actionable") is True, "issue authority approval was not actionable"
-        assert manual_requests[0]["requestedAction"]["command"] is None
+        assert manual_requests[0].get("actionable") is False, "human-only incident exposed Approve"
+        assert manual_requests[0]["authorityStatus"] == "human-only"
+        assert manual_requests[0]["requestedAction"] is None
         assert len(manual_log.read_text().splitlines()) == 1, "manual hand-off did not push once"
         manual_id = manual_requests[0]["id"]
         manual_decisions = manual_state / "repair-decisions"
@@ -954,10 +940,10 @@ print(json.dumps({"schemaVersion":2,"generatedAt":"2026-07-17T00:00:00+00:00","l
         ), encoding="utf-8")
         subprocess.run(["/usr/bin/python3", str(WORKER)], env=manual_env, check=True)
         after_manual = json.loads((manual_state / "repair-requests.json").read_text())
-        assert len(after_manual) == 1 and after_manual[0]["status"] == "approved", "approve did not activate issue authority"
-        assert list(manual_queue.glob("*.json")), "approving an issue card did not requeue the grant"
+        assert len(after_manual) == 1 and after_manual[0]["status"] == "pending", "blank approval was accepted"
+        assert not list(manual_queue.glob("*.json")), "blank approval requeued a repair"
         manual_history = [json.loads(x) for x in (manual_state / "repair-history.jsonl").read_text().splitlines()]
-        assert any(e["event"] == "issue-authority-approved" for e in manual_history), "issue grant approval was not noted"
+        assert any(e["event"] == "decision-rejected-no-action" for e in manual_history), "blank approval rejection was not noted"
         assert len(manual_log.read_text().splitlines()) == 1, "approving a manual hand-off pushed again"
         # Dismiss on a manual card clears it without another push.
         (manual_decisions / "dismiss.json").write_text(json.dumps(
@@ -968,38 +954,26 @@ print(json.dumps({"schemaVersion":2,"generatedAt":"2026-07-17T00:00:00+00:00","l
             "dismiss did not clear the active grant"
         assert len(manual_log.read_text().splitlines()) == 1, "dismiss emitted another push"
 
-        # v5 issue authority intentionally drops model commands from the request;
-        # approval activates the durable grant rather than treating the old
-        # command allowlist as a second authority gate.
+        # A model-generated disallowed command is not a human decision. It stays
+        # silent, executes nothing, and remains queued for bounded retry.
         reject_state = root / "reject-state"
         reject_queue = reject_state / "repair-queue"
         reject_queue.mkdir(parents=True)
         reject_env = {
             **env, "TOOL_STATUS_STATE": str(reject_state),
-            "TOOL_STATUS_SCANNER": str(protected_scanner), "FAKE_CODEX_MODE": "reject",
+            "TOOL_STATUS_SCANNER": str(approval_scanner), "FAKE_CODEX_MODE": "reject",
             "FAKE_APPROVAL_MARKER": str(root / "reject-never"),
             "TOOL_STATUS_NOTIFICATION_LOG": str(root / "reject-notifications.jsonl"),
         }
         (reject_queue / "reject.json").write_text(
-            json.dumps({**protected_job, "fingerprint": "fixture-reject"}), encoding="utf-8")
+            json.dumps({**approval_job, "fingerprint": "fixture-reject"}), encoding="utf-8")
         subprocess.run(["/usr/bin/python3", str(WORKER)], env=reject_env, check=True)
-        reject_requests = json.loads((reject_state / "repair-requests.json").read_text())
-        assert len(reject_requests) == 1 and reject_requests[0].get("actionable") is True, \
-            "issue authority approval was not marked actionable"
-        assert reject_requests[0]["requestedAction"]["command"] is None
-        assert reject_requests[0]["authorityStatus"] == "pending"
-        # Approval must activate the grant and requeue the durable lane.
-        reject_decisions = reject_state / "repair-decisions"
-        reject_decisions.mkdir(parents=True, exist_ok=True)
-        (reject_decisions / "approve.json").write_text(json.dumps(
-            decision_payload(reject_requests[0], "approve")
-        ), encoding="utf-8")
-        subprocess.run(["/usr/bin/python3", str(WORKER)], env=reject_env, check=True)
-        assert list(reject_queue.glob("*.json")), "approving the v5 authority card did not requeue the grant"
-        reject_job = json.loads(next(reject_queue.glob("*.json")).read_text())
-        assert reject_job.get("issueAuthorityGrant", {}).get("status") == "active"
+        assert not (reject_state / "repair-requests.json").exists(), "unsafe command created a human card"
+        assert not Path(reject_env["TOOL_STATUS_NOTIFICATION_LOG"]).exists(), "unsafe command produced a push"
+        assert not Path(reject_env["FAKE_APPROVAL_MARKER"]).exists(), "unsafe command executed"
+        assert list(reject_queue.glob("*.json")), "unsafe command was not retained for silent retry"
         reject_history = [json.loads(x) for x in (reject_state / "repair-history.jsonl").read_text().splitlines()]
-        assert any(e["event"] == "issue-authority-approved" for e in reject_history), "authority approval not noted"
+        assert any(e["event"] == "repair-stayed-silent" for e in reject_history), "silent retry was not noted"
 
         # A failed push delivery records no cooldown entry, so a genuine
         # notification is never silently suppressed for the whole window.

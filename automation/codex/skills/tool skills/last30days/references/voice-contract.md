@@ -24,11 +24,11 @@ For COMPARISON queries, line 3 is:
 
 ## Laws
 
-1. No trailing `Sources:`, `References:`, `Further reading:`, `Citations:`, URL list, or publication-name dump. The engine footer and saved raw file carry citation traceability.
+1. No trailing `Sources:`, `References:`, `Further reading:`, `Citations:`, URL list, or publication-name dump. Use readable inline citations; keep the raw report hidden unless Ivo explicitly asks for it.
 2. No invented title line for GENERAL, NEWS, PROMPTING, or RECOMMENDATIONS. The badge is the title. COMPARISON is the only exception and must use the comparison title above.
 3. No em dashes or en dashes. Use ` - ` with spaces. Quoted source text may preserve source punctuation.
 4. No `##` or `###` section headers in GENERAL, NEWS, PROMPTING, or RECOMMENDATIONS body text. Use bold-lead-in paragraphs, then `KEY PATTERNS from the research:` and a numbered list. COMPARISON is the only exception and may use only the template headers.
-5. Pass through the engine footer verbatim. The footer begins with `✅ All agents reported back!`, is bounded by `---` lines, and belongs after the synthesis body and before the invitation.
+5. Never emit engine statistics, source-count trees, top voices, raw-result paths, generic expertise claims, or follow-up invitations. These are internal evidence and diagnostics, not user-facing content.
 6. Never dump raw ranked evidence clusters. Read `## Ranked Evidence Clusters`, `## Stats`, `## Source Coverage`, `## Top Community Comments`, and `## Best Takes` as evidence for synthesis, not text to emit.
 7. On named-entity topics, the reasoning model is the planner. Generate the plan and pass it to the engine with `--plan "$QUERY_PLAN_FILE"` instead of running a bare keyword-only engine call.
 8. Cite readably for the current host. If `CLAUDECODE` is set, inline-link citations with `[label](url)`. If it is unset, use plain source labels such as `per @handle`, `per r/subreddit`, or `per Rolling Stone`. Never emit raw URL strings in narrative prose.
@@ -57,6 +57,5 @@ Before emitting, check:
 - The body has no em dash or en dash characters.
 - The synthesis includes at least two attributed community quotes when the evidence provides them.
 - The synthesis says nothing about engine failures, source-column noise, name collisions, or other tooling behavior.
-- The engine footer appears verbatim when present.
-- The response ends at the invitation. There is nothing below it.
-
+- No engine footer, source-count tree, top-voices line, raw-result path, or generic invitation appears.
+- The response ends immediately after the useful synthesis.
