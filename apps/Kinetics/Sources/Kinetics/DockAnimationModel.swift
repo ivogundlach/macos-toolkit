@@ -75,6 +75,43 @@ enum DockAnimationApplyError: LocalizedError {
 }
 
 enum DockAnimationPreferences {
+    static func initializeMissingValues(
+        in preferencesDomain: String = KineticsConstants.DockAnimation.preferencesDomain
+    ) -> Result<Bool, DockAnimationApplyError> {
+        let domain = preferencesDomain as CFString
+        let defaults: [(String, Double)] = [
+            (KineticsConstants.DockAnimation.revealDelayKey,
+             KineticsConstants.DockAnimation.initialRevealDelay),
+            (KineticsConstants.DockAnimation.revealHideDurationKey,
+             KineticsConstants.DockAnimation.initialRevealHideDuration),
+            (KineticsConstants.DockAnimation.missionControlDurationKey,
+             KineticsConstants.DockAnimation.initialMissionControlDuration)
+        ]
+        var wroteValue = false
+
+        for (key, value) in defaults {
+            guard CFPreferencesCopyValue(key as CFString,
+                                         domain,
+                                         kCFPreferencesCurrentUser,
+                                         kCFPreferencesAnyHost) == nil else {
+                continue
+            }
+            CFPreferencesSetValue(key as CFString,
+                                  value as CFNumber,
+                                  domain,
+                                  kCFPreferencesCurrentUser,
+                                  kCFPreferencesAnyHost)
+            wroteValue = true
+        }
+
+        guard !wroteValue || CFPreferencesSynchronize(domain,
+                                                       kCFPreferencesCurrentUser,
+                                                       kCFPreferencesAnyHost) else {
+            return .failure(.synchronizationFailed)
+        }
+        return .success(wroteValue)
+    }
+
     static func readLiveValues() -> Result<DockAnimationValues, DockAnimationReadError> {
         CFPreferencesAppSynchronize(KineticsConstants.DockAnimation.preferencesDomain as CFString)
 

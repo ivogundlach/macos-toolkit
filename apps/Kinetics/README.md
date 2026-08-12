@@ -99,10 +99,11 @@ fix.
   hidden and start the engine without opening Settings. Login is disabled by
   default and is never registered during build.
 - **Dock Animations** reads `autohide-delay`, `autohide-time-modifier`, and
-  `expose-animation-duration` from `com.apple.dock`. Slider edits remain in memory;
-  **Apply & Restart Dock** is the only path that writes all three values, synchronizes
-  them, and restarts Dock. **Reload Current Values** discards drafts. `--diagnose`
-  reports these values read-only and never writes or restarts Dock.
+  `expose-animation-duration` from `com.apple.dock`. Installation and app startup add
+  Kinetics' defaults only for keys that do not exist; existing values are never replaced.
+  Slider edits remain in memory; **Apply & Restart Dock** writes all three values and
+  restarts Dock. **Reload Current Values** discards drafts. `--diagnose` reports these
+  values read-only and never writes or restarts Dock.
 
 There is no direct-number shortcut, Cmd-Tab follow, updater, analytics, or networking
 in this release.

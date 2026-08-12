@@ -32,6 +32,11 @@ let package = Package(
             linkerSettings: [
                 .linkedFramework("AppKit")
             ]
+        ),
+        .testTarget(
+            name: "KineticsTests",
+            dependencies: ["Kinetics"],
+            path: "Tests/KineticsTests"
         )
     ]
 )

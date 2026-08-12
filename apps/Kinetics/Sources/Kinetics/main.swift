@@ -11,11 +11,27 @@ struct KineticsEntry {
             KineticsDiagnostics.run()
             return
         }
+        if CommandLine.arguments.contains("--initialize-dock-preferences") {
+            switch DockAnimationPreferences.initializeMissingValues() {
+            case .success(let wroteValues):
+                print(wroteValues
+                      ? "Initialized missing Dock animation preferences."
+                      : "Dock animation preferences already exist.")
+                return
+            case .failure(let error):
+                fputs("Kinetics Dock preference initialization failed: \(error.localizedDescription)\n", stderr)
+                Darwin.exit(1)
+            }
+        }
         if CommandLine.arguments.contains("--switch-left") {
             Darwin.exit(KineticsCLI.runSwitch(KineticsDirectionLeft) ? 0 : 1)
         }
         if CommandLine.arguments.contains("--switch-right") {
             Darwin.exit(KineticsCLI.runSwitch(KineticsDirectionRight) ? 0 : 1)
+        }
+
+        if case .failure(let error) = DockAnimationPreferences.initializeMissingValues() {
+            fputs("Kinetics Dock preference initialization failed: \(error.localizedDescription)\n", stderr)
         }
 
         let application = NSApplication.shared

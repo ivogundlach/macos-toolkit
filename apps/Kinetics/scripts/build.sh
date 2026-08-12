@@ -373,6 +373,10 @@ install_staged_app() {
         rollback_install
         die "installed bundle verification failed; rollback completed"
     fi
+    if ! "$INSTALL_APP/Contents/MacOS/Kinetics" --initialize-dock-preferences; then
+        rollback_install
+        die "Dock preference initialization failed; rollback completed"
+    fi
 
     if [[ "$old_exists" == "1" ]]; then
         rm -rf "$temp_app"
